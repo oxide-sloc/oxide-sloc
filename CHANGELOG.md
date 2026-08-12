@@ -10,6 +10,37 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.15] — 2026-08-12
+
+### Added
+
+- **MCP protocol + API surface modernization**: the `sloc-mcp` server advertises the current
+  MCP protocol revision with version negotiation, and the web server exposes a richer health/API
+  surface (`GET /api/health` structured health JSON, `GET /api/version` build provenance).
+- **Jenkins fast-by-default pipeline**: the pipeline now defaults to the prebuilt `dist` binary
+  (`BUILD_MODE=prebuilt`, ~2–3 min), bundles a portable Python runtime, supports multi-instance
+  git credentials, and triggers on release/tag webhooks.
+
+### Fixed
+
+- **Jenkins vendored tooling**: vendored cargo tools (including `llvm-cov`) install outside the
+  workspace so they no longer pollute or conflict with the checked-out tree; the webhook trigger
+  `<spec>` is emitted correctly and coverage falls back honestly when instrumentation is
+  unavailable.
+- **Jenkins console noise**: quieted clippy compile-progress output on the Jenkins console.
+
+### Changed
+
+- **Dependencies**: bumped `futures` to 0.3.34 and `rustls-webpki` to 0.103.14, re-vendored the
+  offline crate archive, and refreshed the bundled Rust toolchain (1.97).
+
+### Documentation
+
+- Stripped casual "no admin" phrasing from the docs, added a UCC comparison, documented the
+  health endpoints, and noted the MCP protocol revision.
+
+---
+
 ## [1.6.14] — 2026-08-11
 
 ### Fixed
