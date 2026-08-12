@@ -392,6 +392,12 @@ curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
 
 A 200 response with an empty body means success. A 400 with `job already exists` means the job name is taken.
 
+> **Updating an existing job** via `POST ${JENKINS_URL}/job/${JOB_NAME}/config.xml` (rather
+> than `createItem`) must send `Content-Type: application/xml; charset=utf-8`. Without the
+> charset, Jenkins decodes the body as ISO-8859-1 and the em-dash in the job description
+> becomes an invalid XML character → **HTTP 500 `Invalid XML character 0x80`**. `createItem`
+> is unaffected; only the config.xml update endpoint needs the explicit charset.
+
 For **Job DSL** plugin users, `ci/jenkins/seed-job.groovy` achieves the same result as a seed job or via Manage Jenkins → Script Console.
 
 #### First-build trigger
@@ -540,6 +546,13 @@ SLOC_ENABLE_WEBHOOK_TRIGGER=1 \
 SLOC_WEBHOOK_TRIGGER_TOKEN=my-secret-token \
 bash ci/jenkins/render-job-config.sh   # writes /tmp/job-config.xml, then createItem as usual
 ```
+
+> **Seed the job first.** The Generic Webhook Trigger only populates build parameters
+> that already exist on the job, and a Pipeline-from-SCM job discovers its `parameters {}`
+> block on its **first** build. If a webhook fires before that seed build, `SCAN_REF` /
+> `SCAN_REPO_URL` are not yet registered and the run silently self-scans this repo instead
+> of the pushed tag. Run one build (the [First-build trigger](#first-build-trigger) above)
+> before enabling or firing the webhook.
 
 For push-side triggering from another CI system (rather than a repo webhook), and for
 **upstream/downstream chaining** (`CHAIN_UPSTREAM_JOB` / `CHAIN_UPSTREAM_BUILD` /

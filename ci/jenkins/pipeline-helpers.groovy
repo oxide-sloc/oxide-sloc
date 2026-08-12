@@ -575,6 +575,13 @@ def runUnitTests() {
                         if [ -d vendor/cargo-nextest ]; then
                             rm -rf .ci-tools && mkdir -p .ci-tools
                             cp -r vendor/cargo-nextest .ci-tools/
+                            # .ci-tools/ lives INSIDE the oxide-sloc checkout, so cargo
+                            # would auto-adopt the copied crate into the parent workspace
+                            # (whose members do not list it) and abort with "current
+                            # package believes it's in a workspace when it's not" BEFORE
+                            # resolving anything. Append an empty [workspace] table so the
+                            # copied crate is its own workspace root and installs from vendor/.
+                            printf '\n[workspace]\n' >> .ci-tools/cargo-nextest/Cargo.toml
                             cargo install --offline --path .ci-tools/cargo-nextest \
                                 || cargo install --locked cargo-nextest
                         else
@@ -669,9 +676,18 @@ def runCoverage() {
                 # (mirrors the verified-working cargo-nextest offline install above).
                 mkdir -p .ci-tools
                 cp -r vendor/cargo-llvm-cov .ci-tools/
+                # .ci-tools/ lives INSIDE the oxide-sloc checkout, so cargo would
+                # auto-adopt the copied crate into the parent workspace (whose members
+                # do not list it) and abort with "current package believes it's in a
+                # workspace when it's not" BEFORE resolving from vendor/. Append an empty
+                # [workspace] table so the copied crate is its own workspace root.
+                printf '\n[workspace]\n' >> .ci-tools/cargo-llvm-cov/Cargo.toml
                 cargo install --offline --path .ci-tools/cargo-llvm-cov \
                     > .llvmcov-install.log 2>&1 \
-                    || echo "cargo-llvm-cov offline install failed (see .llvmcov-install.log); will degrade."
+                    || echo "cargo-llvm-cov offline install failed; see the install log below."
+                # Surface the log in the console — cleanWs deletes it post-build, so a
+                # failure would otherwise be undiagnosable (mirrors the nextest block).
+                tail -20 .llvmcov-install.log 2>/dev/null || true
             else
                 echo "cargo-llvm-cov is not vendored under vendor/ — skipping offline install."
             fi
