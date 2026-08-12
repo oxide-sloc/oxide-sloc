@@ -29,6 +29,13 @@
 
 .PARAMETER Source
     Path to a PortableGit-*.7z.exe, a .zip, or an already-extracted folder.
+    Optional when -AutoDiscover is used.
+
+.PARAMETER AutoDiscover
+    Search the agent for a PortableGit-*.7z.exe / .zip (in SLOC_PORTABLE_GIT_ARCHIVE,
+    the job WORKSPACE, WORKSPACE\.tools, %USERPROFILE%\Downloads, %USERPROFILE%, and
+    C:\Tools) and stage the first match. Exits 3 (no error thrown) when none is found,
+    so the Jenkins pipeline can call this unconditionally as a bash-free last resort.
 
 .PARAMETER Destination
     Target folder for the extracted PortableGit. Defaults to
@@ -51,11 +58,13 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true, Position = 0)]
+    [Parameter(Mandatory = $false, Position = 0)]
     [string] $Source,
 
     [Parameter(Position = 1)]
     [string] $Destination,
+
+    [switch] $AutoDiscover,
 
     [switch] $Force
 )
@@ -63,6 +72,48 @@ param(
 $ErrorActionPreference = 'Stop'
 
 function Write-Step($msg) { Write-Host "[stage-portable-git] $msg" }
+
+# ---- Auto-discover a PortableGit archive on the agent ---------------------
+# Bash-free: pure PowerShell, so it can bootstrap a truly bash-free agent. When
+# nothing is found we exit 3 (NOT throw) so the pipeline's fallback stays quiet.
+if (-not $Source -and $AutoDiscover) {
+    Write-Step "Auto-discovering a PortableGit archive on this agent..."
+    $searchDirs = @()
+    if ($env:WORKSPACE) {
+        $searchDirs += $env:WORKSPACE
+        $searchDirs += (Join-Path $env:WORKSPACE '.tools')
+    }
+    if ($env:USERPROFILE) {
+        $searchDirs += (Join-Path $env:USERPROFILE 'Downloads')
+        $searchDirs += $env:USERPROFILE
+    }
+    $searchDirs += 'C:\Tools'
+
+    # Explicit override wins over any directory scan.
+    if ($env:SLOC_PORTABLE_GIT_ARCHIVE -and (Test-Path $env:SLOC_PORTABLE_GIT_ARCHIVE)) {
+        $Source = $env:SLOC_PORTABLE_GIT_ARCHIVE
+        Write-Step "Using SLOC_PORTABLE_GIT_ARCHIVE: $Source"
+    } else {
+        foreach ($d in $searchDirs) {
+            if (-not $d -or -not (Test-Path $d)) { continue }
+            $hit = Get-ChildItem -Path $d -Filter 'PortableGit-*' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -ieq '.exe' -or $_.Extension -ieq '.zip' } |
+                Sort-Object Name -Descending | Select-Object -First 1
+            if ($hit) { $Source = $hit.FullName; break }
+        }
+    }
+
+    if (-not $Source) {
+        Write-Step "No PortableGit-*.7z.exe or .zip found (searched: $($searchDirs -join '; '))."
+        Write-Step "Drop a PortableGit archive in the workspace or set SLOC_PORTABLE_GIT_ARCHIVE, then re-run."
+        exit 3
+    }
+    Write-Step "Discovered archive: $Source"
+}
+
+if (-not $Source) {
+    throw "No -Source provided. Pass a PortableGit archive/folder, or use -AutoDiscover."
+}
 
 # ---- Resolve destination --------------------------------------------------
 if (-not $Destination) {

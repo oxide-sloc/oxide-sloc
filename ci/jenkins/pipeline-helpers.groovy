@@ -100,6 +100,39 @@ def resolveBash() {
         return picked
     }
 
+    // 3b. Derive bash from a `git` on PATH. A locked-down agent frequently has Git
+    //     for Windows installed to a NON-standard folder (so the fixed roots below
+    //     miss it) yet still exposes git on PATH for SCM. git.exe lives at
+    //     <root>\cmd\git.exe (also \mingw64\bin\ or \bin\); strip that suffix to get
+    //     <root> and probe bash.exe under it. This is the common cause of a bare
+    //     "no POSIX shell" on an agent that clearly HAS Git.
+    def gitHits = ''
+    try {
+        gitHits = bat(returnStdout: true, script: '@where git 2>NUL').trim()
+    } catch (Throwable t) {
+        gitHits = ''
+    }
+    for (def line in gitHits.readLines()) {
+        def g = line.trim()
+        if (!g) { continue }
+        def lower = g.toLowerCase()
+        // The WSL/System32 shim is a git launcher, not a Git-for-Windows root.
+        if (lower.contains('\\system32\\')) { continue }
+        def root = null
+        for (def marker in ['\\cmd\\git.exe', '\\mingw64\\bin\\git.exe',
+                            '\\mingw32\\bin\\git.exe', '\\bin\\git.exe']) {
+            def idx = lower.lastIndexOf(marker)
+            if (idx >= 0) { root = g.substring(0, idx); break }
+        }
+        if (!root) { continue }
+        for (def b in bashesUnder(root)) {
+            if (fileExists(b)) {
+                env.SLOC_RESOLVED_BASH = b
+                return b
+            }
+        }
+    }
+
     // 4. Known Git-for-Windows locations. System-wide installs first, then the
     //    no-admin fallbacks: a staged PortableGit folder (workspace/.tools or a
     //    common tools dir) and the per-user LocalAppData install.
@@ -122,18 +155,59 @@ def resolveBash() {
             return c
         }
     }
+
+    // 5. Last resort: auto-stage a no-install PortableGit if an operator has merely
+    //    dropped a PortableGit-*.7z.exe / .zip in the workspace or a common tools dir.
+    //    This lets a truly bash-free, air-gapped Windows agent bootstrap itself with
+    //    NO admin, NO installer, and NO network. Tried at most once per build.
+    def staged = stagePortableGitFallback()
+    if (staged && fileExists(staged)) {
+        env.SLOC_RESOLVED_BASH = staged
+        return staged
+    }
+    return null
+}
+
+// Auto-stage a PortableGit archive discovered on the agent, so a truly bash-free
+// Windows box can bootstrap itself when an operator has dropped a
+// PortableGit-*.7z.exe / .zip in the workspace (or set SLOC_PORTABLE_GIT_ARCHIVE).
+// Runs the native, bash-free stage-portable-git.ps1 in -AutoDiscover mode and
+// returns the path to the staged bash.exe, or null. Kept as its own method so it
+// gets its own JVM bytecode budget, and guarded to run at most once per build.
+def stagePortableGitFallback() {
+    if (isUnix()) { return null }
+    if (env.SLOC_BASH_STAGE_TRIED == '1') { return null }
+    env.SLOC_BASH_STAGE_TRIED = '1'
+    def ws = env.WORKSPACE?.trim()
+    if (!ws) { return null }
+    def dest = "${ws}\\.tools\\PortableGit\\bin\\bash.exe"
+    try {
+        def rc = bat(returnStatus: true,
+            script: 'powershell -NoProfile -ExecutionPolicy Bypass ' +
+                    '-File ci\\jenkins\\stage-portable-git.ps1 -AutoDiscover')
+        if (rc == 0 && fileExists(dest)) {
+            echo "Auto-staged PortableGit at ${dest} (no admin, no installer, no network)."
+            return dest
+        }
+    } catch (Throwable t) {
+        echo "PortableGit auto-stage skipped: ${t.message}"
+    }
     return null
 }
 
 // The actionable error shown on a Windows agent with no usable POSIX shell.
 def noBashError() {
-    error('No POSIX shell found on this Windows agent. No admin/system install is ' +
-          'required — stage a portable Git Bash once (no installer, no admin): run ' +
-          '`powershell -File ci/jenkins/stage-portable-git.ps1 <PortableGit-*.7z.exe>` ' +
-          'to extract it into <workspace>\\.tools\\PortableGit, or point ' +
-          'SLOC_PORTABLE_GIT at an already-extracted PortableGit folder (or SLOC_BASH ' +
-          'at a bash.exe). A per-user Git install under %LOCALAPPDATA%\\Programs\\Git ' +
-          'is also auto-detected. Alternatively pin this job to a Linux agent via the ' +
+    error('No POSIX shell found on this Windows agent, and no PortableGit archive ' +
+          'was available to auto-stage. No admin/system install is required — provide ' +
+          'a portable Git Bash once (no installer, no admin) by ANY of: (1) drop a ' +
+          'PortableGit-*.7z.exe (or .zip) into the job workspace — or set ' +
+          'SLOC_PORTABLE_GIT_ARCHIVE to its path — and re-run; the pipeline stages it ' +
+          'automatically. (2) Run `powershell -File ci/jenkins/stage-portable-git.ps1 ' +
+          '<PortableGit-*.7z.exe>` yourself to extract it into ' +
+          '<workspace>\\.tools\\PortableGit. (3) Point SLOC_PORTABLE_GIT at an already-' +
+          'extracted PortableGit folder, or SLOC_BASH at a bash.exe. A per-user Git ' +
+          'install under %LOCALAPPDATA%\\Programs\\Git, and any `git` on PATH, are also ' +
+          'auto-detected. Alternatively pin this job to a Linux agent via the ' +
           'AGENT_LABEL parameter.')
 }
 
