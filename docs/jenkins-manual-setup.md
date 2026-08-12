@@ -552,16 +552,18 @@ Jenkins discovers the `parameters {}` block in the Jenkinsfile only after runnin
 once.  The first build must run **without parameters** to register them.
 
 1. On the job page, click **"Build Now"** in the left sidebar.
-   The first build runs with defaults (`SKIP_WEB_CHECK` defaults to `true` for a
-   fresh install).  The build executes these stages in order:
-   **Checkout → Load helpers → Setup → Quality Gates (Format, Lint, Unit tests) → Build →
-   Coverage → Analyze → Web UI health check → Deliver results (Send webhook, Send email) →
-   Archive & Publish → Push to Artifact Repository → Git-Ref Scan → Git-Ref Compare**,
-   then succeeds.
+   The first build runs with defaults — the fast path: `BUILD_MODE=prebuilt` (extract the
+   committed `dist/` binary, no toolchain/compile/tests/lint), `RUN_QUALITY_GATES` and
+   `RUN_WEB_HEALTHCHECK` both **off**.  The build executes these stages in order:
+   **Checkout → Load helpers → Setup → Quality Gates (Format, Lint, Unit tests — skipped unless
+   `RUN_QUALITY_GATES`) → Build → Coverage → Analyze → Web UI health check → Deliver results
+   (Send webhook, Send email) → Archive & Publish → Push to Artifact Repository → Git-Ref Scan →
+   Git-Ref Compare**, then succeeds.
    With default parameters the Analyze stage scans the **whole tooling repo itself**
-   (`TARGET_REPO_URL` blank, `SCAN_PATH` blank → `analyze .`), producing the full
-   report set. Optional stages (Coverage, Web UI health check, webhook, email,
-   artifact push, ref scan) are skipped unless the corresponding parameters are configured.
+   (`SCAN_REPO_URL` blank, `SCAN_PATH` blank → `analyze .`), producing the full
+   report set. Optional stages (Quality Gates, Coverage, Web UI health check, webhook, email,
+   artifact push, ref scan) are skipped unless the corresponding parameters are configured. A
+   standard prebuilt scan finishes in ~2-3 min instead of ~40.
 
    > **If the build fails** with `MethodTooLargeException` at compile time (before any
    > stage runs), see the [Troubleshooting → MethodTooLargeException](#methodtoolarge
@@ -584,22 +586,24 @@ From this point on, all configuration parameters are visible in the build form.
 
    | Parameter | Default | What to set |
    |-----------|---------|------------|
-   | `TARGET_REPO_URL` | `` (blank) | Git URL of the repository to scan. **Leave blank to scan oxide-sloc itself.** Cloned into `./_target`; `SCAN_PATH` is resolved inside it |
-   | `TARGET_REF` | `` (blank = `main`) | Branch/tag/SHA to scan. **Blank defaults to `main`** — set explicitly (e.g. `master`) for repos whose default branch is not `main` |
+   | `SCAN_REPO_URL` | `` (blank) | Git URL of the repository to scan. **Leave blank to scan oxide-sloc itself.** Cloned into `./_target`; `SCAN_PATH` is resolved inside it |
+   | `SCAN_REF` | `` (blank = `main`) | Branch/tag/SHA to scan. **Blank defaults to `main`** — set explicitly (e.g. `master`) for repos whose default branch is not `main` |
    | `SCAN_PATH` | `` (blank = whole repo) | Optional subdirectory of the target repo to scan (e.g., `src` or `packages/api`); blank scans the whole repo |
+   | `BUILD_MODE` | `prebuilt` | `prebuilt` (default) extracts the committed `dist/` binary for a fast ~2-3 min scan; `source` compiles from vendored crates. `RUN_QUALITY_GATES` / `RUN_COVERAGE` force `source` |
    | `REPORT_TITLE` | `oxide-sloc CI Report` | A descriptive title for the HTML report |
-   | `GENERATE_HTML` | ✓ checked | Check to produce an HTML report (recommended) |
-   | `GENERATE_PDF` | ✓ checked | PDF is produced by default; uncheck to skip. **Pure-Rust — no browser required on the agent** |
-   | `SKIP_WEB_CHECK` | ✓ checked | Keep checked if port 4317 is not available on the agent |
+   | `REPORT_HTML` | ✓ checked | Check to produce an HTML report (recommended) |
+   | `REPORT_PDF` | ✓ checked | PDF is produced by default; uncheck to skip. **Pure-Rust — no browser required on the agent** |
+   | `RUN_WEB_HEALTHCHECK` | ☐ unchecked | **Off by default.** Check only if port 4317 is available on the agent to run the web UI health check |
 
-   > **Note:** `REPO_URL` is the *tooling* repo the scanner is built from (the Jenkinsfile's
-   > own checkout) — **not** the scan target (that's `TARGET_REPO_URL` above). Leave it
+   > **Note:** `TOOL_REPO_URL` is the *tooling* repo the scanner is built from (the Jenkinsfile's
+   > own checkout) — **not** the scan target (that's `SCAN_REPO_URL` above). Leave it
    > **blank** to reuse the SCM this job was configured from — no internet URL is hardcoded,
    > so an air-gapped controller pointed at a local mirror just works. It resolves in order:
-   > `REPO_URL` build parameter → `REPO_URL` environment variable (e.g. sourced from
-   > `ci/jenkins/.env`) → the job's own SCM. `REPO_BRANCH` (default `main`) sets the ref
-   > when you supply an explicit `REPO_URL` — use a concrete ref, not the wildcard
-   > `*/main`, which NPEs under lightweight (jgit) checkout.
+   > `TOOL_REPO_URL` build parameter → `TOOL_REPO_URL` environment variable → the `REPO_URL`
+   > environment variable (e.g. sourced from `ci/jenkins/.env`, unchanged and still valid) →
+   > the job's own SCM. `TOOL_REPO_BRANCH` sets the ref when you supply an explicit
+   > `TOOL_REPO_URL` — use a concrete ref, not the wildcard `*/main`, which NPEs under
+   > lightweight (jgit) checkout.
 
    **To enable unit test results** (requires cargo-nextest on the agent — see Step 13):
 
@@ -613,7 +617,7 @@ From this point on, all configuration parameters are visible in the build form.
 
    | Parameter | Value |
    |-----------|-------|
-   | `COVERAGE_STANDALONE` | ✓ checked |
+   | `RUN_COVERAGE` | ✓ checked (implies `BUILD_MODE=source`) |
    | `COVERAGE_THRESHOLD` | `0` (disabled) or a percentage, e.g. `60` |
 
    **To push artifacts to an external repository**:
@@ -628,9 +632,9 @@ From this point on, all configuration parameters are visible in the build form.
 
    | Parameter | Value |
    |-----------|-------|
-   | `DOWNSTREAM_JOB` | Name of the Jenkins job to trigger automatically after this build succeeds (empty = disabled) |
-   | `UPSTREAM_JOB` | Set automatically by an upstream pipeline that invoked this build; identifies the caller job |
-   | `UPSTREAM_BUILD` | Set automatically by the upstream pipeline; the caller's build number, passed to the downstream job |
+   | `CHAIN_DOWNSTREAM_JOB` | Name of the Jenkins job to trigger automatically after this build succeeds (empty = disabled) |
+   | `CHAIN_UPSTREAM_JOB` | Set automatically by an upstream pipeline that invoked this build; identifies the caller job |
+   | `CHAIN_UPSTREAM_BUILD` | Set automatically by the upstream pipeline; the caller's build number, passed to the downstream job |
 
 3. Click **Build**.
 
@@ -675,7 +679,7 @@ After a successful build, confirm each feature is wired correctly:
 - Charts produced: **"SLOC Totals Over Time"** (line chart), **"Per-Language Code Lines"** (bar chart).
 - After 2+ builds, trend lines appear.  The first build registers the data point but no chart is
   drawn until there are at least two points.
-- The **"Line Coverage % Over Time"** chart appears after a build with `COVERAGE_STANDALONE` enabled.
+- The **"Line Coverage % Over Time"** chart appears after a build with `RUN_COVERAGE` enabled.
 - If charts are missing after 2+ builds, verify the Plot plugin is installed:
   **Manage Jenkins → Plugins → Installed plugins** → search for `plot`.
   The pipeline degrades gracefully when the plugin is absent (a warning is logged but the build
@@ -690,7 +694,7 @@ After a successful build, confirm each feature is wired correctly:
 - Transient failures are retried once before marking as failed (`.config/nextest.toml`).
 
 ### Coverage Report (Coverage plugin + HTML Publisher)
-- To enable: check `COVERAGE_STANDALONE` (opt-in — it recompiles instrumented, adding ~4-5 min/build, so it is off by default).
+- To enable: check `RUN_COVERAGE` (opt-in — it recompiles instrumented, adding ~4-5 min/build, so it is off by default).
 - Requires cargo-llvm-cov + `llvm-tools-preview` on the agent (see [Step 14](#14-optional-agent-setup--cargo-llvm-cov-coverage)).
 - After a successful coverage build:
   - The build page shows **line %, branch %, function %** from the Coverage plugin.
@@ -701,7 +705,7 @@ After a successful build, confirm each feature is wired correctly:
 - **SonarQube note:** SonarQube imports coverage from **LCOV** (`sonar.rust.lcov.reportPaths=coverage/lcov.info`), not the Cobertura XML — so cargo-llvm-cov's Cobertura duplicate-element quirk (which the Jenkins Coverage plugin rejects) does not affect the SonarQube import.
 
 ### PDF report artifact (pure-Rust)
-- To enable: check `GENERATE_PDF`.
+- To enable: check `REPORT_PDF`.
 - **No browser, Chromium, or external tool required on the agent** — PDF generation is
   implemented entirely in Rust.  This parameter can be enabled without any additional agent setup.
 - The PDF is archived as `ci-out/report_<proj-slug>.pdf` and can be included in artifact repository
@@ -726,7 +730,7 @@ After a successful build, confirm each feature is wired correctly:
   - `ci-out/result_<proj-slug>.json` (scan output)
   - `ci-out/report_<proj-slug>.html`, `report_<proj-slug>.css`, `report_<proj-slug>.js`,
     `report_<proj-slug>.xlsx`, `report_<proj-slug>.csv` (HTML report with assets and exports)
-  - `ci-out/report_<proj-slug>.pdf` (produced by default; suppressed when `GENERATE_PDF = false`)
+  - `ci-out/report_<proj-slug>.pdf` (produced by default; suppressed when `REPORT_PDF = false`)
   - `ci-out/scan-config_<proj-slug>.json` (the effective scan configuration used for the run)
   - `ci-out/dashboard_<proj-slug>.{html,css,js}` (native CI dashboard — the source of the
     `OxideSLOC_HTML_Report_<proj-slug>` sidebar link)
@@ -735,7 +739,7 @@ After a successful build, confirm each feature is wired correctly:
   - `ci-out/sub_<name>.html` (per-submodule breakdown, one per detected submodule; on by default via
     `SUBMODULE_BREAKDOWN = true`)
   - `ci-out/test-results/junit.xml` (when `TEST_RUNNER = cargo-nextest` and `PUBLISH_TEST_RESULTS = true`)
-  - `ci-out/coverage/{lcov.info,sonar-coverage.xml,html/}` (when `COVERAGE_STANDALONE = true`)
+  - `ci-out/coverage/{lcov.info,sonar-coverage.xml,html/}` (when `RUN_COVERAGE = true`)
 
 ---
 
@@ -820,7 +824,7 @@ included when the archive was generated.  See `ci/tools/Cargo.toml` for adding i
 
 ## 14. Optional agent setup — cargo-llvm-cov (coverage)
 
-Enable `COVERAGE_STANDALONE` only after installing cargo-llvm-cov on the agent.
+Enable `RUN_COVERAGE` only after installing cargo-llvm-cov on the agent.
 
 ```bash
 # Install cargo-llvm-cov
@@ -841,7 +845,7 @@ cargo install --offline cargo-llvm-cov
 rustup component add llvm-tools-preview
 ```
 
-**What you get after enabling `COVERAGE_STANDALONE`:**
+**What you get after enabling `RUN_COVERAGE`:**
 - LCOV file (`lcov.info`) and Cobertura XML (`sonar-coverage.xml`) archived per build.
 - Browsable HTML coverage report under `coverage/html/` archived per build.
 - **"Coverage Source"** sidebar link on each build (annotated source view).
@@ -923,7 +927,7 @@ or switch `TEST_RUNNER` back to `cargo-test`.
 ### "cargo llvm-cov not found"
 
 Install cargo-llvm-cov on the agent (see [Step 14](#14-optional-agent-setup--cargo-llvm-cov-coverage))
-or uncheck `COVERAGE_STANDALONE`.
+or uncheck `RUN_COVERAGE`.
 
 ### SonarQube analysis not running
 
@@ -945,7 +949,7 @@ when the plugin is absent — the build still succeeds but no charts are registe
 Expected chart names under the **"SLOC Trends"** group on the job page:
 - **"SLOC Totals Over Time"** (line chart, always produced)
 - **"Per-Language Code Lines"** (bar chart, always produced)
-- **"Line Coverage % Over Time"** (line chart, only when `COVERAGE_STANDALONE` is checked)
+- **"Line Coverage % Over Time"** (line chart, only when `RUN_COVERAGE` is checked)
 
 ### "Test Result" sidebar link missing after nextest build
 
@@ -958,7 +962,7 @@ exited before writing the XML (check the Unit tests stage console output for err
 
 ### No "Coverage Source" link or Coverage plugin metrics
 
-Verify `COVERAGE_STANDALONE` is checked and cargo-llvm-cov (or cargo-tarpaulin) is
+Verify `RUN_COVERAGE` is checked and cargo-llvm-cov (or cargo-tarpaulin) is
 installed on the agent.  Look in the console output of the Coverage stage for
 `==> Generating coverage with cargo-llvm-cov` or `WARNING: Neither cargo-llvm-cov nor
 cargo-tarpaulin is installed.`  Follow [Step 14](#14-optional-agent-setup--cargo-llvm-cov-coverage).
@@ -1024,7 +1028,7 @@ The prebuilt-binary installers for **cargo-nextest** (`get.nexte.st`) and
 On a Windows air-gapped agent those tools cannot self-install, so the supported defaults are:
 
 - `TEST_RUNNER = cargo-test` (plain `cargo test`), and
-- **coverage off** (`COVERAGE_STANDALONE` unchecked).
+- **coverage off** (`RUN_COVERAGE` unchecked).
 
 If you set `TEST_RUNNER = cargo-nextest` or enable coverage on Windows **without**
 pre-placing the Windows tool binaries in `%CARGO_HOME%\bin` (i.e. `<cacheroot>\.rust-cache\cargo\bin`),
@@ -1039,7 +1043,21 @@ missing report. To use them, drop the Windows builds of `cargo-nextest.exe` /
 | `SLOC_CACHE_DIR` | Overrides the Rust cache root. On a Windows service account whose `HOME` / `USERPROFILE` profile is read-only or ACL-locked, set this to a writable directory. Resolution order is `SLOC_CACHE_DIR` → `HOME` → `USERPROFILE` → `WORKSPACE` (the last is always agent-writable). The cache lands at `<root>\.rust-cache\`. |
 | `SLOC_ALLOW_ONLINE_RUSTUP` | Set to `1` to permit `setup-toolchain.sh` to download rustup from the internet as a last resort. **Unset/`0` (default) fails fast** on an air-gapped agent instead of hanging on an unreachable `https://sh.rustup.rs`, with a message pointing at the committed `toolchain/` bundle, the persistent cache, or pinning to a seeded Linux agent via `AGENT_LABEL`. |
 | `SLOC_BASH` | Absolute path to a `bash.exe` if Git Bash is not auto-discovered. |
-| `SLOC_PY` | Overrides the Python interpreter (Git Bash usually has `python`, not `python3`). |
+| `SLOC_PY` | Overrides the Python interpreter. Resolution order is `SLOC_PY` → the **bundled portable Python** (below) → system `python3`/`python`/`py`. |
+
+### Bundled portable Python (no system Python required)
+
+The pipeline runs a few `.py` helpers (dashboard, trend CSV, build summary, Confluence
+notify). Corporate / air-gapped agents frequently have **no** system Python, or one too
+old, so a portable **CPython 3.14** ships in the repo under `python/`
+(`cpython-3.14-windows-x64.tar.gz` and `cpython-3.14-linux-x86_64.tar.gz`, checksum-verified
+against `python/checksums.sha256`). On first use `ci/jenkins/setup-python.sh` extracts it into
+`.tools/python/` (offline) and `pyBin()` prefers it — so **no system Python is needed at all**.
+Resolution order: `SLOC_PY` override → bundled portable Python → system `python3`/`python`/`py`.
+
+Every `.py` call in the pipeline is best-effort (guarded / `|| true`), so even if none
+resolve the build still succeeds — only the optional dashboard/trend extras are skipped.
+Regenerate or bump the bundle with `bash ci/jenkins/bundle-python.sh` (see `python/README.md`).
 
 On Windows, `setup-toolchain.sh` consumes the committed **Windows toolchain bundle**
 (`toolchain/rust-toolchain-windows-x64.tar.gz.*`, checksum-verified against

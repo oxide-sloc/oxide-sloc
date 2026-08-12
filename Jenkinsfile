@@ -12,12 +12,15 @@
  * Pipeline-of-Pipelines usage:
  *   From an orchestrator pipeline, trigger this job with:
  *     build job: 'oxide-sloc', parameters: [
- *       string(name: 'REPO_URL',        value: 'https://...'),
- *       string(name: 'DOWNSTREAM_JOB',  value: 'next-pipeline'),
- *       string(name: 'ARTIFACT_PATH',   value: '')
+ *       string(name: 'SCAN_REPO_URL',        value: 'https://...'),
+ *       string(name: 'CHAIN_DOWNSTREAM_JOB',  value: 'next-pipeline')
  *     ], wait: true
- *   This pipeline will trigger DOWNSTREAM_JOB on success, passing back
- *   UPSTREAM_JOB, UPSTREAM_BUILD, and ARTIFACT_PATH.
+ *   This pipeline will trigger CHAIN_DOWNSTREAM_JOB on success, passing back
+ *   CHAIN_UPSTREAM_JOB, CHAIN_UPSTREAM_BUILD, and ARTIFACT_PATH.
+ *
+ * Release/tag triggering (webhook): configure the job to build on a GitHub/Bitbucket
+ * release or tag push and map the pushed tag into SCAN_REF. See ci/jenkins/INTEGRATION.md
+ * and ci/jenkins/render-job-config.sh (SLOC_ENABLE_WEBHOOK_TRIGGER).
  */
 
 def h   // loaded after Checkout; all runXxx() calls below delegate here
@@ -76,31 +79,30 @@ pipeline {
         // ═══════════════════════════════════════════════════════════════════════
         //  WHAT TO SCAN — point this at any existing repo and hit Build.
         //  GitHub / GitLab / Bitbucket / local all work (it's a plain git clone).
-        //  Private repo? also set TARGET_CREDENTIALS_ID. Leave TARGET_REPO_URL
+        //  Private repo? also set SCAN_CREDENTIALS_ID (single instance) or
+        //  SCAN_GIT_CREDENTIALS (several instances in one run). Leave SCAN_REPO_URL
         //  blank to scan this tooling repo itself (self-CI / demo).
         //  See docs: ci/jenkins/INTEGRATION.md
+        //
+        //  FAST BY DEFAULT: out of the box this pipeline runs the prebuilt scanner
+        //  from dist/ and skips the Rust toolchain, unit tests, lint, and coverage,
+        //  so a standard scan finishes in a couple of minutes. Turn on RUN_QUALITY_GATES
+        //  (or BUILD_MODE=source) only when you want to build and test from source.
         // ═══════════════════════════════════════════════════════════════════════
         string(
-            name:         'TARGET_REPO_URL',
+            name:         'SCAN_REPO_URL',
             defaultValue: '',
             description:  'The repo to analyze — any Git URL (GitHub / GitLab / Bitbucket / ' +
                           'file:///local, https:// or ssh://). Blank = scan this tooling repo itself. ' +
                           'Cloned into ./_target; SCAN_PATH is resolved inside it.'
         )
         string(
-            name:         'TARGET_REF',
+            name:         'SCAN_REF',
             defaultValue: '',
             description:  'Branch, tag, or commit SHA to scan. BLANK defaults to "main" — set this ' +
                           'explicitly for a repo whose default branch is not main (e.g. master). ' +
+                          'A release/tag webhook (see ci/jenkins/INTEGRATION.md) sets this automatically. ' +
                           'e.g. main, master, develop, v2.1.0, a3f9d2c'
-        )
-        string(
-            name:         'TARGET_CREDENTIALS_ID',
-            defaultValue: '',
-            description:  'Jenkins credentials ID for cloning a PRIVATE target repo (a username + ' +
-                          'personal-access-token, or an SSH key if TARGET_REPO_URL is an ssh:// URL). ' +
-                          'Blank = public repo, or the agent already has git access. ' +
-                          'Add one under Manage Jenkins > Credentials, then paste its ID here.'
         )
         string(
             name:         'SCAN_PATH',
@@ -109,38 +111,78 @@ pipeline {
                           'Set e.g. "src" or "packages/api" for a subtree; absolute paths also work.'
         )
 
-        // ═══════════════════════════════════════════════════════════════════════
-        //  OPTIONAL — everything below is pre-set to oxide-sloc's application
-        //  defaults. For a standard scan, ignore it all: set TARGET_REPO_URL above
-        //  and hit Build. The checkbox just marks the boundary.
-        //  (Jenkins' built-in form cannot truly collapse these fields without the
-        //  Active Choices plugin — see ci/jenkins/MAINTENANCE.md for that option.)
-        // ═══════════════════════════════════════════════════════════════════════
-        booleanParam(
-            name:         'CHANGE_DEFAULT_SCAN_SETTINGS',
-            defaultValue: false,
-            description:  'Leave UNCHECKED for a standard scan with oxide-sloc defaults — you only need ' +
-                          'TARGET_REPO_URL above. Check it as a reminder when you intend to change any of ' +
-                          'the optional parameters that follow (they are all pre-set to sensible defaults).'
+        // ── Scan credentials — single instance, or many instances in one run ────
+        string(
+            name:         'SCAN_CREDENTIALS_ID',
+            defaultValue: '',
+            description:  'Jenkins credentials ID for cloning ONE private target repo (a username + ' +
+                          'personal-access-token, or an SSH key if SCAN_REPO_URL is an ssh:// URL). ' +
+                          'Blank = public repo, or the agent already has git access. ' +
+                          'For multiple instances in a single run, use SCAN_GIT_CREDENTIALS instead.'
+        )
+        text(
+            name:         'SCAN_GIT_CREDENTIALS',
+            defaultValue: '',
+            description:  'Multi-instance credentials — one "host=jenkins-credentials-id" per line, ' +
+                          'mapping each git host to a Jenkins Username/Password (or Secret Text ' +
+                          '"user:token") credential. Each is exported to the app per host so a single ' +
+                          'run can authenticate to several GitHub/Bitbucket/GitLab instances.\n' +
+                          '  bitbucket.instance2.com=bb-scanner-pat\n' +
+                          '  github.enterprise.acme=ghe-scanner-pat\n' +
+                          'See docs/multi-instance.md. Blank = use SCAN_CREDENTIALS_ID / ambient git auth.'
         )
 
-        // ── Optional — output naming ───────────────────────────────────────────
-        string(
-            name:         'REPO_URL',
-            defaultValue: '',
-            description:  '(optional) Tooling repo the scanner is BUILT from — NOT the project to scan ' +
-                          '(use TARGET_REPO_URL for that). BLANK = reuse the SCM this job was configured ' +
-                          'from (a local mirror on an air-gapped controller) — no internet URL is ever ' +
-                          'assumed. Resolution order: this parameter → the REPO_URL environment variable ' +
-                          '(e.g. a Jenkins global property sourced from ci/jenkins/.env) → the job\'s own ' +
-                          'SCM. Set this only to override with a fork/mirror URL.'
+        // ── Air-gapped / offline import (Case B) ───────────────────────────────
+        booleanParam(
+            name:         'SCAN_ALLOW_LOCAL',
+            defaultValue: false,
+            description:  'Permit scanning an offline copy (git bundle, file:// mirror, or local path) ' +
+                          'when the source cannot be reached. Fail-closed: also set SCAN_LOCAL_ROOT. ' +
+                          'Pass the bundle/path as SCAN_REPO_URL. See docs/multi-instance.md (Case B).'
         )
         string(
-            name:         'REPO_BRANCH',
+            name:         'SCAN_LOCAL_ROOT',
             defaultValue: '',
-            description:  '(optional) Branch/ref spec used only when REPO_URL is set (e.g. */main, ' +
-                          '*/develop, refs/tags/v1.2.0). BLANK = the REPO_BRANCH environment variable, ' +
-                          'else */main. Ignored when REPO_URL is blank — the job\'s own SCM branch is used.'
+            description:  'Directory an offline SCAN_REPO_URL source must resolve under (required when ' +
+                          'SCAN_ALLOW_LOCAL is checked). Sources outside it, plus UNC / file://host, are refused.'
+        )
+
+        // ═══════════════════════════════════════════════════════════════════════
+        //  HOW TO BUILD THE SCANNER — prebuilt (fast, default) vs source.
+        // ═══════════════════════════════════════════════════════════════════════
+        choice(
+            name:    'BUILD_MODE',
+            choices: ['prebuilt', 'source'],
+            description: 'How to obtain the oxide-sloc scanner binary:\n' +
+                         '  prebuilt — extract the committed dist/ binary (no Rust toolchain, no vendor ' +
+                         'compile, no network). Fast default; a couple of minutes end-to-end.\n' +
+                         '  source   — build from source with the air-gapped Rust toolchain + vendored ' +
+                         'crates. Slower; use for release verification. Automatically selected when ' +
+                         'RUN_QUALITY_GATES or RUN_COVERAGE is checked (those need the toolchain).'
+        )
+
+        // ═══════════════════════════════════════════════════════════════════════
+        //  OPTIONAL — everything below is pre-set to sensible defaults. For a
+        //  standard fast scan, ignore it all: set SCAN_REPO_URL above and hit Build.
+        // ═══════════════════════════════════════════════════════════════════════
+
+        // ── Optional — tooling repo the scanner is built/sourced from ──────────
+        string(
+            name:         'TOOL_REPO_URL',
+            defaultValue: '',
+            description:  '(optional) Tooling repo oxide-sloc itself comes from — NOT the project to scan ' +
+                          '(use SCAN_REPO_URL for that). BLANK = reuse the SCM this job was configured ' +
+                          'from (a local mirror on an air-gapped controller) — no internet URL is ever ' +
+                          'assumed. Resolution order: this parameter → the TOOL_REPO_URL environment ' +
+                          'variable (e.g. a Jenkins global property sourced from ci/jenkins/.env) → the ' +
+                          'job\'s own SCM. Set this only to override with a fork/mirror URL.'
+        )
+        string(
+            name:         'TOOL_REPO_BRANCH',
+            defaultValue: '',
+            description:  '(optional) Branch/ref spec used only when TOOL_REPO_URL is set (e.g. */main, ' +
+                          '*/develop, refs/tags/v1.2.0). BLANK = the TOOL_REPO_BRANCH environment variable, ' +
+                          'else */main. Ignored when TOOL_REPO_URL is blank — the job\'s own SCM branch is used.'
         )
         string(
             name:         'REPORT_TITLE',
@@ -155,16 +197,17 @@ pipeline {
 
         // ── Pipeline switches (optional) ───────────────────────────────────────
         booleanParam(
-            name:         'SKIP_QUALITY_GATES',
+            name:         'RUN_QUALITY_GATES',
             defaultValue: false,
-            description:  'Skip the Format / Lint / Unit tests stage. ' +
-                          'Useful for scan-only runs where code-quality enforcement is not needed.'
+            description:  'Build from source and run the Format / Lint / Unit tests stage. ' +
+                          'OFF by default for a fast prebuilt scan; check it to enforce code quality. ' +
+                          'Implies BUILD_MODE=source (the toolchain is needed to compile and lint).'
         )
         booleanParam(
-            name:         'SKIP_WEB_CHECK',
-            defaultValue: true,
-            description:  'Skip the web UI health-check stage. ' +
-                          'Use on agents without loopback access or where port 4317 is unavailable.'
+            name:         'RUN_WEB_HEALTHCHECK',
+            defaultValue: false,
+            description:  'Run the web UI health-check stage (binds the local server briefly). ' +
+                          'OFF by default; needs loopback access and a free port 4317 on the agent.'
         )
         // ── CI config preset ───────────────────────────────────────────────────
         choice(
@@ -179,14 +222,14 @@ pipeline {
 
         // ── Output formats ─────────────────────────────────────────────────────
         booleanParam(
-            name:         'GENERATE_HTML',
+            name:         'REPORT_HTML',
             defaultValue: true,
             description:  'Write an HTML report artifact and publish it via the HTML Publisher plugin. ' +
                           'Appears as "SLOC Report" in the left-hand build menu. ' +
                           'Requires the "HTML Publisher" plugin — see ci/jenkins/plugins.txt.'
         )
         booleanParam(
-            name:         'GENERATE_PDF',
+            name:         'REPORT_PDF',
             defaultValue: true,
             description:  'Write a PDF report artifact alongside the HTML report. ' +
                           'Pure-Rust generation — no browser or external tool required on the agent. ' +
@@ -262,7 +305,7 @@ pipeline {
 
         // ── Git-ref comparison ─────────────────────────────────────────────────
         string(
-            name:         'GIT_REF',
+            name:         'COMPARE_REF',
             defaultValue: '',
             description:  'Scan the repository at this specific git ref (branch, tag, or commit SHA). ' +
                           'Leave empty to scan HEAD (the checked-out commit). ' +
@@ -270,17 +313,17 @@ pipeline {
                           'Example: v1.4.0  or  refs/tags/v1.4.0  or  a3f9d2c'
         )
         string(
-            name:         'COMPARE_TO_REF',
+            name:         'COMPARE_BASELINE_REF',
             defaultValue: '',
-            description:  'Compare the GIT_REF scan against this baseline ref. ' +
+            description:  'Compare the COMPARE_REF scan against this baseline ref. ' +
                           'Produces a JSON/HTML diff report alongside the normal scan output. ' +
                           'Leave empty to skip comparison. Example: v1.3.7'
         )
         booleanParam(
-            name:         'COMPARE_TO_PREV_TAG',
+            name:         'COMPARE_PREV_TAG',
             defaultValue: false,
-            description:  'Automatically detect the previous release tag (the one before GIT_REF or HEAD) ' +
-                          'and use it as the baseline for comparison. Overrides COMPARE_TO_REF when set.'
+            description:  'Automatically detect the previous release tag (the one before COMPARE_REF or HEAD) ' +
+                          'and use it as the baseline for comparison. Overrides COMPARE_BASELINE_REF when set.'
         )
 
         // ── Test runner & results ──────────────────────────────────────────────
@@ -315,9 +358,9 @@ pipeline {
 
         // ── Standalone code coverage ───────────────────────────────────────────
         booleanParam(
-            name:         'COVERAGE_STANDALONE',
+            name:         'RUN_COVERAGE',
             defaultValue: false,
-            description:  'Run a dedicated Coverage stage. ' +
+            description:  'Run a dedicated Coverage stage (builds from source; implies BUILD_MODE=source). ' +
                           'Generates LCOV, Cobertura XML, and a browsable HTML coverage report. ' +
                           'The HTML report is published as a "Coverage Source" sidebar link. ' +
                           'Requires cargo-llvm-cov (preferred) or cargo-tarpaulin on the agent:\n' +
@@ -328,20 +371,20 @@ pipeline {
             name:         'COVERAGE_THRESHOLD',
             defaultValue: '0',
             description:  'Minimum line-coverage percentage required to pass the build (0 = disabled). ' +
-                          'Only enforced when COVERAGE_STANDALONE is enabled. ' +
+                          'Only enforced when RUN_COVERAGE is enabled. ' +
                           'Coverage percentage is derived from the LCOV lcov.info summary lines (LH / LF). ' +
                           'Example: 60  fails the build if fewer than 60 % of lines are covered.'
         )
 
         // ── Delivery / notifications ───────────────────────────────────────────
         string(
-            name:         'WEBHOOK_URL',
+            name:         'NOTIFY_WEBHOOK_URL',
             defaultValue: '',
             description:  'POST the JSON result to this URL after a successful scan (empty = skip). ' +
                           'Add SLOC_WEBHOOK_TOKEN as a Jenkins Secret Text credential for Bearer auth.'
         )
         string(
-            name:         'EMAIL_RECIPIENTS',
+            name:         'NOTIFY_EMAIL',
             defaultValue: '',
             description:  'Comma-separated email addresses to receive the scan report (empty = skip). ' +
                           'Requires Jenkins Secret Text credentials: SLOC_SMTP_HOST, SLOC_SMTP_USER, SLOC_SMTP_PASS.'
@@ -412,13 +455,13 @@ pipeline {
             name:         'ARTIFACT_PUSH_HTML',
             defaultValue: true,
             description:  'Include report.html in the artifact repository push ' +
-                          '(only when GENERATE_HTML is checked).'
+                          '(only when REPORT_HTML is checked).'
         )
         booleanParam(
             name:         'ARTIFACT_PUSH_PDF',
             defaultValue: false,
             description:  'Include report.pdf in the artifact repository push ' +
-                          '(only when GENERATE_PDF is checked).'
+                          '(only when REPORT_PDF is checked).'
         )
         booleanParam(
             name:         'ARTIFACT_PUSH_CSV',
@@ -448,13 +491,13 @@ pipeline {
             name:         'ARTIFACT_PUSH_COVERAGE',
             defaultValue: false,
             description:  'Include lcov.info and sonar-coverage.xml coverage reports in the push. ' +
-                          'Only applies when COVERAGE_STANDALONE is checked.'
+                          'Only applies when RUN_COVERAGE is checked.'
         )
         booleanParam(
             name:         'ARTIFACT_PUSH_DIFF',
             defaultValue: false,
             description:  'Include diff.json and diff.csv diff-comparison artifacts in the push. ' +
-                          'Only applies when GIT_REF is set and a comparison ref is configured.'
+                          'Only applies when COMPARE_REF is set and a comparison ref is configured.'
         )
         booleanParam(
             name:         'ARTIFACT_GENERATE_MANIFEST',
@@ -530,9 +573,16 @@ pipeline {
         )
 
         // ── Pipeline-of-Pipelines chaining ─────────────────────────────────────
-        string(name: 'UPSTREAM_JOB',   defaultValue: '', description: 'Name of the upstream pipeline that triggered this build (for chaining)')
-        string(name: 'UPSTREAM_BUILD', defaultValue: '', description: 'Build number of the upstream job')
-        string(name: 'DOWNSTREAM_JOB', defaultValue: '', description: 'Pipeline job to trigger on success (leave empty to disable)')
+        // Chain this scan into a larger pipeline. Set CHAIN_DOWNSTREAM_JOB to fan out
+        // to the next job on success; this build passes CHAIN_UPSTREAM_JOB /
+        // CHAIN_UPSTREAM_BUILD / ARTIFACT_PATH forward so the downstream job can locate
+        // this run's artifacts. An orchestrator triggers this job with:
+        //   build job: 'oxide-sloc', parameters: [
+        //     string(name: 'SCAN_REPO_URL',        value: '...'),
+        //     string(name: 'CHAIN_DOWNSTREAM_JOB', value: 'next-pipeline')], wait: true
+        string(name: 'CHAIN_UPSTREAM_JOB',   defaultValue: '', description: '(chaining) Name of the upstream pipeline that triggered this build')
+        string(name: 'CHAIN_UPSTREAM_BUILD', defaultValue: '', description: '(chaining) Build number of the upstream job')
+        string(name: 'CHAIN_DOWNSTREAM_JOB', defaultValue: '', description: '(chaining) Pipeline job to trigger on success (blank = disable). It receives CHAIN_UPSTREAM_JOB, CHAIN_UPSTREAM_BUILD, and ARTIFACT_PATH.')
 
         // ── Agent selection ────────────────────────────────────────────────────
         string(
@@ -566,8 +616,8 @@ pipeline {
     stages {
 
         // ── 0. Checkout ────────────────────────────────────────────────────────
-        // Always check out the tooling repo (REPO_URL) at the workspace root — the
-        // scanner is built from it. When TARGET_REPO_URL is set, also check the
+        // Always check out the tooling repo (TOOL_REPO_URL) at the workspace root — the
+        // scanner is built from it. When SCAN_REPO_URL is set, also check the
         // project-under-analysis out into ./_target and point SCAN_ROOT at it, so a
         // single job can scan any project. SCAN_ROOT is consumed by the analyze,
         // git-ref, and compare stages; it defaults to the workspace root (self-scan).
@@ -577,8 +627,8 @@ pipeline {
                     // Resolve the tooling repo (the scanner is built from it) WITHOUT
                     // ever hardcoding an internet URL — this is what makes the pipeline
                     // work unchanged on an air-gapped controller. Priority order:
-                    //   1. REPO_URL build parameter        (explicit per-build override)
-                    //   2. REPO_URL environment variable   (Jenkins global property /
+                    //   1. TOOL_REPO_URL build parameter    (explicit per-build override)
+                    //   2. TOOL_REPO_URL environment variable (Jenkins global property /
                     //      node env, typically sourced from ci/jenkins/.env) — the
                     //      air-gap knob: point it at your local mirror once.
                     //   3. the job's OWN configured SCM (checkout scm) — on an
@@ -590,11 +640,15 @@ pipeline {
                     // implicit env.GIT_COMMIT is fragile (reflects whichever checkout
                     // ran last). runBitbucketNotify() needs a real SHA or it treats
                     // itself as "not configured" and skips.
-                    def repoUrl = params.REPO_URL?.trim() ?: env.REPO_URL?.trim()
+                    // TOOL_REPO_URL is the current name; env.REPO_URL / env.REPO_BRANCH
+                    // are accepted as a back-compat fallback so controllers that already
+                    // set the legacy Jenkins global property keep working after the rename.
+                    def repoUrl = params.TOOL_REPO_URL?.trim() ?: env.TOOL_REPO_URL?.trim() ?: env.REPO_URL?.trim()
                     def scmVars
                     if (repoUrl) {
-                        def branch = params.REPO_BRANCH?.trim() ?: env.REPO_BRANCH?.trim() ?: '*/main'
-                        echo "Checkout: tooling repo from REPO_URL=${repoUrl} (branch: ${branch})"
+                        def branch = params.TOOL_REPO_BRANCH?.trim() ?: env.TOOL_REPO_BRANCH?.trim() ?:
+                                     env.REPO_BRANCH?.trim() ?: '*/main'
+                        echo "Checkout: tooling repo from TOOL_REPO_URL=${repoUrl} (branch: ${branch})"
                         scmVars = checkout([$class: 'GitSCM',
                                             branches: [[name: branch]],
                                             userRemoteConfigs: [[url: repoUrl]]])
@@ -602,13 +656,13 @@ pipeline {
                         // No explicit URL: reuse whatever SCM this job was configured
                         // from. Guarded so a Pipeline-script (non-SCM) job fails with a
                         // clear, actionable message instead of a raw MissingProperty.
-                        echo 'Checkout: REPO_URL unset — reusing the job\'s own SCM (checkout scm).'
+                        echo 'Checkout: TOOL_REPO_URL unset — reusing the job\'s own SCM (checkout scm).'
                         try {
                             scmVars = checkout scm
                         } catch (Throwable t) {
-                            error("No REPO_URL was provided and this job has no SCM to fall " +
-                                  "back to (checkout scm failed: ${t.message}). Set the REPO_URL " +
-                                  "build parameter, or a REPO_URL environment variable " +
+                            error("No TOOL_REPO_URL was provided and this job has no SCM to fall " +
+                                  "back to (checkout scm failed: ${t.message}). Set the TOOL_REPO_URL " +
+                                  "build parameter, or a TOOL_REPO_URL environment variable " +
                                   "(see ci/jenkins/.env.example), or run this pipeline as a " +
                                   "Pipeline-from-SCM job.")
                         }
@@ -616,20 +670,30 @@ pipeline {
                     env.GIT_COMMIT = scmVars.GIT_COMMIT ?: env.GIT_COMMIT
                     // Expose the effective URL so the analyze stage can derive a stable
                     // project slug (repo-name_shortsha) for a self-scan even when
-                    // REPO_URL was blank and we fell back to checkout scm.
+                    // TOOL_REPO_URL was blank and we fell back to checkout scm.
                     env.SLOC_REPO_URL_EFFECTIVE = scmVars.GIT_URL ?: repoUrl ?: ''
                 }
                 script {
-                    if (params.TARGET_REF?.trim() &&
-                            !(params.TARGET_REF.trim() ==~ /^[A-Za-z0-9_\-\.\/]+$/)) {
-                        error("TARGET_REF contains invalid characters: ${params.TARGET_REF}")
+                    if (params.SCAN_REF?.trim() &&
+                            !(params.SCAN_REF.trim() ==~ /^[A-Za-z0-9_\-\.\/]+$/)) {
+                        error("SCAN_REF contains invalid characters: ${params.SCAN_REF}")
                     }
-                    if (params.TARGET_CREDENTIALS_ID?.trim() &&
-                            !(params.TARGET_CREDENTIALS_ID.trim() ==~ /^[A-Za-z0-9_\-\.]+$/)) {
-                        error("TARGET_CREDENTIALS_ID contains invalid characters: ${params.TARGET_CREDENTIALS_ID}")
+                    if (params.SCAN_CREDENTIALS_ID?.trim() &&
+                            !(params.SCAN_CREDENTIALS_ID.trim() ==~ /^[A-Za-z0-9_\-\.]+$/)) {
+                        error("SCAN_CREDENTIALS_ID contains invalid characters: ${params.SCAN_CREDENTIALS_ID}")
                     }
-                    if (params.TARGET_REPO_URL?.trim()) {
-                        def ref = params.TARGET_REF?.trim() ?: 'main'
+                    // Air-gap offline import (Case B): expose the app-side local gate so
+                    // any app-driven git step honours it. The Jenkins git plugin clones a
+                    // bundle / file:// path directly regardless; these are for completeness
+                    // and parity with the CLI / server. Off unless explicitly enabled.
+                    if (params.SCAN_ALLOW_LOCAL) {
+                        env.SLOC_GIT_ALLOW_LOCAL = '1'
+                        if (params.SCAN_LOCAL_ROOT?.trim()) {
+                            env.SLOC_GIT_LOCAL_ROOT = params.SCAN_LOCAL_ROOT.trim()
+                        }
+                    }
+                    if (params.SCAN_REPO_URL?.trim()) {
+                        def ref = params.SCAN_REF?.trim() ?: 'main'
                         // A bare name (e.g. "v1.1") may be a branch OR a tag. Fetch both
                         // heads and tags via an explicit refspec, and offer both
                         // resolutions — the git plugin builds the first that resolves to a
@@ -640,14 +704,43 @@ pipeline {
                         def branchList = (isSha || ref.contains('/'))
                             ? [[name: ref]]
                             : [[name: "*/${ref}"], [name: "refs/tags/${ref}"]]
-                        // Attach the credential only when provided, so public repos
+                        // Multi-instance credential selection. Pick the Jenkins credential
+                        // for the target's HOST from the SCAN_GIT_CREDENTIALS map
+                        // ("host=jenkins-credentials-id" per line); fall back to the single
+                        // SCAN_CREDENTIALS_ID. This lets ONE job scan many GitHub/Bitbucket/
+                        // GitLab instances, each authenticated with its own Jenkins
+                        // credential, without editing the job — the git plugin injects the
+                        // secret natively during checkout (never in env / argv / URL).
+                        def scanUrl = params.SCAN_REPO_URL.trim()
+                        def hostOf = { String u ->
+                            def m = (u =~ /^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\/(?:[^@\/]+@)?([^\/:]+)/)
+                            if (m) { return m[0][1].toLowerCase() }
+                            def s = (u =~ /^(?:[^@\/]+@)?([^:\/]+):/)   // scp-like git@host:path
+                            return s ? s[0][1].toLowerCase() : ''
+                        }
+                        def credForHost = null
+                        def targetHost = hostOf(scanUrl)
+                        if (params.SCAN_GIT_CREDENTIALS?.trim() && targetHost) {
+                            for (def line in params.SCAN_GIT_CREDENTIALS.trim().readLines()) {
+                                def t = line.trim()
+                                if (!t || t.startsWith('#') || !t.contains('=')) { continue }
+                                def host = t.substring(0, t.indexOf('=')).trim().toLowerCase()
+                                def cid  = t.substring(t.indexOf('=') + 1).trim()
+                                if (host == targetHost && cid) { credForHost = cid; break }
+                            }
+                        }
+                        def effCredId = credForHost ?: params.SCAN_CREDENTIALS_ID?.trim()
+                        if (effCredId && !(effCredId ==~ /^[A-Za-z0-9_\-\.]+$/)) {
+                            error("Resolved scan credentials ID contains invalid characters: ${effCredId}")
+                        }
+                        // Attach the credential only when resolved, so public repos
                         // (and agents with ambient git auth) keep working unchanged.
                         def remoteCfg = [
-                            url:     params.TARGET_REPO_URL.trim(),
+                            url:     scanUrl,
                             refspec: '+refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*',
                         ]
-                        if (params.TARGET_CREDENTIALS_ID?.trim()) {
-                            remoteCfg['credentialsId'] = params.TARGET_CREDENTIALS_ID.trim()
+                        if (effCredId) {
+                            remoteCfg['credentialsId'] = effCredId
                         }
                         dir('_target') {
                             def tgtVars = checkout([$class: 'GitSCM',
@@ -662,7 +755,9 @@ pipeline {
                             }
                         }
                         env.SCAN_ROOT = "${env.WORKSPACE}/_target"
-                        def credNote = params.TARGET_CREDENTIALS_ID?.trim() ? " (creds: ${params.TARGET_CREDENTIALS_ID.trim()})" : ''
+                        def credNote = effCredId
+                            ? " (creds: ${effCredId}${credForHost ? " — matched host ${targetHost}" : ''})"
+                            : ''
                         echo "Scanning external project at ${env.SCAN_ROOT} (ref: ${ref})${credNote}"
                     } else {
                         env.SCAN_ROOT = env.WORKSPACE
@@ -683,6 +778,22 @@ pipeline {
                     // shx() step so cargo/rustc resolve and BINARY carries .exe on
                     // Windows. See the note above the (removed) environment{} block.
                     h.initEnv()
+                    // Decide once whether this build needs the Rust toolchain + a
+                    // from-source compile. The fast default (BUILD_MODE=prebuilt) extracts
+                    // the committed dist/ binary and skips toolchain, vendor, fmt/clippy,
+                    // and tests entirely. Quality gates and coverage compile the workspace,
+                    // so either of those forces a source build regardless of BUILD_MODE.
+                    def needsSource = (params.BUILD_MODE == 'source') ||
+                                      params.RUN_QUALITY_GATES || params.RUN_COVERAGE
+                    env.SLOC_NEEDS_SOURCE = needsSource ? 'true' : 'false'
+                    if (needsSource && params.BUILD_MODE != 'source') {
+                        echo 'BUILD_MODE=prebuilt overridden to source: RUN_QUALITY_GATES / ' +
+                             'RUN_COVERAGE require compiling the workspace.'
+                    }
+                    def modeMsg = needsSource
+                        ? 'Build mode: SOURCE (Rust toolchain + vendored crates + compile).'
+                        : 'Build mode: PREBUILT (dist/ binary; no toolchain, no tests — fast path).'
+                    echo modeMsg
                 }
             }
         }
@@ -697,7 +808,12 @@ pipeline {
         //   3. /opt/rust-toolchain baked into the agent image         → air-gapped
         //   4. rustup-init binary at ${RUSTUP_HOME}/../rustup-init    → semi-offline
         //   5. curl sh.rustup.rs                                       → requires internet
+        //
+        // Skipped entirely on the fast prebuilt path (BUILD_MODE=prebuilt with no
+        // quality gates / coverage) — no toolchain or vendor archive is needed to run
+        // the dist/ binary.
         stage('Setup') {
+            when { expression { env.SLOC_NEEDS_SOURCE == 'true' } }
             steps {
                 retry(2) { script { h.runSetup() } }
             }
@@ -705,9 +821,9 @@ pipeline {
 
         // ── 2. Quality Gates ───────────────────────────────────────────────────
         // Format and Lint run in parallel; Unit tests follow.
-        // All skipped when SKIP_QUALITY_GATES is checked for faster scan-only runs.
+        // Runs only when RUN_QUALITY_GATES is checked (off by default for fast scans).
         stage('Quality Gates') {
-            when { expression { !params.SKIP_QUALITY_GATES } }
+            when { expression { params.RUN_QUALITY_GATES } }
             stages {
                 stage('fmt + clippy (parallel)') {
                     parallel {
@@ -776,35 +892,22 @@ pipeline {
         }
 
         // ── 3. Build ───────────────────────────────────────────────────────────
+        // PREBUILT (default): extract the committed dist/ binary into target/release/
+        // — no toolchain, no vendor compile, no network. SOURCE: compile from the
+        // vendored crates with the air-gapped toolchain. h.runBuild() branches on
+        // SLOC_NEEDS_SOURCE (set in Load helpers).
         stage('Build') {
             steps {
-                // unset CC/CXX inside the build shell: on Windows the airgap-devkit
-                // gcc can leak in via CC and conflict with the MinGW-w64 gcc that the
-                // x86_64-pc-windows-gnu target links with (documented "unset CC on
-                // Windows" rule). initEnv() has already prepended <gitroot>\mingw64\bin
-                // to PATH so cc/gcc/ld resolve. A best-effort `gcc --version` (never
-                // fatal) makes a missing linker diagnosable in the build log.
-                retry(2) {
-                    script {
-                        h.shx '''
-                            unset CC CXX
-                            gcc --version 2>/dev/null | head -1 || echo "gcc not on PATH (link may fail on the windows-gnu target)"
-                            cargo build --release -p oxide-sloc
-                        '''
-                    }
-                }
+                retry(2) { script { h.runBuild() } }
             }
         }
 
         // ── 4. Coverage ────────────────────────────────────────────────────────
         // Produces LCOV, Cobertura XML, and browsable HTML via cargo-llvm-cov.
-        // Enabled by COVERAGE_STANDALONE; threshold enforced by COVERAGE_THRESHOLD.
+        // Enabled by RUN_COVERAGE; threshold enforced by COVERAGE_THRESHOLD.
         stage('Coverage') {
             when {
-                allOf {
-                    expression { params.COVERAGE_STANDALONE }
-                    expression { !params.SKIP_QUALITY_GATES }
-                }
+                expression { params.RUN_COVERAGE }
             }
             steps {
                 // Never let a coverage/test hiccup cascade and wipe the rest of the
@@ -827,7 +930,7 @@ pipeline {
 
         // ── 6. Web UI health check ─────────────────────────────────────────────
         stage('Web UI health check') {
-            when { expression { !params.SKIP_WEB_CHECK } }
+            when { expression { params.RUN_WEB_HEALTHCHECK } }
             steps {
                 script { h.shx 'bash ci/jenkins/run-web-check.sh' }
             }
@@ -838,19 +941,19 @@ pipeline {
         stage('Deliver results') {
             when {
                 expression {
-                    params.WEBHOOK_URL?.trim() || params.EMAIL_RECIPIENTS?.trim()
+                    params.NOTIFY_WEBHOOK_URL?.trim() || params.NOTIFY_EMAIL?.trim()
                 }
             }
             stages {
                 stage('Send webhook') {
-                    when { expression { params.WEBHOOK_URL?.trim() as Boolean } }
+                    when { expression { params.NOTIFY_WEBHOOK_URL?.trim() as Boolean } }
                     steps {
                         script {
                             try {
                                 def outDir = "${env.WORKSPACE}/${params.OUTPUT_SUBDIR}"
                                 h.shx """
                                     '${env.BINARY}' send '${outDir}/result_${env.SLOC_PROJECT ?: 'project'}.json' \\
-                                        --webhook-url '${params.WEBHOOK_URL}'
+                                        --webhook-url '${params.NOTIFY_WEBHOOK_URL}'
                                 """
                             } catch (err) {
                                 unstable("Send webhook failed (delivery error, scan artifacts preserved): ${err.message}")
@@ -859,7 +962,7 @@ pipeline {
                     }
                 }
                 stage('Send email') {
-                    when { expression { params.EMAIL_RECIPIENTS?.trim() as Boolean } }
+                    when { expression { params.NOTIFY_EMAIL?.trim() as Boolean } }
                     environment {
                         SLOC_SMTP_HOST = credentials('SLOC_SMTP_HOST')
                         SLOC_SMTP_USER = credentials('SLOC_SMTP_USER')
@@ -869,7 +972,7 @@ pipeline {
                         script {
                             try {
                                 def outDir  = "${env.WORKSPACE}/${params.OUTPUT_SUBDIR}"
-                                def recArgs = params.EMAIL_RECIPIENTS.tokenize(',')
+                                def recArgs = params.NOTIFY_EMAIL.tokenize(',')
                                     .collect { "--smtp-to '${it.trim()}'" }.join(' ')
                                 h.shx """
                                     '${env.BINARY}' send '${outDir}/result_${env.SLOC_PROJECT ?: 'project'}.json' \\
@@ -910,12 +1013,12 @@ pipeline {
         // ── 10. Git-Ref Scan ──────────────────────────────────────────────────
         stage('Git-Ref Scan') {
             when {
-                expression { return params.GIT_REF?.trim() != '' }
+                expression { return params.COMPARE_REF?.trim() != '' }
             }
             steps {
                 script {
                     withEnv([
-                        "GIT_REF=${params.GIT_REF}",
+                        "GIT_REF=${params.COMPARE_REF}",
                         "OUTPUT_SUBDIR=${params.OUTPUT_SUBDIR}",
                         "SCAN_ROOT=${env.SCAN_ROOT ?: env.WORKSPACE}",
                     ]) {
@@ -930,7 +1033,7 @@ pipeline {
         stage('Git-Ref Compare') {
             when {
                 expression {
-                    return params.COMPARE_TO_REF?.trim() != '' || params.COMPARE_TO_PREV_TAG
+                    return params.COMPARE_BASELINE_REF?.trim() != '' || params.COMPARE_PREV_TAG
                 }
             }
             steps {

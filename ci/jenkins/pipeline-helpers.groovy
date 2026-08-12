@@ -307,23 +307,51 @@ def initEnv() {
 
 // ── Python interpreter resolution ────────────────────────────────────────────
 //
-// The pipeline shells out to several .py helpers. On Linux agents the
-// interpreter is `python3`. Git Bash on Windows usually ships `python` (and the
-// Windows launcher `py`) but NOT `python3`, so a hardcoded `python3` fails there.
-// Resolve once (SLOC_PY override wins) and cache on env for the rest of the
-// build. Callers use "${h.pyBin()} script.py ...". The value is resolved through
-// shx() so the same POSIX probe runs on both platforms.
+// The pipeline shells out to several .py helpers (dashboard, trend CSV, build
+// summary, Confluence notify). Corporate / air-gapped agents frequently have NO
+// system Python, or one too old, so a bundled portable CPython 3.14 ships in the
+// repo under python/ (see python/README.md). Resolution order (first that works):
+//   1. SLOC_PY override           — explicit operator escape hatch.
+//   2. Bundled portable Python    — extracted on demand by ci/jenkins/setup-python.sh
+//      (offline, checksum-verified). This is the air-gap default: no system Python
+//      needed at all.
+//   3. system python3 → python → py — on hosts that already have a modern Python.
+// Resolved once and cached on env for the rest of the build. Callers use
+// "${h.pyBin()} script.py ...". Every .py call in the pipeline is best-effort
+// (guarded / "|| true"), so if none of these resolve the build still succeeds —
+// only the optional dashboard/trend extras are skipped.
 def pyBin() {
     if (env.SLOC_RESOLVED_PY?.trim()) {
         return env.SLOC_RESOLVED_PY.trim()
     }
-    // Explicit operator escape hatch.
+    // 1. Explicit operator escape hatch.
     def override = env.SLOC_PY?.trim()
     if (override) {
         env.SLOC_RESOLVED_PY = override
         return override
     }
-    // Probe python3 → python → py, printing the first that runs. Runs through
+    // 2. Bundled portable Python — extract (idempotent, offline) and capture the
+    //    interpreter path from setup-python.sh's LAST stdout line. A non-zero exit
+    //    (no bundle for this platform) is expected on unbundled arches; fall through.
+    if (!env.SLOC_PY_BUNDLE_TRIED) {
+        env.SLOC_PY_BUNDLE_TRIED = '1'
+        try {
+            def out = shxStdout('bash ci/jenkins/setup-python.sh')
+            def interp = out?.readLines()?.findAll { it?.trim() }?.last()?.trim()
+            if (interp && (interp.endsWith('python.exe') || interp.endsWith('/python3'))) {
+                // Verify it actually runs before committing to it.
+                def ok = shxStatus("'${interp}' --version >/dev/null 2>&1") == 0
+                if (ok) {
+                    echo "Using bundled portable Python: ${interp}"
+                    env.SLOC_RESOLVED_PY = interp
+                    return interp
+                }
+            }
+        } catch (Throwable t) {
+            echo "Bundled Python setup skipped (${t.message}); falling back to system Python."
+        }
+    }
+    // 3. Probe python3 → python → py, printing the first that runs. Runs through
     // shx so Git Bash resolves it on Windows and /bin/sh on Linux.
     def picked = ''
     try {
@@ -475,6 +503,38 @@ def runSetup() {
              'For interactive artifact-viewer styling on older Jenkins, install ' +
              'ci/jenkins/init.groovy.d/relax-csp.groovy (permanent, no credentials, ' +
              'sandbox-proof) or run: bash ci/jenkins/preflight.sh --install-csp.'
+    }
+}
+
+// Obtain the oxide-sloc scanner binary for this build. Two modes, decided in the
+// Jenkinsfile "Load helpers" stage and carried on env.SLOC_NEEDS_SOURCE:
+//   PREBUILT (default, fast) — extract the committed dist/ binary into
+//     target/release/. No Rust toolchain, no vendor archive, no compile, no
+//     network. This is what makes a standard scan finish in a couple of minutes.
+//   SOURCE — compile from the vendored crates with the air-gapped toolchain. Used
+//     for release verification and whenever RUN_QUALITY_GATES / RUN_COVERAGE is on
+//     (those need the toolchain to lint / instrument the workspace).
+def runBuild() {
+    if (env.SLOC_NEEDS_SOURCE == 'true') {
+        // unset CC/CXX inside the build shell: on Windows the airgap-devkit gcc can
+        // leak in via CC and conflict with the MinGW-w64 gcc that the
+        // x86_64-pc-windows-gnu target links with (documented "unset CC on Windows"
+        // rule). initEnv() has already prepended <gitroot>\mingw64\bin to PATH so
+        // cc/gcc/ld resolve. A best-effort `gcc --version` (never fatal) makes a
+        // missing linker diagnosable in the build log.
+        shx '''
+            unset CC CXX
+            gcc --version 2>/dev/null | head -1 || echo "gcc not on PATH (link may fail on the windows-gnu target)"
+            cargo build --release -p oxide-sloc
+        '''
+    } else {
+        // Fast path: extract the prebuilt binary from dist/ into target/release/.
+        // use-prebuilt-binary.sh mirrors scripts/internal/install.sh dist extraction
+        // (prefers the .tar.gz for locked-down hosts) and verifies the binary runs.
+        shx 'bash ci/jenkins/use-prebuilt-binary.sh'
+        // Confirm BINARY (set by initEnv, .exe on Windows) is now present.
+        shx 'test -x "${BINARY}" || test -s "${BINARY}"'
+        shx '"${BINARY}" --version'
     }
 }
 
@@ -752,7 +812,7 @@ def runAnalyze() {
     shx "mkdir -p '${outDir}'"
 
     // scanRoot is where the project-under-analysis lives: the workspace root for a
-    // self-scan, or ./_target when TARGET_REPO_URL was checked out (set in Checkout).
+    // self-scan, or ./_target when SCAN_REPO_URL was checked out (set in Checkout).
     // All scan commands and git-based features resolve against it. Use the POSIX
     // workspace form as the self-scan default so `git -C '${scanRoot}'` in the shx
     // bodies below gets forward slashes on Windows. SCAN_ROOT (set in Checkout) is
@@ -776,14 +836,14 @@ def runAnalyze() {
     // Derive a project slug that matches the local-run naming convention:
     //   {repo-name}_{short-sha}  (e.g. airgap-devkit_a78a632)
     // Name comes from the last path segment of the scanned repo's URL (strip .git).
-    // When scanning an external project that is TARGET_REPO_URL; otherwise the tooling
-    // repo — REPO_URL if the operator set it, else the URL the job actually checked out
+    // When scanning an external project that is SCAN_REPO_URL; otherwise the tooling
+    // repo — TOOL_REPO_URL if the operator set it, else the URL the job actually checked out
     // from (SLOC_REPO_URL_EFFECTIVE, set in the Checkout stage). This keeps the self-scan
-    // slug stable (repo-name_shortsha) even when REPO_URL is blank and the pipeline fell
+    // slug stable (repo-name_shortsha) even when TOOL_REPO_URL is blank and the pipeline fell
     // back to `checkout scm` on an air-gapped controller.
     def slugSource = scanningExternal
-                        ? params.TARGET_REPO_URL
-                        : (params.REPO_URL?.trim() ?: env.SLOC_REPO_URL_EFFECTIVE)
+                        ? params.SCAN_REPO_URL
+                        : (params.TOOL_REPO_URL?.trim() ?: env.SLOC_REPO_URL_EFFECTIVE)
     def repoSlug = (slugSource?.trim()
                         ? slugSource.trim()
                               .replaceAll(/\.git$/, '')
@@ -812,8 +872,8 @@ def runAnalyze() {
     def jsonArg      = "--json-out  '${outDir}/result_${projectSlug}.json'"
     def csvArg       = "--csv-out   '${outDir}/report_${projectSlug}.csv'"
     def xlsxArg      = "--xlsx-out  '${outDir}/report_${projectSlug}.xlsx'"
-    def htmlArg      = params.GENERATE_HTML       ? "--html-out '${outDir}/report_${projectSlug}.html'" : ''
-    def pdfArg       = params.GENERATE_PDF        ? "--pdf-out  '${outDir}/report_${projectSlug}.pdf'"  : ''
+    def htmlArg      = params.REPORT_HTML       ? "--html-out '${outDir}/report_${projectSlug}.html'" : ''
+    def pdfArg       = params.REPORT_PDF        ? "--pdf-out  '${outDir}/report_${projectSlug}.pdf'"  : ''
     def docArg       = params.DOCSTRINGS_AS_CODE  ? '--python-docstrings-as-code'        : ''
     def symlinkArg   = params.FOLLOW_SYMLINKS     ? '--follow-symlinks'                  : ''
     def noIgnoreArg  = params.NO_IGNORE_FILES     ? '--no-ignore-files'                  : ''
@@ -876,7 +936,7 @@ def runAnalyze() {
     shx "test -s '${outDir}/result_${projectSlug}.json'"
     shx "test -s '${outDir}/report_${projectSlug}.csv'"
     shx "test -s '${outDir}/report_${projectSlug}.xlsx'"
-    if (params.GENERATE_HTML) { shx "test -s '${outDir}/report_${projectSlug}.html'" }
+    if (params.REPORT_HTML) { shx "test -s '${outDir}/report_${projectSlug}.html'" }
 
     // c. Per-file breakdown
     withEnv(["SCAN_PATH=${effScan}"]) {
@@ -886,7 +946,7 @@ def runAnalyze() {
     }
 
     // d. HTML content sanity checks
-    if (params.GENERATE_HTML) {
+    if (params.REPORT_HTML) {
         withEnv(["REPORT_TITLE=${params.REPORT_TITLE}"]) {
             shx '''
                 grep -q 'OxideSLOC' "''' + outDir + '''/report_''' + projectSlug + '''.html"
@@ -896,7 +956,7 @@ def runAnalyze() {
     }
 
     // e. Extract inline CSS/JS so the report renders under Jenkins's default CSP.
-    if (params.GENERATE_HTML) {
+    if (params.REPORT_HTML) {
         shx "${pyBin()} ci/jenkins/extract-report-assets.py '${outDir}/report_${projectSlug}.html' || true"
     }
 
@@ -983,7 +1043,7 @@ def runArchivePublish() {
         ])
     }
 
-    if (params.GENERATE_HTML && fileExists("${outDir}/html-report/index.html")) {
+    if (params.REPORT_HTML && fileExists("${outDir}/html-report/index.html")) {
         publishHtmlSafe([
             allowMissing         : false,
             alwaysLinkToLastBuild: true,
@@ -1025,7 +1085,7 @@ def runArchivePublish() {
                 useDescr:    true
             )
         }
-        if (params.COVERAGE_STANDALONE &&
+        if (params.RUN_COVERAGE &&
                 fileExists("${env.WORKSPACE}/${params.OUTPUT_SUBDIR}/coverage.csv")) {
             plot(
                 csvFileName: 'sloc-trend-coverage.csv',
@@ -1084,8 +1144,8 @@ def runPushArtifacts() {
     if (params.ARTIFACT_PUSH_JSON)                           filesToPush << "result_${proj}.json"
     if (params.ARTIFACT_PUSH_CSV)                            filesToPush << "report_${proj}.csv"
     if (params.ARTIFACT_PUSH_XLSX)                           filesToPush << "report_${proj}.xlsx"
-    if (params.ARTIFACT_PUSH_HTML && params.GENERATE_HTML)   filesToPush << "report_${proj}.html"
-    if (params.ARTIFACT_PUSH_PDF  && params.GENERATE_PDF)    filesToPush << "report_${proj}.pdf"
+    if (params.ARTIFACT_PUSH_HTML && params.REPORT_HTML)   filesToPush << "report_${proj}.html"
+    if (params.ARTIFACT_PUSH_PDF  && params.REPORT_PDF)    filesToPush << "report_${proj}.pdf"
 
     if (params.ARTIFACT_PUSH_BINARY) {
         def binaryName = isUnix() ? 'oxide-sloc' : 'oxide-sloc.exe'
@@ -1110,7 +1170,7 @@ def runPushArtifacts() {
         }
     }
 
-    if (params.ARTIFACT_PUSH_COVERAGE && params.COVERAGE_STANDALONE) {
+    if (params.ARTIFACT_PUSH_COVERAGE && params.RUN_COVERAGE) {
         [['coverage/lcov.info', 'lcov.info'],
          ['coverage/sonar-coverage.xml', 'sonar-coverage.xml']].each { src, dst ->
             def srcPath = "${env.WS_POSIX}/${src}"
@@ -1121,7 +1181,7 @@ def runPushArtifacts() {
         }
     }
 
-    if (params.ARTIFACT_PUSH_DIFF && params.GIT_REF?.trim()) {
+    if (params.ARTIFACT_PUSH_DIFF && params.COMPARE_REF?.trim()) {
         ['diff.json', 'diff.csv'].each { f ->
             if (fileExists("${outDir}/${f}")) filesToPush << f
         }
@@ -1171,9 +1231,9 @@ def runPushArtifacts() {
 
 def runGitRefCompare() {
     withEnv([
-        "GIT_REF=${params.GIT_REF}",
-        "COMPARE_TO_REF=${params.COMPARE_TO_REF}",
-        "COMPARE_TO_PREV_TAG=${params.COMPARE_TO_PREV_TAG}",
+        "GIT_REF=${params.COMPARE_REF}",
+        "COMPARE_TO_REF=${params.COMPARE_BASELINE_REF}",
+        "COMPARE_TO_PREV_TAG=${params.COMPARE_PREV_TAG}",
         "OUTPUT_SUBDIR=${params.OUTPUT_SUBDIR}",
         // POSIX-normalise both the scan root and the workspace so the bash body's
         // git -C / analyze / diff get forward-slash paths on Windows. WS_POSIX
@@ -1187,7 +1247,7 @@ def runGitRefCompare() {
             # Windows); fall back to the POSIX default when it is unset.
             BINARY="${BINARY:-${WS_POSIX}/target/release/oxide-sloc}"
             # Git operations target the scanned repo (workspace root for a self-scan,
-            # ./_target when TARGET_REPO_URL was checked out). Use the POSIX workspace.
+            # ./_target when SCAN_REPO_URL was checked out). Use the POSIX workspace.
             REPO="${SCAN_ROOT:-$WS_POSIX}"
 
             # Resolve baseline ref
@@ -1254,7 +1314,7 @@ def runPostSuccess() {
         // is commonly blank now (blank = whole repo), so never show an empty label.
         def scanLabel = params.SCAN_PATH?.trim()
         if (!scanLabel) {
-            def tRepo = params.TARGET_REPO_URL?.trim()
+            def tRepo = params.SCAN_REPO_URL?.trim()
             scanLabel = tRepo
                 ? tRepo.replaceAll(/\.git$/, '').replaceAll(/.*[\/:]/, '')
                 : 'whole repo'
@@ -1390,13 +1450,16 @@ def runPostSuccess() {
     // Only chain a downstream job on a clean SUCCESS. runPostSuccess is also invoked
     // from post{unstable} (to populate the build row), where triggering downstream
     // would be wrong.
-    if (params.DOWNSTREAM_JOB?.trim()
+    if (params.CHAIN_DOWNSTREAM_JOB?.trim()
             && (currentBuild.result == null || currentBuild.result == 'SUCCESS')) {
-        build job: params.DOWNSTREAM_JOB,
+        // Pass the chaining context forward. Names match this job's own inputs
+        // (CHAIN_UPSTREAM_JOB / CHAIN_UPSTREAM_BUILD) so an oxide-sloc -> oxide-sloc
+        // chain works; ARTIFACT_PATH is a generic pointer the downstream job defines.
+        build job: params.CHAIN_DOWNSTREAM_JOB,
               parameters: [
-                  string(name: 'UPSTREAM_JOB',   value: env.JOB_NAME),
-                  string(name: 'UPSTREAM_BUILD',  value: env.BUILD_NUMBER),
-                  string(name: 'ARTIFACT_PATH',   value: env.ARTIFACT_PATH ?: '')
+                  string(name: 'CHAIN_UPSTREAM_JOB',   value: env.JOB_NAME),
+                  string(name: 'CHAIN_UPSTREAM_BUILD',  value: env.BUILD_NUMBER),
+                  string(name: 'ARTIFACT_PATH',         value: env.ARTIFACT_PATH ?: '')
               ],
               wait: false,
               propagate: false

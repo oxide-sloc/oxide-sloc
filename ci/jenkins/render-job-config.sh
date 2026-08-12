@@ -36,9 +36,75 @@ fi
 # Override for forks tracking a different branch or a pinned tag.
 REPO_BRANCH="${REPO_BRANCH:-main}"
 
+# ── Optional: release/tag webhook trigger (Generic Webhook Trigger plugin) ─────
+# When SLOC_ENABLE_WEBHOOK_TRIGGER=1, render a <triggers> block so a GitHub or
+# Bitbucket "release" / tag-push webhook starts this pipeline and maps the pushed
+# tag into SCAN_REF (and the repo clone URL into SCAN_REPO_URL). The scanned
+# project's repo posts to:
+#   http://<jenkins>/generic-webhook-trigger/invoke?token=<SLOC_WEBHOOK_TRIGGER_TOKEN>
+# A core SCM trigger is also added so a push to the tooling repo rebuilds too.
+#
+# Requires the "Generic Webhook Trigger" plugin on the controller (it is listed in
+# ci/jenkins/plugins.txt). The JSONPaths default to the GitHub RELEASE payload;
+# override per provider — see docs/ci-integrations.md and ci/jenkins/INTEGRATION.md:
+#   GitHub release   : tag $.release.tag_name        url $.repository.clone_url
+#   GitHub tag push  : tag $.ref                     url $.repository.clone_url
+#   Bitbucket tag    : tag $.push.changes[0].new.name
+TRIGGERS=""
+if [ "${SLOC_ENABLE_WEBHOOK_TRIGGER:-0}" = "1" ] || [ "${SLOC_ENABLE_WEBHOOK_TRIGGER:-}" = "true" ]; then
+    WEBHOOK_TOKEN="${SLOC_WEBHOOK_TRIGGER_TOKEN:-oxide-sloc}"
+    TAG_JSONPATH="${SLOC_WEBHOOK_TAG_JSONPATH:-\$.release.tag_name}"
+    URL_JSONPATH="${SLOC_WEBHOOK_URL_JSONPATH:-\$.repository.clone_url}"
+    SCM_POLL_SPEC="${SLOC_SCM_POLL_SPEC:-}"   # blank = webhook/push only, no timed poll
+    TRIGGERS=$(cat <<TRIGGER_XML
+<org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>
+        <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger">
+          <genericVariables>
+            <org.jenkinsci.plugins.gwt.GenericVariable>
+              <key>SCAN_REF</key>
+              <value>${TAG_JSONPATH}</value>
+              <expressionType>JSONPath</expressionType>
+              <regexpFilter>refs/tags/</regexpFilter>
+              <defaultValue></defaultValue>
+            </org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable>
+              <key>SCAN_REPO_URL</key>
+              <value>${URL_JSONPATH}</value>
+              <expressionType>JSONPath</expressionType>
+              <regexpFilter></regexpFilter>
+              <defaultValue></defaultValue>
+            </org.jenkinsci.plugins.gwt.GenericVariable>
+          </genericVariables>
+          <token>${WEBHOOK_TOKEN}</token>
+          <printPostContent>false</printPostContent>
+          <printContributedVariables>false</printContributedVariables>
+          <causeString>Triggered by release/tag webhook (SCAN_REF=\$SCAN_REF)</causeString>
+          <regexpFilterText>\$SCAN_REF</regexpFilterText>
+          <regexpFilterExpression>.+</regexpFilterExpression>
+        </org.jenkinsci.plugins.gwt.GenericTrigger>
+        <hudson.triggers.SCMTrigger>
+          <spec>${SCM_POLL_SPEC}</spec>
+          <ignorePostCommitHooks>false</ignorePostCommitHooks>
+        </hudson.triggers.SCMTrigger>
+      </triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+TRIGGER_XML
+)
+    echo "Webhook trigger ENABLED (token=${WEBHOOK_TOKEN}, tag=${TAG_JSONPATH})." >&2
+fi
+
 OUT="$(mktemp -t oxide-sloc-job.XXXXXX.xml)"
+# Substitute the trigger block via a temp file so the multi-line XML survives sed.
+TRIG_FILE="$(mktemp -t oxide-sloc-trig.XXXXXX.xml)"
+printf '%s' "${TRIGGERS}" > "${TRIG_FILE}"
 sed -e "s|__REPO_URL__|${REPO_URL}|g" \
     -e "s|__REPO_BRANCH__|${REPO_BRANCH}|g" \
+    -e "/__TRIGGERS__/{
+           r ${TRIG_FILE}
+           d
+        }" \
     "$(dirname "$0")/job-config.xml.tmpl" > "$OUT"
+rm -f "${TRIG_FILE}"
 echo "Written: $OUT (REPO_URL=${REPO_URL}, REPO_BRANCH=${REPO_BRANCH})" >&2
 echo "$OUT"

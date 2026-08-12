@@ -57,22 +57,23 @@ def read(path):
 def test_jenkinsfile():
     src = read(JENKINSFILE)
 
-    # The REPO_URL parameter block must default to an empty string.
+    # The TOOL_REPO_URL parameter block (tooling repo) must default to an empty string.
     m = re.search(
-        r"name:\s*'REPO_URL'.*?defaultValue:\s*('([^']*)'|\"([^\"]*)\")",
+        r"name:\s*'TOOL_REPO_URL'.*?defaultValue:\s*('([^']*)'|\"([^\"]*)\")",
         src, re.DOTALL)
-    default = (m.group(2) or m.group(3) or "") if m else "<no REPO_URL param>"
-    check("Jenkinsfile: REPO_URL param default is empty",
+    default = (m.group(2) or m.group(3) or "") if m else "<no TOOL_REPO_URL param>"
+    check("Jenkinsfile: TOOL_REPO_URL param default is empty",
           m is not None and default == "",
           f"defaultValue was: {default!r}")
 
-    # A REPO_BRANCH parameter must exist (so */main is no longer hardcoded-only).
-    check("Jenkinsfile: REPO_BRANCH param exists",
-          "name:         'REPO_BRANCH'" in src or "name: 'REPO_BRANCH'" in src
-          or re.search(r"name:\s*'REPO_BRANCH'", src) is not None)
+    # A TOOL_REPO_BRANCH parameter must exist (so */main is no longer hardcoded-only).
+    check("Jenkinsfile: TOOL_REPO_BRANCH param exists",
+          re.search(r"name:\s*'TOOL_REPO_BRANCH'", src) is not None)
 
-    # Checkout resolves the env var and falls back to the job's own SCM.
-    check("Jenkinsfile: Checkout reads env.REPO_URL", "env.REPO_URL" in src)
+    # Checkout resolves the env override (new TOOL_REPO_URL, with legacy REPO_URL
+    # accepted as a back-compat fallback) and falls back to the job's own SCM.
+    check("Jenkinsfile: Checkout reads env.TOOL_REPO_URL", "env.TOOL_REPO_URL" in src)
+    check("Jenkinsfile: Checkout keeps legacy env.REPO_URL fallback", "env.REPO_URL" in src)
     check("Jenkinsfile: Checkout falls back to `checkout scm`",
           re.search(r"checkout\s+scm", src) is not None)
 

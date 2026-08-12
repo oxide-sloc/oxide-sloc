@@ -44,8 +44,8 @@ pipelineJob(downstreamName) {
     // Declare the parameters at the JOB level so they exist on build #1 — the
     // upstream trigger passes them immediately, before any manual run.
     parameters {
-        stringParam('UPSTREAM_JOB',   '', 'Name of the job that triggered this build')
-        stringParam('UPSTREAM_BUILD', '', 'Build number of the upstream job')
+        stringParam('CHAIN_UPSTREAM_JOB',   '', 'Name of the job that triggered this build')
+        stringParam('CHAIN_UPSTREAM_BUILD', '', 'Build number of the upstream job')
         stringParam('ARTIFACT_PATH',  '', 'Artifact path passed from the upstream job')
     }
     definition {
@@ -59,14 +59,14 @@ pipeline {
         stage('Receive chain hand-off') {
             steps {
                 echo '=== oxide-sloc downstream consumer ==='
-                echo "Triggered by upstream job : ${params.UPSTREAM_JOB}"
-                echo "Upstream build number      : #${params.UPSTREAM_BUILD}"
+                echo "Triggered by upstream job : ${params.CHAIN_UPSTREAM_JOB}"
+                echo "Upstream build number      : #${params.CHAIN_UPSTREAM_BUILD}"
                 echo "Artifact path from upstream: ${params.ARTIFACT_PATH}"
                 script {
-                    if (params.UPSTREAM_JOB?.trim() && params.UPSTREAM_BUILD?.trim()) {
+                    if (params.CHAIN_UPSTREAM_JOB?.trim() && params.CHAIN_UPSTREAM_BUILD?.trim()) {
                         try {
-                            copyArtifacts projectName: params.UPSTREAM_JOB,
-                                          selector: specific(params.UPSTREAM_BUILD),
+                            copyArtifacts projectName: params.CHAIN_UPSTREAM_JOB,
+                                          selector: specific(params.CHAIN_UPSTREAM_BUILD),
                                           optional: true,
                                           fingerprintArtifacts: true,
                                           target: 'from-upstream'
@@ -74,7 +74,7 @@ pipeline {
                         } catch (Throwable t) {
                             echo "copyArtifacts skipped (install the 'Copy Artifact' plugin to enable): ${t.message}"
                         }
-                        currentBuild.description = "downstream of ${params.UPSTREAM_JOB} #${params.UPSTREAM_BUILD}"
+                        currentBuild.description = "downstream of ${params.CHAIN_UPSTREAM_JOB} #${params.CHAIN_UPSTREAM_BUILD}"
                     } else {
                         echo 'No upstream context set — run this through oxide-sloc-chain-upstream, not directly.'
                         currentBuild.description = 'run directly (no upstream context)'
@@ -119,11 +119,11 @@ pipeline {
                     def run = build job: params.TARGET_JOB,
                         parameters: [
                             string(name: 'SCAN_PATH',          value: params.SCAN_PATH),
-                            string(name: 'DOWNSTREAM_JOB',     value: params.DOWNSTREAM_JOB),
+                            string(name: 'CHAIN_DOWNSTREAM_JOB',     value: params.DOWNSTREAM_JOB),
                             booleanParam(name: 'SKIP_QUALITY_GATES', value: true),
                             booleanParam(name: 'SKIP_WEB_CHECK',     value: true),
-                            string(name: 'UPSTREAM_JOB',       value: env.JOB_NAME),
-                            string(name: 'UPSTREAM_BUILD',     value: env.BUILD_NUMBER)
+                            string(name: 'CHAIN_UPSTREAM_JOB',       value: env.JOB_NAME),
+                            string(name: 'CHAIN_UPSTREAM_BUILD',     value: env.BUILD_NUMBER)
                         ],
                         wait: true,
                         propagate: true

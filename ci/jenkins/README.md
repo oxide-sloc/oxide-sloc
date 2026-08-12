@@ -34,7 +34,7 @@ On a network-connected agent, step 2 is optional.
 
 | File | Role |
 |------|------|
-| `Jenkinsfile` (repo root) | **Canonical full-featured pipeline.** All build parameters, all stages, trend charts, artifact push. Set `TARGET_REPO_URL` to scan **any project** from this single job (checked out into `./_target`); leave it empty to scan oxide-sloc itself. Referenced by `ci/jenkins/job-config.xml` and `ci/jenkins/seed-job.groovy`. This is the one you should use. |
+| `Jenkinsfile` (repo root) | **Canonical full-featured pipeline.** All build parameters, all stages, trend charts, artifact push. Set `SCAN_REPO_URL` to scan **any project** from this single job (checked out into `./_target`); leave it empty to scan oxide-sloc itself. Fast by default (`BUILD_MODE=prebuilt` extracts the committed `dist/` binary — ~2-3 min, no toolchain/compile/tests/lint). Referenced by `ci/jenkins/job-config.xml` and `ci/jenkins/seed-job.groovy`. This is the one you should use. |
 | `ci/jenkins/pipeline-helpers.groovy` | Loaded at runtime by the canonical Jenkinsfile via `load`. Contains all helper functions extracted to stay under the JVM 64 KB per-method bytecode limit. Not a standalone pipeline — do not point a Jenkins job at it. |
 | `testing/examples/jenkins/Jenkinsfile` | Minimal drop-in demo. No build parameters, no trend CSVs, no artifact push — installs the scanner from crates.io and scans the checked-out workspace. Copy into another project's repo as its own `Jenkinsfile`; do not use it as-is for oxide-sloc CI. |
 | `ci/sloc-jenkins.groovy` | Shared-library step (`slocAnalyze`). Copy to `vars/slocAnalyze.groovy` in a Jenkins shared library, then call `slocAnalyze(path: '.')` from any project's Jenkinsfile. Not a standalone Jenkinsfile. |
@@ -68,7 +68,7 @@ Use `TEST_FAIL_FAST = true` to abort on the first failure for faster feedback.
 
 ### Standalone code coverage
 
-Check `COVERAGE_STANDALONE`.
+Check `RUN_COVERAGE` (implies `BUILD_MODE=source`).
 
 Requires `cargo-llvm-cov` on the agent (vendored in `ci/tools/Cargo.toml`):
 ```bash

@@ -42,7 +42,7 @@ mode**, or **from Jenkins/CI**.
   directly. Only loopback, link-local, and cloud-metadata targets are blocked.
 - **All three run modes accept a remote target** — CLI `git-scan` / `git-compare` / `watch`, the
   web **Git Browser** (`/git-browser`, `/api/git/*`) and the `git_repo` scan field, and the
-  Jenkins `TARGET_REPO_URL` parameter (kept fully separate from the tooling `REPO_URL`).
+  Jenkins `SCAN_REPO_URL` parameter (kept fully separate from the tooling `TOOL_REPO_URL`).
 
 The one thing you must supply for a **private** instance is credentials — see the next section.
 
@@ -252,20 +252,26 @@ local_root = "/srv/oxide-sloc/imports"
 
 ### Jenkins / CI
 
-The pipeline already separates the tooling repo (`REPO_URL`) from the project being scanned
-(`TARGET_REPO_URL`), so scanning a different instance than the one hosting the pipeline is the
-normal case. Two credential options:
+The pipeline already separates the tooling repo (`TOOL_REPO_URL`) from the project being scanned
+(`SCAN_REPO_URL`), so scanning a different instance than the one hosting the pipeline is the
+normal case. Three credential options:
 
-1. **Jenkins credential store (idiomatic).** Set `TARGET_CREDENTIALS_ID` to a Jenkins credential
+1. **Multi-instance in one run (idiomatic).** Set the multi-line `SCAN_GIT_CREDENTIALS` parameter,
+   one `host=jenkins-credentials-id` per line. The pipeline auto-selects the Jenkins credential whose
+   host matches `SCAN_REPO_URL` (falling back to the single `SCAN_CREDENTIALS_ID`), so **one job can
+   scan many GitHub/Bitbucket/GitLab instances**, each credential injected natively by the git plugin
+   — never in an env var, argv, or the URL. This mirrors the app-side per-host
+   `SLOC_GIT_CRED_<HOSTKEY>` registry described above.
+2. **Single Jenkins credential.** Set `SCAN_CREDENTIALS_ID` to one Jenkins credential
    (username+token, or SSH key). Jenkins injects it during the target checkout. Best when the whole
    fan-out is one instance per run.
-2. **Per-host env registry (multi-instance in one run).** Expose the tokens as Jenkins secrets and
-   map them to `SLOC_GIT_CRED_<HOSTKEY>` in the environment for the scan step — handy when a single
-   run touches several instances, or when the app itself does the clone (webhook-triggered scans).
+3. **Per-host env registry (app does the clone).** Expose the tokens as Jenkins secrets and
+   map them to `SLOC_GIT_CRED_<HOSTKEY>` in the environment for the scan step — handy when the app
+   itself does the clone (webhook-triggered scans).
 
-For an **air-gapped agent**, enable offline import with `SLOC_GIT_ALLOW_LOCAL=1` and point
-`SLOC_GIT_LOCAL_ROOT` at the workspace/artifact directory that holds the imported bundle, then pass
-that bundle path as `TARGET_REPO_URL`.
+For an **air-gapped agent**, enable offline import: check the `SCAN_ALLOW_LOCAL` parameter and set
+`SCAN_LOCAL_ROOT` (mapped to `SLOC_GIT_ALLOW_LOCAL` / `SLOC_GIT_LOCAL_ROOT`) to the workspace/artifact
+directory that holds the imported bundle, then pass that bundle path as `SCAN_REPO_URL` (Case B above).
 
 See [ci-integrations.md](ci-integrations.md) and [airgap.md](airgap.md) for full pipeline detail.
 

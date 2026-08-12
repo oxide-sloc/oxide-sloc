@@ -3,11 +3,11 @@
 This demonstrates and tests the oxide-sloc pipeline's **Pipeline-of-Pipelines**
 chaining, which is already built into the current job configuration:
 
-- The Jenkinsfile exposes `UPSTREAM_JOB`, `UPSTREAM_BUILD`, and `DOWNSTREAM_JOB`
-  parameters.
+- The Jenkinsfile exposes `CHAIN_UPSTREAM_JOB`, `CHAIN_UPSTREAM_BUILD`, and
+  `CHAIN_DOWNSTREAM_JOB` parameters.
 - On success, `runPostSuccess()` (in `ci/jenkins/pipeline-helpers.groovy`)
-  fires `build job: params.DOWNSTREAM_JOB` — fire-and-forget (`wait: false,
-  propagate: false`) — passing `UPSTREAM_JOB`, `UPSTREAM_BUILD`, and
+  fires `build job: params.CHAIN_DOWNSTREAM_JOB` — fire-and-forget (`wait: false,
+  propagate: false`) — passing `CHAIN_UPSTREAM_JOB`, `CHAIN_UPSTREAM_BUILD`, and
   `ARTIFACT_PATH` down to it.
 
 No change to the `oxide-sloc` job is required. The seed here only adds the two
@@ -16,11 +16,11 @@ No change to the `oxide-sloc` job is required. The seed here only adds the two
 ```
 oxide-sloc-chain-upstream          (orchestrator you start)
         │   build job: 'oxide-sloc', wait: true, propagate: true
-        │   passes DOWNSTREAM_JOB, UPSTREAM_JOB, UPSTREAM_BUILD, SKIP_* flags
+        │   passes CHAIN_DOWNSTREAM_JOB, CHAIN_UPSTREAM_JOB, CHAIN_UPSTREAM_BUILD, BUILD_MODE
         ▼
      oxide-sloc                     (the real pipeline)
-        │   post { success } → build job: DOWNSTREAM_JOB, wait: false
-        │   passes UPSTREAM_JOB=oxide-sloc, UPSTREAM_BUILD=#N, ARTIFACT_PATH
+        │   post { success } → build job: CHAIN_DOWNSTREAM_JOB, wait: false
+        │   passes CHAIN_UPSTREAM_JOB=oxide-sloc, CHAIN_UPSTREAM_BUILD=#N, ARTIFACT_PATH
         ▼
 oxide-sloc-chain-downstream         (consumer; prints the hand-off, copies artifacts)
 ```
@@ -45,9 +45,9 @@ This creates `oxide-sloc-chain-upstream` and `oxide-sloc-chain-downstream`.
 Build **`oxide-sloc-chain-upstream`** (Build with Parameters — the defaults are
 fine; `SCAN_PATH` defaults to `testing/fixtures/basic`).
 
-It runs `SKIP_QUALITY_GATES=true` and `SKIP_WEB_CHECK=true` so the demo is fast:
-oxide-sloc still builds, scans, and reports, but skips fmt/lint/test and the web
-health check.
+It leaves `RUN_QUALITY_GATES` and `RUN_WEB_HEALTHCHECK` at their defaults (both off)
+so the demo is fast: on the default `BUILD_MODE=prebuilt` path oxide-sloc extracts the
+committed binary, scans, and reports, skipping fmt/lint/test and the web health check.
 
 ## 3. What you should see (chain verified)
 
@@ -83,10 +83,10 @@ optional.
 ## Verifying the two directions independently
 
 - **Downstream trigger** (oxide-sloc → consumer): run `oxide-sloc` directly with
-  `DOWNSTREAM_JOB = oxide-sloc-chain-downstream`. A downstream build appears on
+  `CHAIN_DOWNSTREAM_JOB = oxide-sloc-chain-downstream`. A downstream build appears on
   success.
 - **Upstream trigger** (orchestrator → oxide-sloc): that's what
-  `oxide-sloc-chain-upstream` does; `UPSTREAM_JOB`/`UPSTREAM_BUILD` show up in
+  `oxide-sloc-chain-upstream` does; `CHAIN_UPSTREAM_JOB`/`CHAIN_UPSTREAM_BUILD` show up in
   the oxide-sloc build's parameters.
 
 ## Cleanup

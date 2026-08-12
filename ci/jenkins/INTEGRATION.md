@@ -20,13 +20,16 @@ Bitbucket Cloud/Server, and `file://` all work the same way.
 
 | Parameter | Value |
 |---|---|
-| `TARGET_REPO_URL` | your repo's Git URL, e.g. `https://gitlab.com/acme/widgets.git` |
-| `TARGET_REF` | branch / tag / SHA (blank defaults to `main` — set e.g. `master` for repos whose default branch is not `main`) |
-| `TARGET_CREDENTIALS_ID` | a Jenkins credential ID — **only for private repos** |
+| `SCAN_REPO_URL` | your repo's Git URL, e.g. `https://gitlab.com/acme/widgets.git` |
+| `SCAN_REF` | branch / tag / SHA (blank defaults to `main` — set e.g. `master` for repos whose default branch is not `main`) |
+| `SCAN_CREDENTIALS_ID` | a Jenkins credential ID — **only for private repos** (for several instances in one run, use `SCAN_GIT_CREDENTIALS` instead) |
 | `SCAN_PATH` | **blank = scan the whole repo** (or `src`, `packages/api`, …) |
 
-Everything below the `CHANGE_DEFAULT_SCAN_SETTINGS` divider is optional and
-pre-set to sensible defaults. **Point at the repo, hit Build — that's it.**
+Everything else on the form is optional and pre-set to sensible defaults —
+**point at the repo, hit Build, that's it.** By default the job runs the fast path
+(`BUILD_MODE=prebuilt`: extract the committed `dist/` binary, no toolchain/compile/tests/lint,
+~2-3 min); set `BUILD_MODE=source` or check `RUN_QUALITY_GATES` / `RUN_COVERAGE` to build from
+the vendored crates.
 
 ### Private repos — one-time credential setup
 
@@ -36,17 +39,20 @@ pre-set to sensible defaults. **Point at the repo, hit Build — that's it.**
    = a **personal access token** with read/clone scope.
    For an **SSH** URL (`git@…` / `ssh://`): *SSH Username with private key*.
 3. Give it a memorable **ID** (e.g. `acme-scm`) and paste that ID into
-   `TARGET_CREDENTIALS_ID`.
+   `SCAN_CREDENTIALS_ID`.
 
-Leave `TARGET_CREDENTIALS_ID` blank for public repos, or when the Jenkins agent
+Leave `SCAN_CREDENTIALS_ID` blank for public repos, or when the Jenkins agent
 already has git access (SSH agent / credential helper / local mirror).
 
-> **Scanning several instances in one run, or letting the app do the clone?** Instead of (or in
-> addition to) `TARGET_CREDENTIALS_ID`, expose tokens as Jenkins secrets and map them to
-> per-host env vars `SLOC_GIT_CRED_<HOSTKEY>=user:token` for the scan step — oxide-sloc then
-> authenticates each host on its own. For an **air-gapped agent**, set `SLOC_GIT_ALLOW_LOCAL=1`
-> + `SLOC_GIT_LOCAL_ROOT=<workspace dir>` and pass an imported `*.bundle` path as
-> `TARGET_REPO_URL`. Full guide: [../../docs/multi-instance.md](../../docs/multi-instance.md).
+> **Scanning several instances in one run?** Use the multi-line `SCAN_GIT_CREDENTIALS` parameter
+> (one `host=jenkins-credentials-id` per line). The pipeline auto-selects the Jenkins credential
+> whose host matches `SCAN_REPO_URL` (falling back to `SCAN_CREDENTIALS_ID`), so one job scans many
+> GitHub/Bitbucket/GitLab instances, each injected natively by the git plugin. Alternatively, when
+> the **app** does the clone (webhook-triggered scans), expose tokens as Jenkins secrets and map them
+> to per-host env vars `SLOC_GIT_CRED_<HOSTKEY>=user:token`. For an **air-gapped agent**, check
+> `SCAN_ALLOW_LOCAL` and set `SCAN_LOCAL_ROOT=<workspace dir>` (→ `SLOC_GIT_ALLOW_LOCAL` /
+> `SLOC_GIT_LOCAL_ROOT`) and pass an imported `*.bundle` path as `SCAN_REPO_URL`. Full guide:
+> [../../docs/multi-instance.md](../../docs/multi-instance.md).
 
 ---
 
@@ -67,9 +73,9 @@ Store `JENKINS_URL`, `JENKINS_USER`, `JENKINS_TOKEN` as secrets in your CI.
     curl -fsS -X POST \
       --user "${{ secrets.JENKINS_USER }}:${{ secrets.JENKINS_TOKEN }}" \
       "${{ secrets.JENKINS_URL }}/job/oxide-sloc/buildWithParameters" \
-      --data-urlencode "TARGET_REPO_URL=${{ github.server_url }}/${{ github.repository }}.git" \
-      --data-urlencode "TARGET_REF=${{ github.sha }}" \
-      --data-urlencode "TARGET_CREDENTIALS_ID=github-scm"   # omit for public repos
+      --data-urlencode "SCAN_REPO_URL=${{ github.server_url }}/${{ github.repository }}.git" \
+      --data-urlencode "SCAN_REF=${{ github.sha }}" \
+      --data-urlencode "SCAN_CREDENTIALS_ID=github-scm"   # omit for public repos
 ```
 
 ### GitLab CI
@@ -81,9 +87,9 @@ oxide-sloc-scan:
       curl -fsS -X POST
       --user "$JENKINS_USER:$JENKINS_TOKEN"
       "$JENKINS_URL/job/oxide-sloc/buildWithParameters"
-      --data-urlencode "TARGET_REPO_URL=$CI_REPOSITORY_URL"
-      --data-urlencode "TARGET_REF=$CI_COMMIT_SHA"
-      --data-urlencode "TARGET_CREDENTIALS_ID=gitlab-scm"
+      --data-urlencode "SCAN_REPO_URL=$CI_REPOSITORY_URL"
+      --data-urlencode "SCAN_REF=$CI_COMMIT_SHA"
+      --data-urlencode "SCAN_CREDENTIALS_ID=gitlab-scm"
 ```
 
 ### Bitbucket Pipelines
@@ -96,33 +102,46 @@ oxide-sloc-scan:
         curl -fsS -X POST
         --user "$JENKINS_USER:$JENKINS_TOKEN"
         "$JENKINS_URL/job/oxide-sloc/buildWithParameters"
-        --data-urlencode "TARGET_REPO_URL=$BITBUCKET_GIT_HTTP_ORIGIN.git"
-        --data-urlencode "TARGET_REF=$BITBUCKET_COMMIT"
-        --data-urlencode "TARGET_CREDENTIALS_ID=bitbucket-scm"
+        --data-urlencode "SCAN_REPO_URL=$BITBUCKET_GIT_HTTP_ORIGIN.git"
+        --data-urlencode "SCAN_REF=$BITBUCKET_COMMIT"
+        --data-urlencode "SCAN_CREDENTIALS_ID=bitbucket-scm"
 ```
 
-### Auto-scan on every push (webhook, optional)
+### Auto-scan on release / tag / push (webhook, optional)
 
-Install the **Generic Webhook Trigger** plugin, add a webhook on your repo
-pointing at `${JENKINS_URL}/generic-webhook-trigger/invoke?token=...`, and map the
-payload's clone-URL + commit fields to `TARGET_REPO_URL` / `TARGET_REF`. Then a
-scan runs automatically on every push with no code in your repo at all.
+`ci/jenkins/render-job-config.sh` renders an optional **Generic Webhook Trigger** into the job
+when you export `SLOC_ENABLE_WEBHOOK_TRIGGER=1` before rendering. It requires the
+`generic-webhook-trigger` plugin (now in `ci/jenkins/plugins.txt`). A GitHub/Bitbucket **release**
+or tag push that POSTs to `<JENKINS_URL>/generic-webhook-trigger/invoke?token=<SLOC_WEBHOOK_TRIGGER_TOKEN>`
+maps the pushed tag into `SCAN_REF` and the repo clone URL into `SCAN_REPO_URL`, so the scan runs
+automatically with no code in your repo at all. `SLOC_WEBHOOK_TRIGGER_TOKEN` defaults to `oxide-sloc`.
+
+The tag/URL JSONPaths default to a GitHub **release** payload and are overridable via
+`SLOC_WEBHOOK_TAG_JSONPATH` / `SLOC_WEBHOOK_URL_JSONPATH`:
+
+| Event source | Tag JSONPath |
+|---|---|
+| GitHub release (default) | `$.release.tag_name` |
+| GitHub tag push | `$.ref` |
+| Bitbucket Server/DC + Cloud tag push | `$.push.changes[0].new.name` |
+
+Full setup with examples: [`../../docs/ci-integrations.md` § Release / tag webhook trigger](../../docs/ci-integrations.md#release--tag-webhook-trigger-auto-scan-on-release).
 
 ---
 
 ## Chaining external scans (Pipeline-of-Pipelines)
 
-`oxide-sloc` can trigger a downstream job on success (`DOWNSTREAM_JOB`) and be
-triggered by an upstream orchestrator — see `ci/jenkins/demo/`. Chaining does not
-auto-forward the target params, so an orchestrator that wants a specific repo
-scanned passes them explicitly:
+`oxide-sloc` can trigger a downstream job on success (`CHAIN_DOWNSTREAM_JOB`) and be
+triggered by an upstream orchestrator — see `ci/jenkins/demo/`. An oxide-sloc → oxide-sloc
+chain works. Chaining does not auto-forward the scan params, so an orchestrator that wants a
+specific repo scanned passes them explicitly:
 
 ```groovy
 build job: 'oxide-sloc', wait: true, parameters: [
-  string(name: 'TARGET_REPO_URL',       value: 'https://github.com/acme/widgets.git'),
-  string(name: 'TARGET_REF',            value: 'main'),
-  string(name: 'TARGET_CREDENTIALS_ID', value: 'github-scm'),   // private repos
-  string(name: 'DOWNSTREAM_JOB',        value: 'oxide-sloc-chain-downstream'),
+  string(name: 'SCAN_REPO_URL',        value: 'https://github.com/acme/widgets.git'),
+  string(name: 'SCAN_REF',             value: 'main'),
+  string(name: 'SCAN_CREDENTIALS_ID',  value: 'github-scm'),   // private repos
+  string(name: 'CHAIN_DOWNSTREAM_JOB', value: 'oxide-sloc-chain-downstream'),
 ]
 ```
 
@@ -140,7 +159,7 @@ points for chained topologies:
 - `runBitbucketNotify()` uses **that build's own** `GIT_COMMIT` and
   `SLOC_PROJECT`, so a fan-out over N repos produces N independent Confluence
   pages / N commit statuses — no cross-talk.
-- The `DOWNSTREAM_JOB` is triggered from `post { success }` **before** cleanup;
+- The `CHAIN_DOWNSTREAM_JOB` is triggered from `post { success }` **before** cleanup;
   the notify in `post { always }` is independent of whether a downstream job is
   configured, and a downstream failure does not suppress the notify.
 - Re-using the same `CONFLUENCE_PAGE_TITLE` across chained builds updates one page
@@ -247,17 +266,17 @@ Bitbucket status and Confluence page anyway (Tier-3).
 
 ## Notes
 
-- `REPO_URL` (far down, optional) is the **tooling** repo the scanner is built
+- `TOOL_REPO_URL` (far down, optional) is the **tooling** repo the scanner is built
   from — your instance, fork, or mirror. It is *not* the repo you scan; that's
-  `TARGET_REPO_URL`. **No internet URL is hardcoded anywhere.** It resolves in
-  order: the `REPO_URL` build parameter → the `REPO_URL` environment variable
-  (a Jenkins global property, typically sourced from `ci/jenkins/.env`) → the
-  job's own configured SCM (`checkout scm`). Leave it **blank on an air-gapped
-  controller** whose job already points at a local mirror and the build never
-  reaches out to github.com. `REPO_BRANCH` (default `main`) overrides the ref
-  when you set an explicit `REPO_URL`. Use a concrete ref, not the wildcard
+  `SCAN_REPO_URL`. **No internet URL is hardcoded anywhere.** It resolves in
+  order: the `TOOL_REPO_URL` build parameter → the `TOOL_REPO_URL` environment variable →
+  the `REPO_URL` environment variable (a Jenkins global property, typically sourced from
+  `ci/jenkins/.env`, unchanged and still valid as a fallback) → the job's own configured SCM
+  (`checkout scm`). Leave it **blank on an air-gapped controller** whose job already points at
+  a local mirror and the build never reaches out to github.com. `TOOL_REPO_BRANCH` overrides
+  the ref when you set an explicit `TOOL_REPO_URL`. Use a concrete ref, not the wildcard
   `*/main`: lightweight (jgit) SCM checkout NPEs on a wildcard at Jenkinsfile load.
-- `SCAN_PATH` is resolved **inside the target repo** when `TARGET_REPO_URL` is
+- `SCAN_PATH` is resolved **inside the target repo** when `SCAN_REPO_URL` is
   set. Blank scans the whole repo; a bad subtree fails fast with a clear message.
 - Serve Jenkins over HTTPS (`ci/jenkins/https/`) before sending tokens over the
   API — plain HTTP exposes them in transit.

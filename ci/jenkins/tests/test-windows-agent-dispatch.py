@@ -221,11 +221,14 @@ def test_jenkinsfile():
           not re.search(r"^\s*timestamps\(\)", code, re.MULTILINE),
           "timestamps() must be removed for minimal-controller compatibility")
 
-    # F5: the Build stage must unset CC (and CXX) so the airgap-devkit gcc can't
-    # conflict with the MinGW gcc the windows-gnu target links with.
-    check("Jenkinsfile: Build stage unsets CC/CXX",
-          re.search(r"unset\s+CC\s+CXX", code) is not None,
-          "the Build shx body must start with `unset CC CXX`")
+    # F5: the source build must unset CC (and CXX) so the airgap-devkit gcc can't
+    # conflict with the MinGW gcc the windows-gnu target links with. The build shx
+    # body now lives in runBuild() in pipeline-helpers.groovy (the Jenkinsfile Build
+    # stage just delegates to h.runBuild()), so assert the invariant there.
+    helpers_src = read(HELPERS)
+    check("helpers: runBuild source path unsets CC/CXX",
+          re.search(r"unset\s+CC\s+CXX", helpers_src) is not None,
+          "the source-build shx body in runBuild() must start with `unset CC CXX`")
 
     # F7: cleanWs() must catch Throwable (a missing ws-cleanup plugin throws
     # NoSuchMethodError, a java.lang.Error, which catch(Exception) would let escape).

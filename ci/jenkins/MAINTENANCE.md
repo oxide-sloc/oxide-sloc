@@ -29,7 +29,7 @@ mechanisms that keep a long-running instance healthy, and how to tune them.
 ## Security
 
 - **Least-privilege parameters** — `SCAN_PATH`, `OUTPUT_SUBDIR`, globs, languages,
-  and `TARGET_REF` are regex-validated in `runAnalyze` before use.
+  and `SCAN_REF` are regex-validated in `runAnalyze` before use.
 - **Credentials, never inline** — artifact-repo, Bitbucket, Confluence, SMTP, and
   webhook secrets are pulled from the Jenkins credential store; every integration
   no-ops cleanly when its credential is absent.
@@ -44,17 +44,17 @@ mechanisms that keep a long-running instance healthy, and how to tune them.
 ## Build parameters — quick scan vs. advanced
 
 The `Jenkinsfile` `parameters {}` block is ordered **required-first**: a quick
-scan needs only `SCAN_PATH`. Everything below the `CHANGE_DEFAULT_SCAN_SETTINGS`
-checkbox is optional and pre-set to oxide-sloc's application defaults, so leaving
-it all untouched produces a standard default scan.
+scan needs only `SCAN_REPO_URL` (blank scans oxide-sloc itself) and optionally
+`SCAN_PATH`. Everything else is optional and pre-set to oxide-sloc's application
+defaults, so leaving it all untouched produces a standard default scan on the fast
+prebuilt path (`BUILD_MODE=prebuilt`).
 
 ### True collapse/hide (optional, needs a plugin)
 
-Jenkins' built-in "Build with Parameters" form cannot *hide* fields based on a
-checkbox without the **Active Choices** (`uno-choice`) plugin, and wiring it in
-requires moving parameter definitions out of the declarative `parameters {}`
-block — which would break the job on any controller that lacks the plugin
-(against this repo's offline-first rule). It is therefore **not enabled by
-default**. If your controller has Active Choices installed and you want the
-advanced fields to appear only when `CHANGE_DEFAULT_SCAN_SETTINGS` is checked,
-that can be added as an opt-in job variant — ask a maintainer to enable it.
+Jenkins' built-in "Build with Parameters" form cannot *hide* the advanced fields
+without the **Active Choices** (`uno-choice`) plugin, and wiring it in requires
+moving parameter definitions out of the declarative `parameters {}` block — which
+would break the job on any controller that lacks the plugin (against this repo's
+offline-first rule). It is therefore **not enabled by default**. If your controller
+has Active Choices installed and you want the advanced fields collapsed behind a
+toggle, that can be added as an opt-in job variant — ask a maintainer to enable it.

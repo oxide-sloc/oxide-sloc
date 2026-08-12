@@ -332,18 +332,20 @@ There are two ways to point oxide-sloc at an arbitrary project. Pick whichever f
 
 | Set this parameter | To |
 |---|---|
-| `TARGET_REPO_URL` | the Git URL of the project you want to analyze |
+| `SCAN_REPO_URL` | the Git URL of the project you want to analyze |
 | `SCAN_PATH` | a path inside that project — `.` for the whole repo, or e.g. `src` |
-| `TARGET_REF` _(optional)_ | a branch, tag, or SHA (defaults to the project's `main`) |
+| `SCAN_REF` _(optional)_ | a branch, tag, or SHA (defaults to the project's `main`) |
 
-The job checks your project out into `./_target`, builds the scanner from the oxide-sloc tooling repo (`REPO_URL`, left at its default), scans it, and publishes the same HTML/JSON/CSV/PDF reports and trend charts. `REPO_URL` stays pointed at oxide-sloc (or your fork) — it only supplies the scanner. Nothing is added to the analyzed project.
+The job checks your project out into `./_target`, builds (or, by default, extracts the committed prebuilt) scanner from the oxide-sloc tooling repo (`TOOL_REPO_URL`, left at its default), scans it, and publishes the same HTML/JSON/CSV/PDF reports and trend charts. `TOOL_REPO_URL` stays pointed at oxide-sloc (or your fork) — it only supplies the scanner. Nothing is added to the analyzed project.
+
+> **Fast by default.** Out of the box the job runs in `prebuilt` mode (`BUILD_MODE=prebuilt`): it extracts the committed `dist/` binary — no Rust toolchain, no vendor compile, no unit tests, no lint — so a standard scan finishes in **~2-3 min** instead of ~40. No parameter changes are needed for the fast path. Set `BUILD_MODE=source` (or check `RUN_QUALITY_GATES` / `RUN_COVERAGE`, which force a source build) to compile from the vendored crates instead.
 
 ```bash
 # Trigger a scan of any repo from the CLI (build #2 onward):
 set -a; source ci/jenkins/.env; set +a
 curl -sS -X POST -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
   "${JENKINS_URL}/job/${JOB_NAME}/buildWithParameters" \
-  --data-urlencode 'TARGET_REPO_URL=https://github.com/acme/widget.git' \
+  --data-urlencode 'SCAN_REPO_URL=https://github.com/acme/widget.git' \
   --data-urlencode 'SCAN_PATH=.' \
   --data-urlencode 'REPORT_TITLE=widget SLOC'
 ```
@@ -351,6 +353,15 @@ curl -sS -X POST -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
 **B. Drop-in per project (self-contained `Jenkinsfile`).** Copy `testing/examples/jenkins/Jenkinsfile` into your project's repository and let Jenkins auto-discover it (**Pipeline script from SCM**, script path `Jenkinsfile`). It scans the checked-out workspace with no edits, installing the scanner from crates.io when it is not already on `PATH`. For a Jenkins **shared library**, use `ci/sloc-jenkins.groovy` (`slocAnalyze(path: '.')`) instead — see the header of that file.
 
 Use **A** for a governance/portfolio scan run centrally; use **B** when each team owns its own pipeline.
+
+**Scanning many git instances from one job.** For a single central job that scans repos across
+several hosts — each with its own credential — set the multi-line `SCAN_GIT_CREDENTIALS` parameter
+(one `host=jenkins-credentials-id` per line). The pipeline auto-selects the Jenkins credential whose
+host matches `SCAN_REPO_URL` (falling back to the single `SCAN_CREDENTIALS_ID` when no line matches),
+injected natively by the git plugin — never in an env var, argv, or the URL. See
+[Scanning multiple git instances](multi-instance.md) for the app-side per-host registry it mirrors.
+For a fully disconnected agent, check `SCAN_ALLOW_LOCAL` and set `SCAN_LOCAL_ROOT`, then pass the
+imported bundle/path as `SCAN_REPO_URL` (air-gap Case B in [multi-instance.md](multi-instance.md)).
 
 #### Option A — GUI setup
 
@@ -395,19 +406,26 @@ curl -sS -X POST -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
 The first build runs with no parameters — Jenkins uses it to discover the `parameters {}` block in the Jenkinsfile. From build #2 onward, **Build with Parameters** in the left-hand sidebar shows the full configurable form.
 
 > **Note:** The SCM URL Jenkins uses to fetch the Jenkinsfile itself comes from
-> `ci/jenkins/job-config.xml` — not from the `REPO_URL` build parameter inside the Jenkinsfile.
+> `ci/jenkins/job-config.xml` — not from the `TOOL_REPO_URL` build parameter inside the Jenkinsfile.
 > The parameter only takes effect from build #2 onward. If the first build fails with
 > `'__placeholder__' does not appear to be a git repository`, re-render `job-config.xml`
-> with `REPO_URL` exported in your environment and re-create the job.
+> with the `REPO_URL` environment variable exported and re-create the job. (The tooling-repo build
+> parameter is now `TOOL_REPO_URL`; the `REPO_URL` environment variable / `.env` value that bakes the
+> job's SCM URL is unchanged and still works as a fallback.)
 
 #### Build parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `REPO_URL` | `https://github.com/oxide-sloc/oxide-sloc.git` | **Tooling repo** — the checkout the scanner binary is built from. Leave at the default (or your fork). To scan a different project, use `TARGET_REPO_URL` instead; do not point `REPO_URL` at the project you want to scan. Use `file:///path/to/repo` for air-gapped repos. |
-| `TARGET_REPO_URL` | _(empty → scan self)_ | Git URL of the **project you want to analyze**. When set, it is checked out into `./_target` and scanned there — this is how one Jenkins job scans any project. Empty = scan the tooling repo itself. Use `file:///path/to/repo` for air-gapped repos. |
-| `TARGET_REF` | _(default branch)_ | Branch, tag, or commit SHA to check out for `TARGET_REPO_URL`. Ignored when `TARGET_REPO_URL` is empty. Example: `develop`, `v2.1.0`, `a3f9d2c`. |
-| `SCAN_PATH` | `testing/fixtures/basic` | Directory or space-separated paths to scan, relative to the scanned repo root (or absolute). When `TARGET_REPO_URL` is set this is relative to `./_target` — set it to a path inside your project (`.` for the whole repo, `src` for a subtree). The default only exists in the oxide-sloc repo. |
+| `TOOL_REPO_URL` | `https://github.com/oxide-sloc/oxide-sloc.git` | **Tooling repo** — the checkout the scanner binary is built (or extracted) from. Leave at the default (or your fork). To scan a different project, use `SCAN_REPO_URL` instead; do not point `TOOL_REPO_URL` at the project you want to scan. Use `file:///path/to/repo` for air-gapped repos. (This is the per-build form field; the `REPO_URL` environment variable / `.env` value is unchanged and still works as a fallback.) |
+| `BUILD_MODE` | `prebuilt` | `prebuilt` (default) extracts the committed `dist/` binary — no toolchain, no vendor compile, no unit tests, no lint — for a ~2-3 min scan. `source` compiles from the vendored crates. `RUN_QUALITY_GATES` / `RUN_COVERAGE` force `source`. |
+| `SCAN_REPO_URL` | _(empty → scan self)_ | Git URL of the **project you want to analyze**. When set, it is checked out into `./_target` and scanned there — this is how one Jenkins job scans any project. Empty = scan the tooling repo itself. Use `file:///path/to/repo` for air-gapped repos, or an imported `*.bundle` with `SCAN_ALLOW_LOCAL`. |
+| `SCAN_REF` | _(default branch)_ | Branch, tag, or commit SHA to check out for `SCAN_REPO_URL`. Ignored when `SCAN_REPO_URL` is empty. Example: `develop`, `v2.1.0`, `a3f9d2c`. |
+| `SCAN_CREDENTIALS_ID` | _(empty)_ | Jenkins credential ID for a **private** `SCAN_REPO_URL` (username+token, or SSH key). For several instances in one run, use `SCAN_GIT_CREDENTIALS` instead. |
+| `SCAN_GIT_CREDENTIALS` | _(empty)_ | Multi-line `host=jenkins-credentials-id` map. The pipeline auto-selects the credential whose host matches `SCAN_REPO_URL` (falling back to `SCAN_CREDENTIALS_ID`), so one job scans many hosts. See [multi-instance.md](multi-instance.md). |
+| `SCAN_ALLOW_LOCAL` | false | Permit offline import (git bundle / `file://` / local path) when the source cannot be reached. Maps to the app's `SLOC_GIT_ALLOW_LOCAL`. Fail-closed: also set `SCAN_LOCAL_ROOT`. Pass the bundle/path as `SCAN_REPO_URL`. |
+| `SCAN_LOCAL_ROOT` | _(empty)_ | Directory an offline `SCAN_REPO_URL` source must resolve under (required when `SCAN_ALLOW_LOCAL` is checked). Maps to `SLOC_GIT_LOCAL_ROOT`. Sources outside it, plus UNC / `file://host`, are refused. |
+| `SCAN_PATH` | `testing/fixtures/basic` | Directory or space-separated paths to scan, relative to the scanned repo root (or absolute). When `SCAN_REPO_URL` is set this is relative to `./_target` — set it to a path inside your project (`.` for the whole repo, `src` for a subtree). The default only exists in the oxide-sloc repo. |
 | `REPORT_TITLE` | `oxide-sloc CI Report` | Title embedded in generated HTML and PDF reports. |
 | `OUTPUT_SUBDIR` | `ci-out` | Sub-directory for all generated artifacts (relative to workspace). Created automatically. Contains `report.html`, `result.json`, `report.pdf`, and trend CSVs. |
 | `CI_PRESET` | `default` | CI configuration preset loaded from `ci/`: `default` (balanced, mirrors web UI) / `none` (no preset) / `strict` (fail on binary files) / `full-scope` (count everything including vendor). |
@@ -420,19 +438,19 @@ The first build runs with no parameters — Jenkins uses it to discover the `par
 | `ENABLED_LANGUAGES` | _(all)_ | Comma-separated language filter, e.g. `rust,python`. |
 | `INCLUDE_GLOBS` | _(all)_ | Comma-separated include glob patterns, e.g. `src/**/*.py`. |
 | `EXCLUDE_GLOBS` | _(none)_ | Comma-separated exclude glob patterns, e.g. `vendor/**`. |
-| `GENERATE_HTML` | true | Write HTML report and publish as the `OxideSLOC_CI_Report_<proj-slug>` sidebar link (`<proj-slug>` = `oxide-sloc_<short-sha>`; project-level, so the URL changes each commit). Requires HTML Publisher plugin. |
-| `GENERATE_PDF` | true | Write PDF report alongside the HTML report. Pure-Rust generation — no browser or external tool required on the agent. When enabled, the "View PDF" button in the HTML report opens the archived PDF directly. |
-| `SKIP_QUALITY_GATES` | false | Skip fmt / clippy / unit-test stage for scan-only runs. |
-| `SKIP_WEB_CHECK` | true | Skip the web UI health-check stage. Use on agents without loopback access or where port 4317 is unavailable. |
-| `WEBHOOK_URL` | _(skip)_ | POST JSON result here after scan. Add `SLOC_WEBHOOK_TOKEN` Secret Text credential for Bearer auth. |
-| `EMAIL_RECIPIENTS` | _(skip)_ | Comma-separated recipients. Requires `SLOC_SMTP_HOST`, `SLOC_SMTP_USER`, `SLOC_SMTP_PASS` credentials. |
+| `REPORT_HTML` | true | Write HTML report and publish as the `OxideSLOC_CI_Report_<proj-slug>` sidebar link (`<proj-slug>` = `oxide-sloc_<short-sha>`; project-level, so the URL changes each commit). Requires HTML Publisher plugin. |
+| `REPORT_PDF` | true | Write PDF report alongside the HTML report. Pure-Rust generation — no browser or external tool required on the agent. When enabled, the "View PDF" button in the HTML report opens the archived PDF directly. |
+| `RUN_QUALITY_GATES` | false | **Off by default** — a standard scan skips the fmt / clippy / unit-test stage entirely. Check it to run the quality gates; this also implies a source build (`BUILD_MODE=source`, since the toolchain is needed to compile and lint). |
+| `RUN_WEB_HEALTHCHECK` | false | **Off by default** — the web UI health-check stage is skipped. Check it to run the check. Enable only on agents with loopback access where port 4317 is available. |
+| `NOTIFY_WEBHOOK_URL` | _(skip)_ | POST JSON result here after scan. Add `SLOC_WEBHOOK_TOKEN` Secret Text credential for Bearer auth. |
+| `NOTIFY_EMAIL` | _(skip)_ | Comma-separated recipients. Requires `SLOC_SMTP_HOST`, `SLOC_SMTP_USER`, `SLOC_SMTP_PASS` credentials. |
 | `ARTIFACT_REPO_TYPE` | `none` | Artifact repository backend: `none` / `artifactory` / `nexus` / `nexus2` / `s3` / `minio` / `azure-blob` / `generic-http`. |
 | `ARTIFACT_REPO_URL` | _(empty)_ | Base URL of the artifact repository (see [Artifact Repository Integration](#artifact-repository-integration)). |
 | `ARTIFACT_REPO_PATH` | `oxide-sloc/${JOB_NAME}/${BUILD_NUMBER}` | Path prefix for uploaded artifacts. Tokens `${JOB_NAME}` and `${BUILD_NUMBER}` are substituted at runtime. |
 | `ARTIFACT_REPO_EXTRA` | _(empty)_ | Provider-specific config: Nexus repo name, Azure container name, MinIO endpoint URL, or extra S3 flags. |
 | `ARTIFACT_PUSH_JSON` | true | Include `result.json` in the artifact repository push. |
-| `ARTIFACT_PUSH_HTML` | true | Include `report.html` in the push (only when `GENERATE_HTML` is checked). |
-| `ARTIFACT_PUSH_PDF` | false | Include `report.pdf` in the push (only when `GENERATE_PDF` is checked). |
+| `ARTIFACT_PUSH_HTML` | true | Include `report.html` in the push (only when `REPORT_HTML` is checked). |
+| `ARTIFACT_PUSH_PDF` | false | Include `report.pdf` in the push (only when `REPORT_PDF` is checked). |
 
 > **JSON is always generated** regardless of parameters — it is required for build-over-build trend plots, the build description summary, and the `send` delivery subcommand.
 
@@ -442,8 +460,8 @@ The pipeline's webhook and email delivery features read credentials from the Jen
 
 | Credential ID | Used for |
 |---------------|----------|
-| `SLOC_WEBHOOK_TOKEN` | Bearer token for `WEBHOOK_URL` delivery |
-| `SLOC_SMTP_HOST` | SMTP host for `EMAIL_RECIPIENTS` delivery |
+| `SLOC_WEBHOOK_TOKEN` | Bearer token for `NOTIFY_WEBHOOK_URL` delivery |
+| `SLOC_SMTP_HOST` | SMTP host for `NOTIFY_EMAIL` delivery |
 | `SLOC_SMTP_USER` | SMTP username |
 | `SLOC_SMTP_PASS` | SMTP password |
 | `SLOC_ARTIFACT_REPO_USER` | Username or access-key ID for artifact repository push |
@@ -494,6 +512,39 @@ After at least two successful builds, the job page shows two charts under **SLOC
 - **Per-language code lines** — bar chart of code lines by language for recent builds (`per_language.csv`)
 
 The build description on each run is also set automatically, e.g.: `code=4821  files=38  comments=312  blank=890`
+
+#### Release / tag webhook trigger (auto-scan on release)
+
+`ci/jenkins/render-job-config.sh` can render an optional **Generic Webhook Trigger** into the job so
+a GitHub/Bitbucket **release** or tag push kicks off a scan automatically. Enable it by exporting
+`SLOC_ENABLE_WEBHOOK_TRIGGER=1` before rendering the job XML; it requires the
+`generic-webhook-trigger` plugin (now listed in `ci/jenkins/plugins.txt`).
+
+Once rendered, a release/tag event that POSTs to
+`<JENKINS_URL>/generic-webhook-trigger/invoke?token=<SLOC_WEBHOOK_TRIGGER_TOKEN>` maps the pushed tag
+into `SCAN_REF` and the repo clone URL into `SCAN_REPO_URL`, so the pushed tag is scanned with no
+code added to the target repo. `SLOC_WEBHOOK_TRIGGER_TOKEN` defaults to `oxide-sloc`.
+
+The tag and URL are extracted from the payload via JSONPath, overridable at render time with
+`SLOC_WEBHOOK_TAG_JSONPATH` / `SLOC_WEBHOOK_URL_JSONPATH`:
+
+| Event source | Tag JSONPath | Clone-URL JSONPath | Webhook to add on the repo |
+|---|---|---|---|
+| **GitHub release** (default) | `$.release.tag_name` | `$.repository.clone_url` | payload URL above, "Let me select individual events" → **Releases** |
+| **GitHub tag push** | `$.ref` | `$.repository.clone_url` | same URL, event **Pushes** (tag refs) |
+| **Bitbucket Server/DC + Cloud tag push** | `$.push.changes[0].new.name` | `$.repository.links.clone[0].href` | Repository settings → Webhooks → the payload URL above |
+
+```bash
+# Render the job with the release-webhook trigger enabled:
+SLOC_ENABLE_WEBHOOK_TRIGGER=1 \
+SLOC_WEBHOOK_TRIGGER_TOKEN=my-secret-token \
+bash ci/jenkins/render-job-config.sh   # writes /tmp/job-config.xml, then createItem as usual
+```
+
+For push-side triggering from another CI system (rather than a repo webhook), and for
+**upstream/downstream chaining** (`CHAIN_UPSTREAM_JOB` / `CHAIN_UPSTREAM_BUILD` /
+`CHAIN_DOWNSTREAM_JOB`, including an oxide-sloc → oxide-sloc chain), see
+[`ci/jenkins/INTEGRATION.md`](../ci/jenkins/INTEGRATION.md).
 
 #### Setting the artifact-viewer CSP
 
@@ -881,7 +932,7 @@ so they are masked in the log:
 
 `GIT_COMMIT` (the commit the Bitbucket status attaches to) is resolved
 automatically by the `Checkout` stage: for a self-scan it is the tooling repo's
-HEAD; when `TARGET_REPO_URL` is set it is the **scanned** repo's commit, so the
+HEAD; when `SCAN_REPO_URL` is set it is the **scanned** repo's commit, so the
 status lands on the commit that was actually analyzed.
 
 ### Cloud vs Server/DC differences
@@ -1506,7 +1557,7 @@ The step stages the compiled binary and scan reports (`result.json`, `report.htm
 | `SLOC_GIT_REQUIRE_ALLOWLIST` | All modes | `1`/`true` to fail-closed unless the host is allowlisted          |
 | `SLOC_GIT_SSL_NO_VERIFY` | All modes | Last-resort: disable TLS verification (self-signed CA not in any trust store) |
 | `SLOC_GIT_TIMEOUT`    | All modes   | Per-git-subprocess wall-clock ceiling in seconds (default 300)         |
-| `SKIP_WEB_CHECK`      | Jenkins     | Skip the web UI health-check stage; set to any non-empty value         |
+| `RUN_WEB_HEALTHCHECK` | Jenkins     | Web UI health-check stage build parameter; **off by default** — check it to run the check |
 | `SLOC_SMTP_HOST`      | `send`      | SMTP host (alternative to `--smtp-host`)                               |
 | `SLOC_SMTP_USER`      | `send`      | SMTP username (alternative to `--smtp-user`)                           |
 | `SLOC_SMTP_PASS`      | `send`      | SMTP password — prefer this over `--smtp-pass` to keep creds out of process listings |

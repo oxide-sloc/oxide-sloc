@@ -71,6 +71,13 @@ warnings-ng                 # recordIssues() — trend graphs + per-issue drill-
 job-dsl                     # Executes ci/jenkins/seed-job.groovy to create the pipeline job
 copyartifact                # Copies artifacts to/from downstream jobs in Pipeline-of-Pipelines
 
+# ── Triggers (optional) ────────────────────────────────────────────────────────
+# Enables the release/tag webhook trigger rendered by render-job-config.sh when
+# SLOC_ENABLE_WEBHOOK_TRIGGER=1 (a GitHub/Bitbucket release or tag push starts the
+# scan and maps the pushed tag into SCAN_REF). Optional — only needed for webhook
+# triggering; the pipeline runs fine without it. See docs/ci-integrations.md.
+generic-webhook-trigger          # GenericTrigger — release/tag webhook -> pipeline (optional)
+
 # ── SCM integrations (optional) ───────────────────────────────────────────────
 # These two plugins are genuinely optional — the pipeline degrades gracefully
 # when they are absent (the post{always} bitbucketStatusNotify call is wrapped

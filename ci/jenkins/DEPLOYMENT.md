@@ -20,7 +20,7 @@ build. When a plugin is absent, the underlying data is still produced and
 | Plugin | Used for |
 |---|---|
 | `workflow-aggregator` (Pipeline) | the declarative pipeline itself |
-| `git` | cloning REPO_URL / TARGET_REPO_URL |
+| `git` | cloning TOOL_REPO_URL / SCAN_REPO_URL |
 | `credentials-binding` | `withCredentials` (API token, SCM creds) |
 | `pipeline-utility-steps` | `readJSON` in the build summary |
 | `ws-cleanup` | `cleanWs()` in post-cleanup |
@@ -103,12 +103,13 @@ the workspace `.cargo/config.toml` source replacement and fails with
 After the rebuild:
 
 - **Test Result** appears once a build sets `TEST_RUNNER=cargo-nextest`
-  (`PUBLISH_TEST_RESULTS` defaults to true). The default `TEST_RUNNER` is
-  `cargo-test` so a bare agent stays green; with nextest baked into the image as
-  above, selecting `cargo-nextest` yields the Test Result view with no fallback.
-- **Coverage** appears when a build runs with `COVERAGE_STANDALONE=true` (left
-  opt-in: it recompiles instrumented, ~4-5 min/build, and runs oxide-sloc's *own*
-  llvm-cov — meaningful for self-CI, not external-repo scans). The view is served
+  (`PUBLISH_TEST_RESULTS` defaults to true; note the test stage only runs when
+  `RUN_QUALITY_GATES` is checked, which forces a source build). The default
+  `TEST_RUNNER` is `cargo-test` so a bare agent stays green; with nextest baked into
+  the image as above, selecting `cargo-nextest` yields the Test Result view with no fallback.
+- **Coverage** appears when a build runs with `RUN_COVERAGE=true` (left
+  opt-in: it implies `BUILD_MODE=source`, recompiles instrumented, ~4-5 min/build, and runs
+  oxide-sloc's *own* llvm-cov — meaningful for self-CI, not external-repo scans). The view is served
   at **`/job/<job>/<n>/coverage/`**. SonarQube imports coverage from **LCOV**, not
   the Cobertura XML, so the Cobertura duplicate-element quirk doesn't affect it.
 
@@ -119,7 +120,7 @@ Create these under **Manage Jenkins → Credentials** (IDs must match exactly):
 | Credential ID | Type | Enables |
 |---|---|---|
 | `jenkins-api-token` | Secret text (a valid **admin** API token) | plugin-capability detection → dashboard shows full mode instead of the degraded banner; also the CSP relaxation for the interactive dashboard charts |
-| `<your-scm-cred>` | Username+token / SSH key | cloning **private** target repos (pass its ID as the `TARGET_CREDENTIALS_ID` build param) — see `ci/jenkins/INTEGRATION.md` |
+| `<your-scm-cred>` | Username+token / SSH key | cloning **private** target repos (pass its ID as the `SCAN_CREDENTIALS_ID` build param, or map several hosts via `SCAN_GIT_CREDENTIALS`) — see `ci/jenkins/INTEGRATION.md` |
 | `bitbucket-build-token` | Secret text | pushing build status to Bitbucket (optional) |
 | `confluence-api-token` | Secret text | Confluence page upsert (optional) |
 
