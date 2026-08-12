@@ -660,11 +660,32 @@ def runCoverage() {
 
     shx '''
         if ! cargo llvm-cov --version >/dev/null 2>&1; then
-            echo "Installing cargo-llvm-cov from vendor (offline)..."
-            cargo install --offline cargo-llvm-cov || \
-                echo "WARNING: cargo-llvm-cov unavailable; tarpaulin fallback will be used."
+            if [ -d vendor/cargo-llvm-cov ]; then
+                echo "Installing cargo-llvm-cov from vendor (offline)..."
+                # Registry-form `cargo install --offline cargo-llvm-cov` ignores the
+                # workspace vendored-source replacement and fails with "could not find
+                # 'cargo-llvm-cov' in registry 'crates-io'". Copy the vendored crate out
+                # and install by --path so its dependency tree resolves against vendor/
+                # (mirrors the verified-working cargo-nextest offline install above).
+                mkdir -p .ci-tools
+                cp -r vendor/cargo-llvm-cov .ci-tools/
+                cargo install --offline --path .ci-tools/cargo-llvm-cov \
+                    > .llvmcov-install.log 2>&1 \
+                    || echo "cargo-llvm-cov offline install failed (see .llvmcov-install.log); will degrade."
+            else
+                echo "cargo-llvm-cov is not vendored under vendor/ — skipping offline install."
+            fi
         fi
-        rustup component add llvm-tools 2>/dev/null || true
+        # Announce a fallback ONLY for a tool that is actually present, so the console
+        # never claims a fallback it cannot run. generate-coverage.sh does the real work
+        # and reports the final skip when neither tool is available.
+        if cargo llvm-cov --version >/dev/null 2>&1; then
+            rustup component add llvm-tools 2>/dev/null || true
+        elif cargo tarpaulin --version >/dev/null 2>&1; then
+            echo "cargo-llvm-cov unavailable; using cargo-tarpaulin fallback."
+        else
+            echo "Neither cargo-llvm-cov nor cargo-tarpaulin available; coverage will be skipped."
+        fi
     '''
 
     shx "bash ci/sonar/generate-coverage.sh '${coverageDir}'"

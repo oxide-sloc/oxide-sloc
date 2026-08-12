@@ -60,6 +60,12 @@ if [ "${SLOC_ENABLE_WEBHOOK_TRIGGER:-0}" = "1" ] || [ "${SLOC_ENABLE_WEBHOOK_TRI
 <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
       <triggers>
         <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger">
+          <!-- <spec> is REQUIRED even though GenericTrigger is not time-scheduled:
+               hudson.triggers.Trigger.readResolve() calls CronTabList.create(spec) on
+               import, and a null spec throws NPE, causing RobustReflectionConverter to
+               SILENTLY drop the whole trigger (createItem still returns 200, but the live
+               job has no GenericTrigger and the invoke URL 404s). An empty spec is valid. -->
+          <spec></spec>
           <genericVariables>
             <org.jenkinsci.plugins.gwt.GenericVariable>
               <key>SCAN_REF</key>
