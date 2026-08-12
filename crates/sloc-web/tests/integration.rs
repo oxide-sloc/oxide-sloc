@@ -547,10 +547,38 @@ async fn healthz_returns_ok() {
 }
 
 #[tokio::test]
-async fn api_health_alias_returns_ok() {
-    let (status, _, body) = get("/api/health").await;
+async fn api_health_returns_structured_json() {
+    let (status, headers, body) = get("/api/health").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.trim(), "ok");
+    let ct = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(ct.contains("application/json"), "expected JSON, got: {ct}");
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+    // Test router uses a writable temp tree, so every check passes → status "ok".
+    assert_eq!(parsed["status"], "ok");
+    assert_eq!(parsed["name"], "oxide-sloc");
+    assert!(parsed["version"].is_string());
+    assert!(parsed["git_sha"].is_string());
+    assert!(parsed["build_time"].is_string());
+    assert!(parsed["uptime_seconds"].is_number());
+    assert_eq!(parsed["checks"]["registry_writable"], true);
+    assert_eq!(parsed["checks"]["output_dir_writable"], true);
+}
+
+#[tokio::test]
+async fn readyz_returns_ready_when_writable() {
+    let (status, headers, body) = get("/readyz").await;
+    assert_eq!(status, StatusCode::OK);
+    let ct = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(ct.contains("application/json"), "expected JSON, got: {ct}");
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+    assert_eq!(parsed["status"], "ready");
+    assert_eq!(parsed["checks"]["registry_writable"], true);
 }
 
 #[tokio::test]
@@ -570,6 +598,58 @@ async fn api_version_returns_json() {
     assert!(
         parsed["version"].is_string(),
         "version field must be a string"
+    );
+    // Build provenance embedded by build.rs (never absent — falls back to "unknown").
+    assert!(parsed["git_sha"].is_string(), "git_sha must be present");
+    assert!(
+        parsed["build_time"].is_string(),
+        "build_time must be present"
+    );
+}
+
+#[tokio::test]
+async fn large_html_response_is_gzipped_when_accepted() {
+    // A large text/html page with Accept-Encoding: gzip must come back gzip-encoded.
+    let app = make_test_router();
+    let resp = app
+        .oneshot(
+            Request::get("/")
+                .header("accept-encoding", "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok()),
+        Some("gzip"),
+        "home page should be gzip-compressed"
+    );
+    // The body must be a valid gzip stream that inflates to HTML.
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let mut gz = flate2::read::GzDecoder::new(&bytes[..]);
+    let mut html = String::new();
+    std::io::Read::read_to_string(&mut gz, &mut html).expect("valid gzip stream");
+    assert!(
+        html.contains("<html") || html.contains("<!DOCTYPE"),
+        "inflates to HTML"
+    );
+}
+
+#[tokio::test]
+async fn health_is_not_compressed_when_client_declines() {
+    // No Accept-Encoding → response must be sent uncompressed (identity).
+    let app = make_test_router();
+    let resp = app
+        .oneshot(Request::get("/api/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        resp.headers().get("content-encoding").is_none(),
+        "must not compress when the client did not ask for it"
     );
 }
 

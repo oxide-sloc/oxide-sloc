@@ -24,6 +24,7 @@ serde_json = "1"
 subtle = "2"
 flate2 = "1"
 tar = "0.4.46"
+http-body = "1"
 http-body-util = "0.1"
 anyhow.workspace = true
 base64.workspace = true

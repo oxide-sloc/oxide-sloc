@@ -6,6 +6,7 @@
   "repository": "https://github.com/oxide-sloc/oxide-sloc",
   "license": "AGPL-3.0-or-later",
   "runtime": "stdio",
+  "protocolVersion": "2025-06-18",
   "command": "sloc-mcp",
   "env": {
     "SLOC_SERVER_URL": {

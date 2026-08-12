@@ -31,14 +31,18 @@ async fn main() -> anyhow::Result<()> {
         if line.is_empty() {
             continue;
         }
-        let response: McpResponse = match serde_json::from_str::<McpRequest>(&line) {
+        let response: Option<McpResponse> = match serde_json::from_str::<McpRequest>(&line) {
+            // Notifications dispatch to `None` — process side effects, emit no response.
             Ok(req) => srv.dispatch(req).await,
-            Err(e) => McpResponse::parse_error(&e),
+            Err(e) => Some(McpResponse::parse_error(&e)),
         };
-        let mut json = serde_json::to_string(&response)?;
-        json.push('\n');
-        out.write_all(json.as_bytes()).await?;
-        out.flush().await?;
+        // Nothing to write for notifications; JSON-RPC forbids answering them.
+        if let Some(response) = response {
+            let mut json = serde_json::to_string(&response)?;
+            json.push('\n');
+            out.write_all(json.as_bytes()).await?;
+            out.flush().await?;
+        }
     }
 
     Ok(())

@@ -3,6 +3,12 @@
 MCP stdio server that exposes oxide-sloc analysis tools to AI agents (Claude Desktop,
 Claude Code, and any other MCP-compatible host).
 
+Speaks MCP protocol revision **2025-06-18** (negotiated down to `2025-03-26` / `2024-11-05`
+for older clients). Tools carry behaviour annotations (`readOnlyHint`, `openWorldHint`, …) and
+return both a human-readable text block and machine-readable `structuredContent` JSON.
+`SLOC_MCP_ALLOWED_ROOTS` allowlists the directories `analyze_path` / `compare_runs` may read
+(fail-closed; set `SLOC_MCP_UNRESTRICTED=1` for trusted local use).
+
 ## Tools
 
 | Tool | Description |

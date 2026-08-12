@@ -8,8 +8,8 @@ info:
     analysis, unit test detection, and coverage reporting across 60 languages.
 
     **Authentication**: When `SLOC_API_KEY` is set on the server, all endpoints
-    except `/healthz`, `/api/health`, `/api/version`, `/api/openapi.yaml`, and
-    `/badge/{metric}` require `Authorization: Bearer <key>`.
+    except `/healthz`, `/readyz`, `/api/health`, `/api/version`,
+    `/api/openapi.yaml`, and `/badge/{metric}` require `Authorization: Bearer <key>`.
 
     **Base URL**: defaults to `http://127.0.0.1:4317`. Override with `SLOC_BIND`
     or the `--bind` flag when starting the server.
@@ -276,6 +276,65 @@ components:
         version:
           type: string
           example: "1.5.5"
+        git_sha:
+          type: string
+          description: Short git commit the binary was built from, or "unknown".
+          example: "3a0f123"
+        build_time:
+          type: string
+          description: RFC 3339 UTC build timestamp.
+          example: "2026-08-11T12:00:00Z"
+
+    HealthResponse:
+      type: object
+      required: [status, name, version, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          description: "\"ok\" when every dependency check passes; \"degraded\" otherwise."
+          example: ok
+        name:
+          type: string
+          example: "oxide-sloc"
+        version:
+          type: string
+          example: "1.6.14"
+        git_sha:
+          type: string
+          example: "3a0f123"
+        build_time:
+          type: string
+          example: "2026-08-11T12:00:00Z"
+        uptime_seconds:
+          type: integer
+          format: int64
+          description: Seconds since the server process started.
+          example: 3600
+        checks:
+          type: object
+          additionalProperties:
+            type: boolean
+          description: Per-dependency pass/fail flags.
+          example:
+            registry_writable: true
+            output_dir_writable: true
+
+    ReadinessResponse:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+          example: ready
+        checks:
+          type: object
+          additionalProperties:
+            type: boolean
+          example:
+            registry_writable: true
+            output_dir_writable: true
 
     Error:
       type: object
@@ -287,37 +346,64 @@ paths:
   /healthz:
     get:
       operationId: healthCheck
-      summary: Health check
-      description: Returns "ok" when the server is running. No authentication required.
+      summary: Liveness probe
+      description: >-
+        Returns "ok" when the process is up and servicing requests. Trivial and
+        dependency-free — suitable for container/systemd liveness probes. No
+        authentication required.
       security: []
       tags: [Health]
       responses:
         "200":
-          description: Server is healthy.
+          description: Server is alive.
           content:
             text/plain:
               schema:
                 type: string
                 example: ok
 
-  /api/health:
+  /readyz:
     get:
-      operationId: apiHealthCheck
-      summary: Health check (JSON alias)
-      description: Alias for /healthz that returns JSON. No authentication required.
+      operationId: readinessCheck
+      summary: Readiness probe
+      description: >-
+        Returns 200 when the server can persist its registry and write scan
+        artifacts, 503 otherwise. Distinct from /healthz (liveness) so
+        orchestrators can hold traffic off a process that is up but not ready.
+        No authentication required.
       security: []
       tags: [Health]
       responses:
         "200":
-          description: Server is healthy.
+          description: Server is ready to serve requests.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: ok
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: Server is up but a dependency check failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+
+  /api/health:
+    get:
+      operationId: apiHealthCheck
+      summary: Structured health/status
+      description: >-
+        Structured health and build information. Always answers 200 when the
+        process is responsive; the `status` field is "ok" when every dependency
+        check passes and "degraded" otherwise. No authentication required.
+      security: []
+      tags: [Health]
+      responses:
+        "200":
+          description: Health and status details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
 
   /api/version:
     get:

@@ -3,9 +3,20 @@ use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct McpRequest {
-    pub id: Value,
+    /// JSON-RPC 2.0 request id. Absent for notifications, which MUST NOT be
+    /// answered with a response (per the JSON-RPC 2.0 spec).
+    #[serde(default)]
+    pub id: Option<Value>,
     pub method: String,
     pub params: Option<Value>,
+}
+
+impl McpRequest {
+    /// A JSON-RPC notification carries no `id`; the server processes it but
+    /// emits no response.
+    pub fn is_notification(&self) -> bool {
+        self.id.is_none()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -104,8 +115,20 @@ mod tests {
         let json_str = r#"{"id":1,"method":"tools/list","params":null}"#;
         let req: McpRequest = serde_json::from_str(json_str).unwrap();
         assert_eq!(req.method, "tools/list");
-        assert_eq!(req.id, json!(1));
+        assert_eq!(req.id, Some(json!(1)));
         assert!(req.params.is_none());
+        assert!(!req.is_notification());
+    }
+
+    #[test]
+    fn mcp_request_notification_has_no_id() {
+        // A notification carries no `id` field — it must deserialize cleanly and
+        // be recognised as a notification so the caller emits no response.
+        let json_str = r#"{"method":"notifications/initialized"}"#;
+        let req: McpRequest = serde_json::from_str(json_str).unwrap();
+        assert_eq!(req.method, "notifications/initialized");
+        assert!(req.id.is_none());
+        assert!(req.is_notification());
     }
 
     #[test]

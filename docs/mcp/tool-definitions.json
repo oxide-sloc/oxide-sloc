@@ -15,7 +15,8 @@
         }
       },
       "required": ["path"]
-    }
+    },
+    "annotations": { "title": "Analyze path", "readOnlyHint": true, "openWorldHint": false }
   },
   {
     "name": "get_metrics_latest",
@@ -29,7 +30,8 @@
         }
       },
       "required": []
-    }
+    },
+    "annotations": { "title": "Get latest metrics", "readOnlyHint": true, "openWorldHint": true }
   },
   {
     "name": "get_metrics_history",
@@ -48,7 +50,8 @@
         }
       },
       "required": []
-    }
+    },
+    "annotations": { "title": "Get metrics history", "readOnlyHint": true, "openWorldHint": true }
   },
   {
     "name": "get_run_metrics",
@@ -66,7 +69,8 @@
         }
       },
       "required": ["run_id"]
-    }
+    },
+    "annotations": { "title": "Get run metrics", "readOnlyHint": true, "openWorldHint": true }
   },
   {
     "name": "compare_runs",
@@ -84,7 +88,8 @@
         }
       },
       "required": ["baseline_path", "current_path"]
-    }
+    },
+    "annotations": { "title": "Compare runs", "readOnlyHint": true, "openWorldHint": false }
   },
   {
     "name": "health_check",
@@ -98,7 +103,8 @@
         }
       },
       "required": []
-    }
+    },
+    "annotations": { "title": "Health check", "readOnlyHint": true, "openWorldHint": true }
   },
   {
     "name": "ingest_result",
@@ -120,6 +126,13 @@
         }
       },
       "required": []
+    },
+    "annotations": {
+      "title": "Ingest result",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
     }
   }
 ]

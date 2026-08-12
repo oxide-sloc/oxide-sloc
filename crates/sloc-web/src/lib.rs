@@ -830,7 +830,8 @@ fn build_router(state: AppState) -> Router {
 
     protected
         .route("/healthz", get(healthz))
-        .route("/api/health", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/api/health", get(api_health_handler))
         .route("/api/version", get(api_version_handler))
         .route("/api/openapi.yaml", get(openapi_yaml_handler))
         .route("/llms.txt", get(llms_txt_handler))
@@ -866,7 +867,136 @@ fn build_router(state: AppState) -> Router {
         ))
         .layer(build_cors_layer(state.server_mode))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        // Transparently gzip large text/JSON responses when the client accepts it.
+        .layer(middleware::from_fn(compress_response))
+        // Outermost: bound total request time as a safety net against hung/slow
+        // connections. Generous by default so real scans/PDF exports aren't cut off.
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            http_timeout(),
+        ))
         .with_state(state)
+}
+
+/// Whole-request timeout applied as the outermost layer. A generous safety net
+/// against hung or slow-loris connections that does not cut off legitimate long
+/// operations (large-repo scans, PDF export). Override with
+/// `SLOC_HTTP_TIMEOUT_SECS`; `0` effectively disables it (24h ceiling).
+fn http_timeout() -> std::time::Duration {
+    let secs = std::env::var("SLOC_HTTP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(600);
+    std::time::Duration::from_secs(if secs == 0 { 86_400 } else { secs })
+}
+
+// ── Response compression (hand-rolled gzip via flate2) ─────────────────────────
+// A dependency-free alternative to tower-http's CompressionLayer (whose
+// async-compression crate is not in the offline vendor tree). Buffers and gzips
+// only text-like responses of a worthwhile, known size; streaming, already-encoded,
+// or binary/precompressed responses pass through untouched.
+
+/// Don't bother compressing tiny bodies (header overhead outweighs the win).
+const COMPRESS_MIN_BYTES: u64 = 1024;
+/// Never buffer a body larger than this to compress it (memory safety cap).
+const COMPRESS_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// True when the client's `Accept-Encoding` lists gzip.
+fn client_accepts_gzip(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|val| {
+            val.split(',').any(|enc| {
+                enc.split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .eq_ignore_ascii_case("gzip")
+            })
+        })
+}
+
+/// Compress text-like payloads only; binary/precompressed types (pdf, gzip, zip,
+/// images, octet-stream) gain nothing and are skipped.
+fn is_compressible_type(content_type: &str) -> bool {
+    let ct = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    ct.starts_with("text/")
+        || matches!(
+            ct.as_str(),
+            "application/json"
+                | "application/javascript"
+                | "application/xml"
+                | "application/yaml"
+                | "application/manifest+json"
+                | "image/svg+xml"
+        )
+}
+
+/// Middleware: transparently gzip eligible responses when the client accepts it.
+async fn compress_response(req: Request<Body>, next: Next) -> Response {
+    let accepts_gzip = client_accepts_gzip(req.headers());
+    let resp = next.run(req).await;
+    // Skip when the client can't take gzip or the response is already encoded.
+    if !accepts_gzip || resp.headers().contains_key(header::CONTENT_ENCODING) {
+        return resp;
+    }
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    if !is_compressible_type(&content_type) {
+        return resp;
+    }
+
+    let (mut parts, body) = resp.into_parts();
+    // Only compress bodies whose exact size is known and worthwhile; pass
+    // streaming/unknown or out-of-band sizes through without buffering.
+    let eligible = matches!(
+        http_body::Body::size_hint(&body).exact(),
+        Some(n) if (COMPRESS_MIN_BYTES..=COMPRESS_MAX_BYTES).contains(&n)
+    );
+    if !eligible {
+        return Response::from_parts(parts, body);
+    }
+
+    let bytes = match axum::body::to_bytes(body, COMPRESS_MAX_BYTES as usize).await {
+        Ok(b) => b,
+        // Guarded against by the size check above; degrade gracefully if hit.
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    use std::io::Write as _;
+    let mut encoder = flate2::write::GzEncoder::new(
+        Vec::with_capacity(bytes.len() / 2),
+        flate2::Compression::default(),
+    );
+    if encoder.write_all(&bytes).is_err() {
+        return Response::from_parts(parts, Body::from(bytes));
+    }
+    let compressed = match encoder.finish() {
+        Ok(c) => c,
+        Err(_) => return Response::from_parts(parts, Body::from(bytes)),
+    };
+
+    parts.headers.remove(header::CONTENT_LENGTH);
+    parts
+        .headers
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(compressed.len()));
+    parts
+        .headers
+        .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    parts
+        .headers
+        .append(header::VARY, HeaderValue::from_static("accept-encoding"));
+    Response::from_parts(parts, Body::from(compressed))
 }
 
 /// Bearer token used by `make_test_router_server_mode()` test routers.
@@ -1344,6 +1474,8 @@ fn load_runtime_security_config(server_mode: bool) -> RuntimeSecurityConfig {
 /// Panics if the Axum router fails to build (only occurs on misconfigured routes).
 #[allow(clippy::too_many_lines)]
 pub async fn serve(config: AppConfig) -> Result<()> {
+    // Anchor the uptime clock at launch so /api/health reports true process uptime.
+    process_start();
     let bind_address = config.web.bind_address.clone();
     let server_mode = config.web.server_mode;
     let output_root = resolve_output_root(None);
@@ -2463,14 +2595,113 @@ async fn scan_setup_handler(
     )
 }
 
+/// Build provenance embedded at compile time by `build.rs`. Falls back to
+/// "unknown" on air-gapped builds with no git available.
+const GIT_SHA: &str = env!("OXIDE_SLOC_GIT_SHA");
+const BUILD_TIME: &str = env!("OXIDE_SLOC_BUILD_TIME");
+
+/// Process start instant, anchored the first time it is read. Called once during
+/// `serve()` startup so uptime is measured from launch, not from the first probe.
+pub(crate) fn process_start() -> std::time::Instant {
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    *START.get_or_init(std::time::Instant::now)
+}
+
+fn uptime_seconds() -> u64 {
+    process_start().elapsed().as_secs()
+}
+
+/// Liveness probe — the process is up and the event loop is servicing requests.
+/// Deliberately trivial and dependency-free so container/systemd probes stay fast
+/// and stable. Readiness (dependency health) is `/readyz`; rich status is `/api/health`.
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// Probe whether a directory is writable by round-tripping a tiny marker file.
+/// An empty path is treated as writable (nothing to check).
+fn dir_writable(dir: &std::path::Path) -> bool {
+    if dir.as_os_str().is_empty() {
+        return true;
+    }
+    let _ = std::fs::create_dir_all(dir);
+    let probe = dir.join(".oxide-sloc-health-probe");
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Dependency health checks backing `/api/health` and `/readyz`: can we persist
+/// the registry and write scan artifacts? Returned in stable order.
+fn health_checks(state: &AppState) -> Vec<(&'static str, bool)> {
+    let registry_dir = state
+        .registry_path
+        .parent()
+        .map_or_else(|| std::path::Path::new("."), |p| p);
+    vec![
+        ("registry_writable", dir_writable(registry_dir)),
+        (
+            "output_dir_writable",
+            dir_writable(&resolve_output_root(None)),
+        ),
+    ]
+}
+
+fn checks_to_json(checks: &[(&'static str, bool)]) -> serde_json::Value {
+    let map: serde_json::Map<String, serde_json::Value> = checks
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), serde_json::Value::Bool(*v)))
+        .collect();
+    serde_json::Value::Object(map)
+}
+
+/// Structured health/status endpoint (`/api/health`). Always answers 200 when the
+/// process is responsive; the `status` field is `"ok"` when every dependency check
+/// passes and `"degraded"` otherwise. Use `/readyz` for a pass/fail readiness gate.
+async fn api_health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let checks = health_checks(&state);
+    let all_ok = checks.iter().all(|(_, ok)| *ok);
+    axum::Json(serde_json::json!({
+        "status": if all_ok { "ok" } else { "degraded" },
+        "name": "oxide-sloc",
+        "version": env!("CARGO_PKG_VERSION"),
+        "git_sha": GIT_SHA,
+        "build_time": BUILD_TIME,
+        "uptime_seconds": uptime_seconds(),
+        "checks": checks_to_json(&checks),
+    }))
+}
+
+/// Readiness probe (`/readyz`): 200 when the server can persist state and write
+/// artifacts, 503 otherwise. Distinct from `/healthz` (liveness) so orchestrators
+/// can hold traffic off a process that is up but unable to serve real work.
+async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
+    let checks = health_checks(&state);
+    let ready = checks.iter().all(|(_, ok)| *ok);
+    let code = if ready {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        code,
+        axum::Json(serde_json::json!({
+            "status": if ready { "ready" } else { "not_ready" },
+            "checks": checks_to_json(&checks),
+        })),
+    )
 }
 
 async fn api_version_handler() -> impl IntoResponse {
     axum::Json(serde_json::json!({
         "name": "oxide-sloc",
         "version": env!("CARGO_PKG_VERSION"),
+        "git_sha": GIT_SHA,
+        "build_time": BUILD_TIME,
     }))
 }
 
@@ -34901,6 +35132,58 @@ mod tests_private {
         );
         // FIXME: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::remove_var("SLOC_ALLOW_UNAUTHENTICATED") };
+    }
+
+    // ── Health checks & response compression helpers ───────────────────────────
+
+    #[test]
+    fn dir_writable_true_for_temp_dir() {
+        assert!(dir_writable(&std::env::temp_dir()));
+    }
+
+    #[test]
+    fn dir_writable_empty_path_is_ok() {
+        assert!(dir_writable(std::path::Path::new("")));
+    }
+
+    #[test]
+    fn is_compressible_type_matches_text_and_json() {
+        assert!(is_compressible_type("text/html; charset=utf-8"));
+        assert!(is_compressible_type("application/json"));
+        assert!(is_compressible_type("image/svg+xml"));
+        assert!(is_compressible_type("application/javascript"));
+        assert!(!is_compressible_type("application/pdf"));
+        assert!(!is_compressible_type("application/gzip"));
+        assert!(!is_compressible_type("image/png"));
+        assert!(!is_compressible_type(""));
+    }
+
+    #[test]
+    fn client_accepts_gzip_parses_header() {
+        let mut h = axum::http::HeaderMap::new();
+        assert!(!client_accepts_gzip(&h));
+        h.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("br, gzip, deflate"),
+        );
+        assert!(client_accepts_gzip(&h));
+        h.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
+        assert!(!client_accepts_gzip(&h));
+    }
+
+    #[test]
+    fn http_timeout_defaults_are_sane() {
+        // Whatever the ambient env, the timeout is always a positive duration.
+        assert!(http_timeout() >= std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn uptime_seconds_is_monotonic_nonpanicking() {
+        // Anchors the clock and returns a value without panicking.
+        let _ = uptime_seconds();
     }
 
     // ── Zip-slip / path-traversal on tarball extraction ────────────────────────

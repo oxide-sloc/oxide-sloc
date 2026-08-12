@@ -49,7 +49,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-rustls = { version = "0.26", features = ["ring"], default-features = false }
 toml = "1.1"
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.7", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors", "timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4", "serde"] }

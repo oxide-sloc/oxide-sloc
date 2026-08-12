@@ -96,6 +96,10 @@ enum Commands {
     /// (`SLOC_AUDIT_HMAC_KEY`, or pass `--key`).
     #[command(name = "verify-audit")]
     VerifyAudit(VerifyAuditArgs),
+    /// Probe a running oxide-sloc server's health endpoint and exit 0 (healthy)
+    /// or 1 (unreachable / non-2xx). Intended for container and orchestrator
+    /// health checks (e.g. Docker HEALTHCHECK).
+    Healthz(HealthzArgs),
     /// Print shell completion script to stdout.
     /// Source the output to enable tab-completion for the current shell session.
     Completions {
@@ -103,6 +107,19 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+}
+
+// ── healthz ─────────────────────────────────────────────────────────────────--
+
+#[derive(Debug, Args)]
+struct HealthzArgs {
+    /// URL to probe. Defaults to `http://<SLOC_BIND host:port or 127.0.0.1:4317>/healthz`.
+    #[arg(long, value_name = "URL")]
+    url: Option<String>,
+
+    /// Request timeout in seconds.
+    #[arg(long, default_value_t = 5, value_name = "SECS")]
+    timeout: u64,
 }
 
 // ── verify-audit ──────────────────────────────────────────────────────────────
@@ -721,6 +738,7 @@ async fn main() -> Result<()> {
         Commands::Prune(args) => run_prune(&args),
         Commands::VerifyAudit(args) => run_verify_audit(&args),
         Commands::PrComment(args) => run_pr_comment(args).await,
+        Commands::Healthz(args) => run_healthz(args).await,
         Commands::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -734,6 +752,41 @@ async fn main() -> Result<()> {
 }
 
 // ── verify-audit handler ──────────────────────────────────────────────────────
+
+/// Resolve the default health-probe URL from `SLOC_BIND` (falling back to the
+/// default bind), normalising a wildcard host to loopback so the probe connects.
+fn default_healthz_url() -> String {
+    let bind = std::env::var("SLOC_BIND").unwrap_or_else(|_| "127.0.0.1:4317".to_string());
+    let host_port = bind
+        .replace("0.0.0.0", "127.0.0.1")
+        .replace("[::]", "[::1]");
+    format!("http://{host_port}/healthz")
+}
+
+/// Probe the server's `/healthz` endpoint. Prints a one-line status and exits 0
+/// when healthy; exits 1 (via a non-zero process code) when unreachable or the
+/// endpoint returns a non-2xx status. Used by Docker's HEALTHCHECK.
+async fn run_healthz(args: HealthzArgs) -> Result<()> {
+    let url = args.url.unwrap_or_else(default_healthz_url);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(args.timeout))
+        .build()
+        .context("failed to build HTTP client")?;
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            println!("healthy: {url} -> {}", resp.status());
+            Ok(())
+        }
+        Ok(resp) => {
+            eprintln!("unhealthy: {url} -> {}", resp.status());
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("unhealthy: {url} -> {e}");
+            std::process::exit(1);
+        }
+    }
+}
 
 fn run_verify_audit(args: &VerifyAuditArgs) -> Result<()> {
     let log = args
