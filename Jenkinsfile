@@ -785,11 +785,38 @@ pipeline {
                     // so either of those forces a source build regardless of BUILD_MODE.
                     def needsSource = (params.BUILD_MODE == 'source') ||
                                       params.RUN_QUALITY_GATES || params.RUN_COVERAGE
-                    env.SLOC_NEEDS_SOURCE = needsSource ? 'true' : 'false'
                     if (needsSource && params.BUILD_MODE != 'source') {
                         echo 'BUILD_MODE=prebuilt overridden to source: RUN_QUALITY_GATES / ' +
                              'RUN_COVERAGE require compiling the workspace.'
                     }
+                    // Auto-fallback (ON BY DEFAULT): the fast prebuilt path only works when a
+                    // dist/ binary for THIS platform is committed in the checkout. On any other
+                    // environment (a fresh clone, a fork, or a platform with no committed dist/
+                    // archive) that binary is absent, and the old behaviour hard-failed the Build
+                    // stage with "no prebuilt Windows binary in dist/". Instead, detect the
+                    // missing archive HERE — before the toolchain/vendor Setup stage, which is
+                    // gated on SLOC_NEEDS_SOURCE — and transparently compile from the vendored
+                    // crates. Prebuilt stays a best-effort accelerator; it never blocks a build.
+                    if (!needsSource) {
+                        def distPresent
+                        if (isUnix()) {
+                            def arch = h.shxStdout('uname -m 2>/dev/null || echo x86_64')
+                                .readLines().findAll { it?.trim() }.last()?.trim() ?: 'x86_64'
+                            arch = (arch == 'aarch64' || arch == 'arm64') ? 'arm64' : 'x86_64'
+                            distPresent = fileExists("dist/oxide-sloc-linux-${arch}.tar.gz")
+                        } else {
+                            distPresent = fileExists('dist/oxide-sloc-windows-x64.tar.gz') ||
+                                          fileExists('dist/oxide-sloc-windows-x64.zip')
+                        }
+                        if (!distPresent) {
+                            needsSource = true
+                            echo 'BUILD_MODE=prebuilt requested, but no dist/ binary for this ' +
+                                 'platform is committed in the checkout — automatically falling ' +
+                                 'back to a SOURCE build (vendored crates + air-gapped toolchain). ' +
+                                 'Commit the matching dist/ archive to restore the fast prebuilt path.'
+                        }
+                    }
+                    env.SLOC_NEEDS_SOURCE = needsSource ? 'true' : 'false'
                     def modeMsg = needsSource
                         ? 'Build mode: SOURCE (Rust toolchain + vendored crates + compile).'
                         : 'Build mode: PREBUILT (dist/ binary; no toolchain, no tests — fast path).'
