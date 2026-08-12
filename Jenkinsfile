@@ -848,13 +848,17 @@ pipeline {
                                     // -D warnings, no pedantic/nursery.
                                     h.shx '''
                                     set +e
-                                    cargo clippy --workspace --all-targets --all-features \
+                                    cargo clippy -q --workspace --all-targets --all-features \
                                         --message-format=json \
                                         -- -D warnings \
                                            -A clippy::multiple_crate_versions \
                                         > clippy.json 2> clippy-stderr.txt
-                                    echo $? > clippy-rc.txt
-                                    cat clippy-stderr.txt   # human-readable diagnostics in the console
+                                    rc=$?
+                                    echo $rc > clippy-rc.txt
+                                    # Diagnostics live in clippy.json / the Warnings view; stderr
+                                    # is just cargo progress (-q silences it) plus the failure
+                                    # summary. Only surface it when clippy actually failed.
+                                    [ "$rc" = 0 ] || cat clippy-stderr.txt
                                 '''
                                     // Publish to warnings-ng. Guarded with Throwable so a
                                     // controller WITHOUT the plugin (missing recordIssues /
