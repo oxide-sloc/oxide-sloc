@@ -48,9 +48,9 @@ Full list + offline bundle: `ci/jenkins/plugins.txt` and `ci/resources/…` — 
 (`detect-capabilities.py`) and shows a banner in the native dashboard when it had
 to degrade.
 
-## No admin rights? Here's exactly what you get
+## Running with only the required plugins — exactly what you get
 
-Running as a non-admin user with **only the required plugins**:
+With **only the required plugins** (i.e. no enrichment plugins installed):
 
 - ✅ Full SLOC/test/coverage/complexity/COCOMO analysis (it's the oxide-sloc
   binary, not a plugin).

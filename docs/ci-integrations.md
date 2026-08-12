@@ -578,13 +578,14 @@ header directly on that service instead.
 > **Windows agents:** every stage runs POSIX `.sh` scripts. On a Linux agent they run
 > natively; on a **Windows agent** the pipeline runs them through **Git Bash** (which
 > also supplies the MinGW `gcc`/`ld` the `x86_64-pc-windows-gnu` build links against).
-> A **system-wide install of Git for Windows requires admin and is often blocked on
-> locked-down agents — you do not need it.** Choose whichever no-admin option fits:
+> A **system-wide install of Git for Windows is often blocked on locked-down agents —
+> you do not need it.** Choose whichever option below fits (the `Admin?` column shows
+> which require elevation):
 >
 > | Option | Admin? | How |
 > |---|---|---|
 > | **Portable Git Bash (recommended)** | No | Download `PortableGit-*.7z.exe` once on any machine, copy it to the air-gapped agent, then run `powershell -ExecutionPolicy Bypass -File ci\jenkins\stage-portable-git.ps1 <PortableGit-*.7z.exe>`. It extracts into `<workspace>\.tools\PortableGit`, which the pipeline auto-detects — no env var needed. Stage it in a shared dir instead and set `SLOC_PORTABLE_GIT` to that folder. |
-> | **Per-user Git install** | No | Git for Windows' installer supports a per-user install into `%LOCALAPPDATA%\Programs\Git` (no admin). The pipeline auto-detects that location. |
+> | **Per-user Git install** | No | Git for Windows' installer supports a per-user install into `%LOCALAPPDATA%\Programs\Git`. The pipeline auto-detects that location. |
 > | **Point at an existing bash** | No | Set `SLOC_BASH` to any `bash.exe` (or `SLOC_PORTABLE_GIT` to a PortableGit folder root). |
 > | **Pin to Linux** | n/a | Set the **`AGENT_LABEL`** build parameter to a Linux node label to skip Windows entirely. |
 >

@@ -29,7 +29,7 @@ bash scripts/run.sh   # installs on first run, then opens http://127.0.0.1:4317
 ```
 
 On **Windows with no Git Bash**, use the native-PowerShell installer instead — it needs
-no bash and no admin (see [Windows without Git Bash](#windows-without-git-bash)):
+no bash (see [Windows without Git Bash](#windows-without-git-bash)):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\internal\install.ps1
@@ -57,29 +57,31 @@ powershell -ExecutionPolicy Bypass -File scripts\internal\install.ps1
 - **CI/CD** — GitHub Actions, Jenkins, GitLab CI; JSON metrics API, SVG badge endpoint, embeddable widget, SMTP/webhook delivery
 - **Offline-first** — vendored deps, Chart.js compiled in, no CDN calls; Docker on GHCR; LAN server mode with API key auth and optional TLS
 
-## Why oxide-sloc vs cloc / tokei / scc?
+## Why oxide-sloc vs cloc / tokei / scc / UCC?
 
-| Capability | oxide-sloc | cloc | tokei | scc |
-|---|---|---|---|---|
-| Languages | 60 | 250+ | 240+ | 240+ |
-| Web UI + HTML/PDF reports | ✓ | — | — | — |
-| MCP server (AI agent tools) | ✓ | — | — | — |
-| Test function detection | ✓ | — | — | — |
-| Trend / history tracking | ✓ | — | — | — |
-| Coverage file import | ✓ | — | — | — |
-| Git Hotspots (churn × size) | ✓ | — | — | — |
-| COCOMO + complexity¹ + DRYness | ✓ | — | — | ✓ |
-| IEEE 1045-1992 compliance | ✓ | partial | — | — |
-| REST API + SVG badge | ✓ | — | — | — |
-| Git webhook integration | ✓ | — | — | — |
-| CI/CD marketplace action | ✓ | — | — | — |
-| Offline / air-gapped build | ✓ | — | — | — |
+| Capability | oxide-sloc | cloc | tokei | scc | UCC |
+|---|---|---|---|---|---|
+| Languages | 60 | 250+ | 240+ | 240+ | ~30 |
+| Web UI + HTML/PDF reports | ✓ | — | — | — | — |
+| MCP server (AI agent tools) | ✓ | — | — | — | — |
+| Test function detection | ✓ | — | — | — | — |
+| Trend / history tracking | ✓ | — | — | — | — |
+| Coverage file import | ✓ | — | — | — | — |
+| Git Hotspots (churn × size) | ✓ | — | — | — | — |
+| COCOMO + complexity¹ + DRYness | ✓ | — | — | ✓ | partial |
+| IEEE 1045-1992 compliance | ✓ | partial | — | — | partial |
+| REST API + SVG badge | ✓ | — | — | — | — |
+| Git webhook integration | ✓ | — | — | — | — |
+| CI/CD marketplace action | ✓ | — | — | — | — |
+| Offline / air-gapped build | ✓ | — | — | — | — |
 
 ¹ Complexity is a lexical approximation — a sum of branch/decision keywords (`if`, `for`, `while`, `||`, `&&`, …) per code line, not a control-flow-graph McCabe computation.
 
-cloc, tokei, and scc win on raw language count and throughput for pure line-counting pipelines.
-oxide-sloc is the right choice when you need analysis depth, visual reports, history, or
-AI-native integration — particularly as an MCP tool callable by Claude, Copilot, and other agents.
+cloc, tokei, and scc win on raw language count and throughput for pure line-counting
+pipelines; UCC (USC's Unified Code Count) brings rigorous physical/logical SLOC counting,
+cyclomatic complexity, and two-baseline differencing from an academic lineage. oxide-sloc is
+the right choice when you need analysis depth, visual reports, history, or AI-native
+integration — particularly as an MCP tool callable by Claude, Copilot, and other agents.
 
 ---
 
@@ -131,7 +133,7 @@ Set `SLOC_API_KEY`, `SLOC_ALLOWED_ROOTS`, and `SLOC_TLS_CERT`/`SLOC_TLS_KEY` as 
 ### Windows without Git Bash
 
 The bash launchers (`run.sh` / `install.sh`) need Git Bash. On a locked-down or
-air-gapped Windows host where you cannot install Git for Windows (it needs admin),
+air-gapped Windows host where you cannot install Git for Windows,
 use the native-PowerShell installer — it reproduces the full offline flow
 (checksum-verify → reassemble split parts → extract with the built-in `tar.exe` →
 bootstrap the bundled toolchain → `cargo build --release --offline`) using only tools
@@ -146,11 +148,11 @@ powershell -ExecutionPolicy Bypass -File scripts\internal\install.ps1
 If a pre-built binary is committed in `dist\`, it is extracted and no build runs. For a
 source build, the **one** requirement PowerShell cannot supply is a C linker: the bundled
 toolchain targets `x86_64-pc-windows-gnu`, which links with MinGW `gcc`/`ld`. The
-installer auto-locates it from a **PortableGit** folder (a no-install, no-admin extract),
+installer auto-locates it from a **PortableGit** folder (a no-install extract),
 `-MingwBin <dir>`, `$env:SLOC_MINGW_BIN`, or a `gcc` already on PATH:
 
 ```powershell
-# Stage a portable Git Bash once (no installer, no admin) — provides both the
+# Stage a portable Git Bash once (no installer) — provides both the
 # bash.exe for CI and the mingw64\bin linker for the native build:
 powershell -ExecutionPolicy Bypass -File ci\jenkins\stage-portable-git.ps1 PortableGit-2.47.0-64-bit.7z.exe
 $env:SLOC_PORTABLE_GIT = 'C:\Tools\PortableGit'   # only if staged outside the workspace
@@ -182,6 +184,7 @@ oxide-sloc diff baseline.json current.json -j delta.json
 oxide-sloc serve                                        # http://127.0.0.1:4317
 oxide-sloc init                                         # creates .oxide-sloc.toml
 oxide-sloc send result.json --smtp-to team@example.com --smtp-host smtp.example.com
+oxide-sloc healthz                                      # probe a running server (Docker HEALTHCHECK)
 ```
 
 Run `oxide-sloc <command> --help` for the full flag list.
@@ -223,7 +226,10 @@ Ada, Assembly, Awk, C, C++, C#, Clojure, CMake, Crystal, CSS, D, Dart, Dockerfil
 | `GET /api/project-history?path=<dir>` | Scan history for a project root |
 | `GET /badge/:metric` | SVG badge (`code-lines`, `files`, `comment-lines`, `blank-lines`) |
 | `GET /embed/summary` | Embeddable HTML widget |
-| `GET /healthz` | Health check |
+| `GET /healthz` | Plain-text liveness probe (`ok`) |
+| `GET /readyz` | Readiness probe (200 ready / 503 when the registry or output dir is not writable) |
+| `GET /api/health` | Structured health JSON (status, version, git SHA, build time, uptime, dependency checks) |
+| `GET /api/version` | Version + build provenance (git short SHA, RFC-3339 build time) |
 
 Full OpenAPI 3.1 spec: `GET /api/openapi.yaml` or [`docs/openapi.yaml`](./docs/openapi.yaml).
 
@@ -307,7 +313,7 @@ testing/            # fixtures/ (scan sample repo) + examples/ (CI configs, sloc
 
 ## AI Integration
 
-The `sloc-mcp` binary implements the [Model Context Protocol](https://modelcontextprotocol.io), making oxide-sloc callable as a tool from Claude Desktop, Claude Code, and any MCP-compatible host.
+The `sloc-mcp` binary implements the [Model Context Protocol](https://modelcontextprotocol.io) (protocol revision `2025-06-18`, with version negotiation), making oxide-sloc callable as a tool from Claude Desktop, Claude Code, and any MCP-compatible host. All 7 tools carry read-only / open-world annotations and return structured content alongside their text block.
 
 ```bash
 cargo build -p sloc-mcp
