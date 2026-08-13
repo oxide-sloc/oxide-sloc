@@ -209,6 +209,16 @@ pipeline {
             description:  'Run the web UI health-check stage (binds the local server briefly). ' +
                           'OFF by default; needs loopback access and a free port 4317 on the agent.'
         )
+        booleanParam(
+            name:         'RUN_ANALYZE_SELFTEST',
+            defaultValue: false,
+            description:  'Re-scan the repo in the extra analyzer modes (per-file breakdown + the ' +
+                          'four mixed-line policies) to smoke-test every code path. These passes ' +
+                          'produce no artifacts — they only verify the binary. OFF by default: they ' +
+                          'add ~5 redundant full-repo walks on top of the artifact run, which is slow ' +
+                          'on large repos and AV-scanned agents. Turn on for release verification of ' +
+                          'the scanner itself.'
+        )
         // ── CI config preset ───────────────────────────────────────────────────
         choice(
             name:    'CI_PRESET',

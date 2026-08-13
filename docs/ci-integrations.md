@@ -448,6 +448,7 @@ The first build runs with no parameters — Jenkins uses it to discover the `par
 | `REPORT_PDF` | true | Write PDF report alongside the HTML report. Pure-Rust generation — no browser or external tool required on the agent. When enabled, the "View PDF" button in the HTML report opens the archived PDF directly. |
 | `RUN_QUALITY_GATES` | false | **Off by default** — a standard scan skips the fmt / clippy / unit-test stage entirely. Check it to run the quality gates; this also implies a source build (`BUILD_MODE=source`, since the toolchain is needed to compile and lint). |
 | `RUN_WEB_HEALTHCHECK` | false | **Off by default** — the web UI health-check stage is skipped. Check it to run the check. Enable only on agents with loopback access where port 4317 is available. |
+| `RUN_ANALYZE_SELFTEST` | false | **Off by default** — skips the extra analyzer self-test passes (per-file breakdown + the four mixed-line policies) that re-scan the whole repo without producing artifacts. Leave off for normal metrics scans; check it to smoke-test every analyzer mode when release-verifying the scanner itself. |
 | `NOTIFY_WEBHOOK_URL` | _(skip)_ | POST JSON result here after scan. Add `SLOC_WEBHOOK_TOKEN` Secret Text credential for Bearer auth. |
 | `NOTIFY_EMAIL` | _(skip)_ | Comma-separated recipients. Requires `SLOC_SMTP_HOST`, `SLOC_SMTP_USER`, `SLOC_SMTP_PASS` credentials. |
 | `ARTIFACT_REPO_TYPE` | `none` | Artifact repository backend: `none` / `artifactory` / `nexus` / `nexus2` / `s3` / `minio` / `azure-blob` / `generic-http`. |
@@ -1572,6 +1573,7 @@ The step stages the compiled binary and scan reports (`result.json`, `report.htm
 | `SLOC_GIT_SSL_NO_VERIFY` | All modes | Last-resort: disable TLS verification (self-signed CA not in any trust store) |
 | `SLOC_GIT_TIMEOUT`    | All modes   | Per-git-subprocess wall-clock ceiling in seconds (default 300)         |
 | `RUN_WEB_HEALTHCHECK` | Jenkins     | Web UI health-check stage build parameter; **off by default** — check it to run the check |
+| `RUN_ANALYZE_SELFTEST` | Jenkins    | Analyzer self-test passes (per-file + mixed-line matrix) build parameter; **off by default** — check it only to smoke-test the scanner |
 | `SLOC_SMTP_HOST`      | `send`      | SMTP host (alternative to `--smtp-host`)                               |
 | `SLOC_SMTP_USER`      | `send`      | SMTP username (alternative to `--smtp-user`)                           |
 | `SLOC_SMTP_PASS`      | `send`      | SMTP password — prefer this over `--smtp-pass` to keep creds out of process listings |

@@ -594,6 +594,7 @@ From this point on, all configuration parameters are visible in the build form.
    | `REPORT_HTML` | ✓ checked | Check to produce an HTML report (recommended) |
    | `REPORT_PDF` | ✓ checked | PDF is produced by default; uncheck to skip. **Pure-Rust — no browser required on the agent** |
    | `RUN_WEB_HEALTHCHECK` | ☐ unchecked | **Off by default.** Check only if port 4317 is available on the agent to run the web UI health check |
+   | `RUN_ANALYZE_SELFTEST` | ☐ unchecked | **Off by default.** Extra analyzer self-test passes (per-file + the four mixed-line policies) that re-scan the repo with no artifacts. Check only to smoke-test the scanner itself |
 
    > **Note:** `TOOL_REPO_URL` is the *tooling* repo the scanner is built from (the Jenkinsfile's
    > own checkout) — **not** the scan target (that's `SCAN_REPO_URL` above). Leave it

@@ -1049,11 +1049,15 @@ def runAnalyze() {
     shx "test -s '${outDir}/report_${projectSlug}.xlsx'"
     if (params.REPORT_HTML) { shx "test -s '${outDir}/report_${projectSlug}.html'" }
 
-    // c. Per-file breakdown
-    withEnv(["SCAN_PATH=${effScan}"]) {
-        shx '''
-            "${BINARY}" analyze "${SCAN_PATH}" --per-file --plain ''' + configArg + '''
-        '''
+    // c. Per-file breakdown — a self-test pass (console only, no artifact). Gated
+    // behind RUN_ANALYZE_SELFTEST: it re-walks the whole repo just to exercise the
+    // --per-file path, which is pure overhead on a normal metrics scan.
+    if (params.RUN_ANALYZE_SELFTEST) {
+        withEnv(["SCAN_PATH=${effScan}"]) {
+            shx '''
+                "${BINARY}" analyze "${SCAN_PATH}" --per-file --plain ''' + configArg + '''
+            '''
+        }
     }
 
     // d. HTML content sanity checks
@@ -1071,12 +1075,16 @@ def runAnalyze() {
         shx "${pyBin()} ci/jenkins/extract-report-assets.py '${outDir}/report_${projectSlug}.html' || true"
     }
 
-    // f. Mixed-line policy matrix — spot-checks all four policies
-    for (def policy in ['code-only', 'code-and-comment', 'comment-only', 'separate-mixed-category']) {
-        withEnv(["SCAN_PATH=${effScan}"]) {
-            shx '''
-                "${BINARY}" analyze "${SCAN_PATH}" --plain --mixed-line-policy ''' + policy + '''
-            '''
+    // f. Mixed-line policy matrix — spot-checks all four policies. Four more full-repo
+    // walks whose output is discarded; gated behind RUN_ANALYZE_SELFTEST for the same
+    // reason as the per-file pass above.
+    if (params.RUN_ANALYZE_SELFTEST) {
+        for (def policy in ['code-only', 'code-and-comment', 'comment-only', 'separate-mixed-category']) {
+            withEnv(["SCAN_PATH=${effScan}"]) {
+                shx '''
+                    "${BINARY}" analyze "${SCAN_PATH}" --plain --mixed-line-policy ''' + policy + '''
+                '''
+            }
         }
     }
 }
