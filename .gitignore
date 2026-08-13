@@ -7,6 +7,8 @@ __pycache__/
 
 # Uncompressed vendor sources — always extract from the vendor.tar.gz.* parts; never commit the directory
 /vendor/
+# CI marker recording which vendor set the extracted vendor/ came from (ci/jenkins/setup-vendor.sh)
+/.vendor-stamp
 
 # .cargo/config.toml is written by CI (Jenkinsfile) and local airgap scripts; not committed
 # so that online dev builds continue to use crates.io by default.

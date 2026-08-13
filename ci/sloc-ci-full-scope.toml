@@ -10,6 +10,10 @@ ignore_hidden_files   = false
 follow_symlinks       = false
 max_file_size_bytes   = 10485760
 excluded_directories  = [".git"]
+# Full-scope deliberately counts vendored crate *sources* (honor_ignore_files = false),
+# but the committed split build-tooling archives are binary blobs, never source — drop
+# only those so scan-everything stays meaningful instead of hashing ~1 GB of tarballs.
+exclude_globs         = ["vendor.tar.gz.*", "toolchain/*.tar.gz.*", "python/*.tar.gz"]
 
 [analysis]
 enabled_languages             = []           # empty = autodetect all

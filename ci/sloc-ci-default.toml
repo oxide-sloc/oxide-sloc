@@ -10,7 +10,13 @@ honor_ignore_files    = true
 ignore_hidden_files   = true
 follow_symlinks       = false
 max_file_size_bytes   = 2097152
-excluded_directories  = [".git", "node_modules", "target", ".venv", "__pycache__", "dist", "build"]
+# `vendor`, `toolchain`, `python`, `.tools` hold committed offline build-tooling
+# (split crate/rustc/cpython archives) — regeneratable blobs, never source. Pruning
+# the whole subtree keeps self-scans fast and drops hundreds of skip warnings.
+excluded_directories  = [".git", "node_modules", "target", ".venv", "__pycache__", "dist", "build", "vendor", "toolchain", "python", ".tools"]
+# Belt-and-suspenders for the root-level split vendor archive parts (vendor.tar.gz.aa…)
+# and large committed doc binaries, which are otherwise read+stat'd only to be skipped.
+exclude_globs         = ["vendor.tar.gz.*", "docs/screenshots/**", "docs/*.pptx", "docs/*.pdf"]
 
 [analysis]
 enabled_languages             = []           # empty = autodetect all
