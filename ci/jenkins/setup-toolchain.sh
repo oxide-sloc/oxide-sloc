@@ -119,7 +119,23 @@ extract_airgap_toolchain() {
         grep -v "Cannot create symlink" "${_tar_stderr}" >&2 || true
         rm -f "${_tar_stderr}"
         local _rustup_proxy="${CARGO_HOME}/bin/rustup.exe"
-        if [ -f "${_rustup_proxy}" ]; then
+        if [ -f "${_rustup_proxy}" ] && [ ! -r "${_rustup_proxy}" ]; then
+            # The proxy was extracted but we cannot read it back. On corporate
+            # Windows nodes this almost always means AV/EDR quarantined or
+            # exclusive-locked the freshly-written rustup.exe. Skip the copy so we
+            # do not spew a raw "cp: permission denied"; the cargo-not-found block
+            # below turns this into the real remediation guidance.
+            echo "WARNING: rustup.exe was extracted but is present-yet-unreadable:" >&2
+            echo "           ${_rustup_proxy}" >&2
+            echo "         A corporate AV/EDR agent has most likely quarantined or" >&2
+            echo "         exclusive-locked the freshly-extracted file. Remediation:" >&2
+            echo "           - Use the fast prebuilt path (BUILD_MODE=prebuilt) so the" >&2
+            echo "             toolchain is never extracted or run, OR" >&2
+            echo "           - Ask the platform team to add an AV/EDR real-time-scan" >&2
+            echo "             exclusion for the Rust cache directory:" >&2
+            echo "               $(dirname "${CARGO_HOME}")" >&2
+            echo "             (relocatable via the SLOC_CACHE_DIR env var)." >&2
+        elif [ -f "${_rustup_proxy}" ]; then
             local _proxy
             for _proxy in cargo.exe rustc.exe rustdoc.exe; do
                 [ -f "${CARGO_HOME}/bin/${_proxy}" ] || cp "${_rustup_proxy}" "${CARGO_HOME}/bin/${_proxy}"
@@ -140,8 +156,25 @@ extract_airgap_toolchain() {
 
     if ! command -v cargo >/dev/null 2>&1; then
         echo "ERROR: cargo not found after extracting the committed toolchain bundle." >&2
-        echo "       The bundle under toolchain/ may be incomplete; regenerate it with" >&2
-        echo "       bash scripts/internal/bundle-rust-toolchain.sh" >&2
+        if [ -f "${CARGO_HOME}/bin/rustup.exe" ] && [ ! -r "${CARGO_HOME}/bin/rustup.exe" ]; then
+            # rustup.exe is on disk but unreadable: the proxy copy above was skipped,
+            # so cargo.exe was never created. This is an AV/EDR block, not a bad bundle.
+            echo "       rustup.exe is present but unreadable, so cargo.exe could not be" >&2
+            echo "       created from it. A corporate AV/EDR agent has most likely" >&2
+            echo "       quarantined or exclusive-locked the extracted toolchain. Fix by:" >&2
+            echo "         - Using the fast prebuilt path (BUILD_MODE=prebuilt), which" >&2
+            echo "           never extracts or runs the toolchain, OR" >&2
+            echo "         - Having the platform team add an AV/EDR real-time-scan" >&2
+            echo "           exclusion for the Rust cache directory:" >&2
+            echo "             $(dirname "${CARGO_HOME}")" >&2
+            echo "           (relocatable via the SLOC_CACHE_DIR env var)." >&2
+            echo "       (If the file is genuinely readable, the bundle under toolchain/" >&2
+            echo "       may instead be incomplete; regenerate it with" >&2
+            echo "       bash scripts/internal/bundle-rust-toolchain.sh)" >&2
+        else
+            echo "       The bundle under toolchain/ may be incomplete; regenerate it with" >&2
+            echo "       bash scripts/internal/bundle-rust-toolchain.sh" >&2
+        fi
         exit 1
     fi
     echo "Rust toolchain bootstrapped from the committed air-gap bundle."
