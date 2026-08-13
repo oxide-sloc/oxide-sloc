@@ -861,7 +861,7 @@ def runCoverage() {
         publishHtmlSafe([
             allowMissing         : false,
             alwaysLinkToLastBuild: true,
-            keepAll              : false,
+            keepAll              : true,
             reportDir            : "${params.OUTPUT_SUBDIR}/coverage/html",
             reportFiles          : 'index.html',
             reportName           : 'Coverage Source',
@@ -1155,7 +1155,7 @@ def runArchivePublish() {
         publishHtmlSafe([
             allowMissing         : true,
             alwaysLinkToLastBuild: true,
-            keepAll              : false,
+            keepAll              : true,
             reportDir            : "${params.OUTPUT_SUBDIR}/ci-report",
             reportFiles          : "index.html",
             reportName           : "OxideSLOC_CI_Report_${proj}",
@@ -1166,7 +1166,7 @@ def runArchivePublish() {
         publishHtmlSafe([
             allowMissing         : false,
             alwaysLinkToLastBuild: true,
-            keepAll              : false,
+            keepAll              : true,
             reportDir            : "${params.OUTPUT_SUBDIR}/html-report",
             reportFiles          : "index.html",
             reportName           : "OxideSLOC_HTML_Report_${proj}",

@@ -10,7 +10,7 @@ mechanisms that keep a long-running instance healthy, and how to tune them.
 |---|---|---|
 | Build retention | `Jenkinsfile` `buildDiscarder` | Keeps **20 builds / 30 days** of build records + logs; older are deleted. |
 | Artifact retention | same `logRotator` | Heavier archived artifacts pruned harder: **last 5 builds / 14 days**. |
-| Published report retention | `pipeline-helpers.groovy` `publishHTML keepAll:false` | Stores only the **latest** CI / HTML / coverage report, not one copy per build. |
+| Published report retention | `pipeline-helpers.groovy` `publishHTML keepAll:true` | Keeps a copy of the CI / HTML / coverage report **on each build's page** (so per-build views have their report), with the job page always linking the latest. Old per-build copies are pruned with the build record by `buildDiscarder` (20 builds / 30 days). |
 | Archive excludes | `runArchivePublish` `archiveArtifacts excludes:` | The curated `ci-report/` + `html-report/` bundles are published but **not** re-archived (no duplicate copies). |
 | Trend history cap | `generate-trend-csv.py` | The persistent per-job CSV is capped at **50 rows** (oldest dropped). |
 | Workspace wipe | `seed-job.groovy` `wipeWorkspace()` + `post { cleanup } cleanWs()` | Each build starts clean and wipes its workspace at the end. |
