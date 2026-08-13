@@ -820,6 +820,18 @@ pipeline {
                         }
                         if (!distPresent) {
                             needsSource = true
+                            // Diagnostics: reveal WHY the prebuilt binary wasn't found so the
+                            // next run distinguishes mirror-lag (no dist/ dir at all) from a
+                            // partial/sparse clone (dir present, large *.tar.gz blobs missing).
+                            // pwd()/fileExists() are pure cross-platform steps; the listing runs
+                            // through shx (Git Bash on Windows, sh on Linux) only when dist/ exists.
+                            echo "dist/ probe: cwd=${pwd()}"
+                            if (fileExists('dist')) {
+                                echo 'dist/ listing:\n' + h.shxStdout(
+                                    'ls -lo dist 2>/dev/null || ls -l dist').trim()
+                            } else {
+                                echo 'dist/ probe: (no dist/ directory in the checkout)'
+                            }
                             echo 'BUILD_MODE=prebuilt requested, but no dist/ binary for this ' +
                                  'platform is committed in the checkout — automatically falling ' +
                                  'back to a SOURCE build (vendored crates + air-gapped toolchain). ' +
