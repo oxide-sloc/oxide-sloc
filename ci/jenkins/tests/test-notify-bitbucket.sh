@@ -21,8 +21,10 @@ SCRIPT="${HERE}/../notify-bitbucket.sh"
 
 PASS=0
 FAIL=0
+SKIP=0
 ok()   { printf '[PASS] %s\n' "$1"; PASS=$((PASS + 1)); }
 bad()  { printf '[FAIL] %s\n    %s\n' "$1" "${2:-}"; FAIL=$((FAIL + 1)); }
+skip() { printf '[SKIP] %s\n' "$1"; SKIP=$((SKIP + 1)); }
 
 # ── curl stub ────────────────────────────────────────────────────────────────
 # Captures args to $CAP_ARGS and stdin (the -K config with the auth line) to
@@ -124,9 +126,9 @@ fi
 if command -v shellcheck >/dev/null 2>&1; then
     if shellcheck -x "${SCRIPT}"; then ok "shellcheck clean"; else bad "shellcheck" "see output above"; fi
 else
-    printf '[SKIP] shellcheck not installed\n'
+    skip "shellcheck not installed"
 fi
 
 printf -- '----------------------------------------------------------------------\n'
-printf 'notify-bitbucket.sh: %d passed, %d failed\n' "${PASS}" "${FAIL}"
+printf 'notify-bitbucket.sh: %d passed, %d failed, %d skipped\n' "${PASS}" "${FAIL}" "${SKIP}"
 [ "${FAIL}" -eq 0 ]

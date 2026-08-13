@@ -17,8 +17,10 @@ PUSH="${REPO_ROOT}/ci/artifact-push.sh"
 
 PASS=0
 FAIL=0
+SKIP=0
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
+skip() { echo "[SKIP] $1"; SKIP=$((SKIP + 1)); }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
@@ -200,9 +202,9 @@ if command -v shellcheck >/dev/null 2>&1; then
         fail "shellcheck reported issues"
     fi
 else
-    echo "[SKIP] shellcheck not installed"
+    skip "shellcheck not installed"
 fi
 
 echo "----------------------------------------------------------------------"
-echo "artifact-push.sh: ${PASS} passed, ${FAIL} failed"
+echo "artifact-push.sh: ${PASS} passed, ${FAIL} failed, ${SKIP} skipped"
 [ "${FAIL}" -eq 0 ]
