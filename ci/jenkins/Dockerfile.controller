@@ -101,27 +101,19 @@ COPY ci/jenkins/init.groovy.d/ /usr/share/jenkins/ref/init.groovy.d/
 # by this Dockerfile and the initial credentials configuration in Jenkins.
 ENV JAVA_OPTS="-Djenkins.install.runSetupWizard=false"
 
-# ── Bootstrap admin credentials ────────────────────────────────────────────────
-# Provided as build args so an operator bakes their own credentials at build time,
-# fully offline for air-gapped installs — no value is fixed in the committed source:
-#   docker build \
-#     --build-arg JENKINS_ADMIN_USER=<user> \
-#     --build-arg JENKINS_ADMIN_PASSWORD='<strong-password>' \
-#     -f ci/jenkins/Dockerfile.controller -t jenkins-oxide-sloc-controller .
-# For CI, pass the password from a secret store (e.g. --build-arg
-# JENKINS_ADMIN_PASSWORD="$(cat /run/secrets/jenkins_admin_password)").
-# The admin username defaults to "admin"; the password has NO default and MUST be
-# supplied at build time — the build fails below if it is empty, so no shared
-# credential is ever baked into the committed source or a published image.
-ARG JENKINS_ADMIN_USER=admin
-ARG JENKINS_ADMIN_PASSWORD
-RUN test -n "${JENKINS_ADMIN_PASSWORD}" || { \
-      echo "ERROR: build-arg JENKINS_ADMIN_PASSWORD is required and has no default." >&2; \
-      echo "  docker build --build-arg JENKINS_ADMIN_PASSWORD='<strong-password>' \\" >&2; \
-      echo "    -f ci/jenkins/Dockerfile.controller -t jenkins-oxide-sloc-controller ." >&2; \
-      exit 1; \
-    }
-ENV JENKINS_OPTS="--argumentsRealm.roles.user=${JENKINS_ADMIN_USER} --argumentsRealm.passwd.${JENKINS_ADMIN_USER}=${JENKINS_ADMIN_PASSWORD}"
+# ── Bootstrap admin credentials — injected at RUNTIME, never baked into the image ─
+# The admin credential is supplied when the container STARTS, not at build time, so
+# no secret is ever written into an image layer (docker history / docker inspect on
+# the image stay clean, and no credential is committed to source). Provide it via
+# `docker run` (or the compose `environment:` / `secrets:` block):
+#   -e JENKINS_ADMIN_PASSWORD='<strong-password>'                       (or, preferred)
+#   -e JENKINS_ADMIN_PASSWORD_FILE=/run/secrets/jenkins_admin_password  (mounted secret)
+# The username defaults to "admin"; override with -e JENKINS_ADMIN_USER=<user>.
+# controller-entrypoint.sh builds JENKINS_OPTS from those runtime values and fails
+# fast if the password is missing.
+COPY ci/jenkins/controller-entrypoint.sh /usr/local/bin/oxide-controller-entrypoint.sh
+RUN chmod +x /usr/local/bin/oxide-controller-entrypoint.sh
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/oxide-controller-entrypoint.sh"]
 
 # Liveness probe: confirm the Jenkins HTTP port is accepting connections.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
