@@ -977,6 +977,26 @@ def runAnalyze() {
     def projectSlug = "${repoSlug}_${shortSha}"
     env.SLOC_PROJECT = projectSlug
 
+    // ── Effective report title ──────────────────────────────────────────────
+    // The static default ('oxide-sloc CI Report') does not identify the scanned
+    // repo. When the operator LEFT the title at its default (or blank), derive a
+    // project-scoped title "<RepoName> CI SLOC Report" where <RepoName> is the
+    // human repo name (last URL path segment, .git stripped, ORIGINAL case/hyphens
+    // preserved — NOT the sanitized slug and NOT the short SHA). A custom title is
+    // honoured verbatim. Note the new convention adds "SLOC" vs the old "CI Report".
+    def defaultTitle = 'oxide-sloc CI Report'
+    def rawTitle     = params.REPORT_TITLE?.trim() ?: ''
+    def repoName     = (slugSource?.trim()
+                            ? slugSource.trim()
+                                  .replaceAll(/\.git$/, '')
+                                  .replaceAll(/[\/:]+$/, '')
+                                  .replaceAll(/.*[\/:]/, '')
+                            : '') ?: repoSlug
+    def effectiveTitle = (!rawTitle || rawTitle == defaultTitle)
+                            ? "${repoName} CI SLOC Report"
+                            : rawTitle
+    env.SLOC_REPORT_TITLE_EFFECTIVE = effectiveTitle
+
     def configArg    = (params.CI_PRESET != 'none')
                         ? "--config 'ci/sloc-ci-${params.CI_PRESET}.toml'"
                         : ''
@@ -1023,14 +1043,53 @@ def runAnalyze() {
 
     // b. Main artifact run — JSON, CSV, XLSX always written; HTML and PDF are optional.
     // Pass --git-branch explicitly so the report shows the correct branch name even
-    // when Jenkins performs a detached-HEAD checkout (GIT_BRANCH = "origin/main").
-    def rawBranch  = env.GIT_BRANCH ?: ''
-    def branchName = rawBranch.replaceAll('^origin/', '').replaceAll('^refs/heads/', '').trim()
-    def branchArg  = branchName ? "--git-branch '${branchName}'" : ''
+    // when Jenkins performs a detached-HEAD checkout (env.GIT_BRANCH is empty or is
+    // the TOOLING repo's branch on an external scan). Robust resolution:
+    //
+    //   EXTERNAL scan (SCAN_REPO_URL set): the target was checked out into
+    //     ./_target from the SCAN_REF param. Prefer SCAN_REF (the ref the pipeline
+    //     actually asked for; defaults to "main" — see the Checkout stage), else
+    //     ask the target checkout directly (`git -C <scanRoot> rev-parse
+    //     --abbrev-ref HEAD`). A detached-HEAD checkout returns the literal "HEAD";
+    //     when that happens, fall back to SCAN_REF.
+    //   SELF scan: prefer env.BRANCH_NAME (Jenkins multibranch), then env.GIT_BRANCH,
+    //     stripping origin/ and refs/heads/ prefixes.
+    //
+    // Only pass --git-branch when the resolved value is concrete (non-empty and not
+    // the detached-HEAD sentinel "HEAD"); the binary leaves git_branch as detected
+    // otherwise. A bare SHA or tag SCAN_REF is still passed through so the report
+    // shows the ref that was scanned rather than "not detected".
+    def stripRef = { String s ->
+        (s ?: '').replaceAll('^origin/', '').replaceAll('^refs/heads/', '')
+                 .replaceAll('^refs/tags/', '').trim()
+    }
+    def branchName = ''
+    if (scanningExternal) {
+        def scanRef = params.SCAN_REF?.trim() ?: ''
+        def detected = shxStdout(
+            "git -C '${scanRoot}' rev-parse --abbrev-ref HEAD 2>/dev/null || echo ''"
+        ).trim().readLines().findAll { it?.trim() }.with { it ? it.last().trim() : '' }
+        if (detected && detected != 'HEAD') {
+            branchName = stripRef(detected)
+        } else {
+            branchName = stripRef(scanRef)
+        }
+    } else {
+        def selfRaw = env.BRANCH_NAME?.trim() ?: env.GIT_BRANCH?.trim() ?: ''
+        branchName = stripRef(selfRaw)
+    }
+    def branchArg = (branchName && branchName != 'HEAD') ? "--git-branch '${branchName}'" : ''
+    // Export the resolved branch + the commit for the persistent trend CSV (Change 4).
+    env.SLOC_TREND_BRANCH = branchName
+    env.SLOC_TREND_COMMIT = env.GIT_COMMIT?.trim() ?: shortSha
+    // Effective scanned repo URL for the per-repo trend history + dashboard delta.
+    // Mirrors slugSource: SCAN_REPO_URL for an external scan, else the tooling repo
+    // URL the job was built from. Normalization happens in the Python consumers.
+    env.SLOC_TREND_REPO_URL = (slugSource?.trim() ?: '')
 
     withEnv([
         "SCAN_PATH=${effScan}",
-        "REPORT_TITLE=${params.REPORT_TITLE}",
+        "REPORT_TITLE=${effectiveTitle}",
         "MIXED_LINE_POLICY=${params.MIXED_LINE_POLICY}",
     ]) {
         shx '''
@@ -1060,9 +1119,11 @@ def runAnalyze() {
         }
     }
 
-    // d. HTML content sanity checks
+    // d. HTML content sanity checks — grep for the EFFECTIVE title actually passed
+    // to --report-title (the auto-derived "<Repo> CI SLOC Report" when the operator
+    // left REPORT_TITLE at its default), not the raw param, or the grep would miss.
     if (params.REPORT_HTML) {
-        withEnv(["REPORT_TITLE=${params.REPORT_TITLE}"]) {
+        withEnv(["REPORT_TITLE=${effectiveTitle}"]) {
             shx '''
                 grep -q 'OxideSLOC' "''' + outDir + '''/report_''' + projectSlug + '''.html"
                 grep -qF "${REPORT_TITLE}" "''' + outDir + '''/report_''' + projectSlug + '''.html"
@@ -1133,12 +1194,40 @@ def runArchivePublish() {
 
     // Generate the dashboard (and the curated ci-report/ + html-report/ bundles)
     // BEFORE archiving so the bundle layout is present for both archive + publish.
+    // The dashboard reads SLOC_TREND_REPO_URL (set in runAnalyze) to compute the
+    // per-repo delta + per-project trend view; env vars set on env{} in an earlier
+    // stage are already exported into this shx shell, so no extra wiring is needed.
     def dashboardBuilt = false
     try {
         shx "${pyBin()} ci/jenkins/generate-dashboard.py '${outDir}' '${proj}' '${histFile}'"
         dashboardBuilt = fileExists("${outDir}/ci-report/index.html")
     } catch (Exception ex) {
         echo "generate-dashboard.py did not run (Python 3 unavailable or script error): ${ex.message}"
+    }
+
+    // ── Local-import bundle via the `oxide-sloc bundle` CLI (best-effort) ────
+    // Emit a folder mirroring the LOCAL web-UI run layout (run_dir with
+    // html/json/excel/pdf subfolders + index.html, plus a registry.json). A user
+    // unzips local-import/ into their own oxide-sloc out/web/ directory to use the
+    // Scan Delta / Compare pages on this run locally. Wrapped so an older binary
+    // WITHOUT the `bundle` subcommand does NOT fail the build.
+    try {
+        shx "\"\${BINARY}\" bundle '${outDir}/result_${proj}.json' --out-dir '${outDir}/local-import' " +
+            "|| echo 'bundle subcommand unavailable; skipping local-import'"
+    } catch (Exception ex) {
+        echo "local-import bundle skipped: ${ex.message}"
+    }
+
+    // ── Organized dual-archive bundle: BOTH .zip AND .tar.gz ────────────────
+    // Package the flat artifacts into an organized subfolder tree (html/ json/
+    // csv/ pdf/ xlsx/ config/ dashboard/ + local-import/) and emit BOTH archives.
+    // The .tar.gz is the fallback for corporate browsers/proxies that block .zip
+    // downloads from Jenkins (Git Bash tar + 7-Zip open it). Built with the
+    // bundled Python (zipfile + tarfile) so it needs no `zip` binary. Best-effort.
+    try {
+        shx "${pyBin()} ci/jenkins/bundle-artifacts.py '${outDir}' '${proj}' || true"
+    } catch (Exception ex) {
+        echo "Artifact bundling (zip + tar.gz) skipped: ${ex.message}"
     }
 
     // Archive everything except the curated bundle dirs — those are duplicated

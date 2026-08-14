@@ -16450,6 +16450,94 @@ fn persist_run_artifacts(
     ))
 }
 
+/// Materialize a completed [`AnalysisRun`] into the exact on-disk layout the local web UI
+/// produces, then register it in `<out_root>/registry.json` so the local Compare / "Scan
+/// Delta" page can pair it with other runs.
+///
+/// This is the shared entry point used by both the web scan flow (indirectly, via
+/// [`persist_run_artifacts`]) and the `oxide-sloc bundle` CLI command, so the run-directory
+/// layout and registry schema can never drift between the two.
+///
+/// Layout produced under `<out_root>/<project_label>_<run_id>/`:
+/// - `index.html`                          — offline dashboard
+/// - `html/report_<stem>.html`             — full HTML report
+/// - `json/result_<stem>.json`             — the serialized `AnalysisRun`
+/// - `json/scan-config_<stem>.json`        — scan configuration snapshot
+/// - `pdf/report_<stem>.pdf`               — best-effort native PDF (skipped on failure)
+/// - `excel/report_<stem>.csv` / `.xlsx`   — tabular exports
+/// - `submodules/`                         — per-submodule sub-reports (when enabled)
+///
+/// `<stem>` is `<project_label>_<git_commit_short>` when a commit is known, else
+/// `<project_label>`. Returns the created run-directory path.
+///
+/// # Errors
+///
+/// Returns an error if the HTML report cannot be rendered or the artifacts cannot be written.
+pub fn bundle_run(
+    run: &AnalysisRun,
+    out_root: &Path,
+    run_id: &str,
+    label: Option<&str>,
+) -> Result<PathBuf> {
+    // Project label: caller override, else derived exactly as the web UI derives it from the
+    // first input root (falling back to a generic slug when there are no roots).
+    let project_label = match label.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(explicit) => sanitize_project_label(explicit),
+        None => {
+            let fallback = run.input_roots.first().map_or("", String::as_str);
+            derive_project_label(None, None, fallback)
+        }
+    };
+
+    let run_dir = out_root.join(format!("{project_label}_{run_id}"));
+    let file_stem = derive_file_stem(&project_label, run.git_commit_short.as_deref());
+
+    let report_html = render_html(run).context("failed to render HTML report for bundle output")?;
+
+    let project_path = run.input_roots.first().cloned().unwrap_or_default();
+    let result_context = RunResultContext {
+        prev_entry: None,
+        prev_scan_count: 0,
+        project_path: project_path.clone(),
+        cocomo_mode: "organic".to_string(),
+        complexity_alert: 0,
+        exclude_duplicates: false,
+    };
+
+    let (artifacts, _pending_pdf) = persist_run_artifacts(
+        run,
+        &report_html,
+        &run_dir,
+        &run.effective_configuration.reporting.report_title,
+        &file_stem,
+        result_context,
+    )?;
+
+    // Write the scan-config snapshot into json/ (same file the web flow writes).
+    if let Some(ref cfg_path) = artifacts.scan_config_path {
+        save_scan_config_json(
+            cfg_path,
+            run,
+            &project_path,
+            out_root.to_str(),
+            "organic",
+            0,
+            false,
+        );
+    }
+
+    // Register the run so the local Compare page can find and pair it.
+    let registry_path = out_root.join("registry.json");
+    let mut registry = ScanRegistry::load(&registry_path);
+    let entry = build_run_registry_entry(run, run_id, &project_label, &artifacts);
+    registry.add_entry(entry);
+    registry
+        .save(&registry_path)
+        .with_context(|| format!("failed to write registry to {}", registry_path.display()))?;
+
+    Ok(run_dir)
+}
+
 /// Render a static offline result-page dashboard and write it as `index.html` at
 /// the root of the run output directory so business users can open it from disk.
 #[allow(clippy::too_many_arguments)]

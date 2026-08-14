@@ -80,5 +80,6 @@ jenkins-tests:
 	python3 ci/jenkins/tests/test-pipeline-helpers-guards.py
 	python3 ci/jenkins/tests/test-repo-url-airgap.py
 	python3 ci/jenkins/tests/test-windows-agent-dispatch.py
+	python3 ci/jenkins/tests/test-bundle-artifacts.py
 	bash   ci/jenkins/tests/test-notify-bitbucket.sh
 	bash   ci/jenkins/tests/test-artifact-push.sh

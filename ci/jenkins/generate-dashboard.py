@@ -132,6 +132,76 @@ def fmt_local(dt_utc: datetime) -> str:
     return (dt_utc + off).strftime(f"%Y-%m-%d %H:%M {label}")
 
 
+def _strip_verbatim_prefix(path: str) -> str:
+    """Strip a Windows verbatim/UNC path prefix so a portable path is shown.
+
+    Handles ``\\\\?\\C:\\...`` and ``//?/C:/...`` (extended-length prefix) plus the
+    UNC form ``//?/UNC/server/share`` → ``//server/share``. Older result JSON
+    (produced before the Rust side cleaned the absolute path at the source) can
+    still carry these; this keeps the dashboard rendering clean regardless.
+    """
+    if not path:
+        return path
+    p = path.replace("\\", "/")
+    # //?/UNC/server/share  ->  //server/share
+    low = p.lower()
+    if low.startswith("//?/unc/"):
+        return "//" + p[len("//?/unc/"):]
+    if low.startswith("//?/"):
+        return p[len("//?/"):]
+    return p
+
+
+def _display_file_path(rec: dict) -> str:
+    """Portable display path for a per-file record.
+
+    Prefer ``relative_path`` (portable, no absolute-path leak). Fall back to the
+    basename of the absolute ``path`` when ``relative_path`` is missing/empty.
+    A leading Windows verbatim/UNC prefix is stripped defensively in either case.
+    """
+    rel = str(rec.get("relative_path", "") or "").strip()
+    if rel:
+        return _strip_verbatim_prefix(rel).lstrip("/")
+    raw = _strip_verbatim_prefix(str(rec.get("path", "") or "").strip())
+    # Basename of the (cleaned) absolute path.
+    return raw.rstrip("/").split("/")[-1] if raw else ""
+
+
+def _norm_repo_url(url) -> str:
+    """Normalize a repo URL for cross-run comparison.
+
+    Strips a trailing ``.git``, any ``user:token@`` / ``user@`` userinfo, a URL
+    scheme, and a trailing slash, then lower-cases the result. This lets rows that
+    differ only by credentials, protocol, or a ``.git`` suffix match as the same
+    project. Returns "" for a blank/None input.
+    """
+    if not url:
+        return ""
+    s = str(url).strip()
+    if not s:
+        return ""
+    # Drop scheme (https://, ssh://, git://, file://, ...).
+    s = re.sub(r"^[A-Za-z][A-Za-z0-9+.\-]*://", "", s)
+    # Drop scp-like git@host: — keep host:path but remove the leading userinfo.
+    s = re.sub(r"^[^@/]+@", "", s)
+    # Normalize scp-style "host:path" to "host/path" so it matches the URL form.
+    s = s.replace(":", "/", 1) if (":" in s and "/" not in s.split(":", 1)[0]) else s
+    s = re.sub(r"\.git$", "", s)
+    s = s.rstrip("/")
+    return s.lower()
+
+
+def _repo_name(url) -> str:
+    """Human repo name (last path segment, .git stripped) from a URL. "" if blank."""
+    if not url:
+        return ""
+    s = str(url).strip()
+    s = re.sub(r"\.git$", "", s)
+    s = re.sub(r"[/:]+$", "", s)
+    seg = re.split(r"[/:]", s)
+    return seg[-1] if seg and seg[-1] else ""
+
+
 def _delta_color(delta: float) -> str:
     """Colour for a signed delta: green up, red down, neutral brown at zero."""
     if delta > 0:
@@ -622,7 +692,12 @@ def _copy_into(src_dir: str, names: list, dst_dir: str) -> None:
 def parse_trend_history(path: str) -> list:
     """Parse the persistent per-job trend CSV written by the Jenkinsfile.
 
-    Each row: timestamp, build, code_lines, comment_lines, blank_lines, files_analyzed.
+    Each row (current schema):
+      timestamp, build, code_lines, comment_lines, blank_lines, files_analyzed,
+      repo_url, branch, commit
+
+    The last three columns were appended to the schema later, so older CSVs that
+    stop after ``files_analyzed`` still parse — the new fields default to "".
     Returns a list of dicts sorted oldest-first.  Returns [] on any error.
     """
     if not os.path.isfile(path):
@@ -640,6 +715,10 @@ def parse_trend_history(path: str) -> list:
                         "comment_lines":  int(row.get("comment_lines", 0)),
                         "blank_lines":    int(row.get("blank_lines", 0)),
                         "files_analyzed": int(row.get("files_analyzed", 0)),
+                        # New columns — backward compatible (empty when absent).
+                        "repo_url":       str(row.get("repo_url", "") or ""),
+                        "branch":         str(row.get("branch", "") or ""),
+                        "commit":         str(row.get("commit", "") or ""),
                     })
                 except (ValueError, KeyError):
                     continue
@@ -733,7 +812,9 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
         if isinstance(lang, dict):
             lang = lang.get("display_name") or lang.get("name") or str(lang)
         top_files.append({
-            "path":       str(rec.get("path", "")),
+            # Portable relative path (falls back to basename of the absolute path;
+            # a Windows verbatim //?/ prefix is stripped defensively for old JSON).
+            "path":       _display_file_path(rec),
             "language":   str(lang),
             "code_lines": int(rec.get("code_lines", 0)),
         })
@@ -753,6 +834,36 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
     # Path supplied as SLOC_HISTORY_FILE env var (set by Jenkinsfile) or 3rd arg.
     history_file  = os.environ.get("SLOC_HISTORY_FILE", "")
     trend_history = parse_trend_history(history_file) if history_file else []
+
+    # ── Determine THIS run's repo identity ──────────────────────────────────
+    # Used to (a) compute the "Code Lines Δ" chip only against the most recent
+    # PREVIOUS row of the SAME repo (never across unrelated projects the same
+    # Jenkins job scanned), and (b) drive the per-project "View B" trend below.
+    # Source order: the SLOC_TREND_REPO_URL env the pipeline exports (the
+    # effective scanned repo URL) → the scan result's own git_remote_url.
+    cur_repo_url_raw = (os.environ.get("SLOC_TREND_REPO_URL", "").strip()
+                        or str(data.get("git_remote_url", "") or "").strip())
+    cur_repo_norm = _norm_repo_url(cur_repo_url_raw)
+    cur_repo_name = _repo_name(cur_repo_url_raw) or slug
+    cur_branch    = str(data.get("git_branch", "") or "").strip()
+
+    # Rows in history that belong to THIS project (normalized-URL match). When the
+    # current repo URL is unknown (empty), we cannot filter reliably — treat the
+    # per-project view as "all rows" so the dashboard still renders a trend.
+    if cur_repo_norm:
+        same_repo_history = [
+            r for r in trend_history if _norm_repo_url(r.get("repo_url", "")) == cur_repo_norm
+        ]
+    else:
+        same_repo_history = list(trend_history)
+
+    # Distinct normalized repos seen in this Jenkins job's history (for the
+    # "mixed projects" warning on the all-builds view).
+    distinct_repos = sorted({
+        _norm_repo_url(r.get("repo_url", "")) for r in trend_history
+        if _norm_repo_url(r.get("repo_url", ""))
+    })
+    n_distinct_repos = len(distinct_repos)
 
     # ── Load CI capabilities (plugin-install permission / degradation state) ──
     capabilities = None
@@ -774,10 +885,14 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
 
     # ── Build chip sections ─────────────────────────────────────────────────
 
-    # Delta from previous build (requires trend history with >= 2 entries)
+    # Delta from the most recent PREVIOUS build OF THE SAME REPO. Comparing the
+    # last two rows of the raw job history would mix unrelated projects (this one
+    # Jenkins job can scan many repos), so filter to same_repo_history first. The
+    # last row of same_repo_history is THIS build; index [-2] is its same-repo
+    # predecessor. If there is no prior same-repo row, show "n/a (first scan)".
     delta_chip_html = ""
-    if len(trend_history) >= 2:
-        t_prev_build = trend_history[-2]
+    if len(same_repo_history) >= 2:
+        t_prev_build = same_repo_history[-2]
         delta = code_lines - t_prev_build["code_lines"]
         sign = "+" if delta > 0 else ""
         delta_col = _delta_color(delta)
@@ -788,7 +903,20 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
             f"vs build #{t_prev_build['build']}",
             tip=(
                 f"Net change in code lines since build #{t_prev_build['build']} "
-                "— positive means the codebase grew, negative means it shrank."
+                f"(the previous scan of {html.escape(cur_repo_name)}) — positive means "
+                "the codebase grew, negative means it shrank. Compared same-repo only, "
+                "so unrelated projects this job scanned never skew the delta."
+            ),
+        )
+    else:
+        delta_chip_html = chip(
+            '<span style="color:#8a6a5a" title="first scan of this repository">n/a</span>',
+            "Code Lines Δ",
+            "first scan of this repo",
+            tip=(
+                "No previous scan of this repository is recorded in this Jenkins "
+                "job's history yet, so there is nothing to compare against. The "
+                "delta appears from the second scan of the same repo onward."
             ),
         )
 
@@ -1050,31 +1178,111 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
     else:
         downloads_section = ""
 
-    # ── Trend sparkline section ─────────────────────────────────────────────
+    # ── Trend sparkline section (TWO views) ─────────────────────────────────
+    # A single per-Jenkins-job history CSV can interleave rows from DIFFERENT
+    # repositories (this one job scans many projects), so a naive all-rows
+    # sparkline can jump wildly between unrelated codebases. We render two views
+    # in one card with a dependency-free inline toggle:
+    #
+    #   View B "This project only (<repo>)" — DEFAULT. Rows whose normalized
+    #          repo_url matches this run's repo. Apples-to-apples.
+    #   View A "All builds of this Jenkins job" — every row, with a prominent
+    #          warning that it may mix N distinct repositories.
+    #
+    # The toggle is two radio-driven <label>s + CSS sibling selectors — no JS
+    # required, matching the existing dashboard's dependency-free style.
+    def _trend_delta_line(hist):
+        pts = [(r["build"], r["code_lines"]) for r in hist]
+        last_h = hist[-1]
+        prev_h = hist[-2]
+        d = last_h["code_lines"] - prev_h["code_lines"]
+        sign = "+" if d > 0 else ""
+        col = _delta_color(d)
+        return (
+            f'<p class="trend-delta" style="color:{col}">'
+            f'{html.escape(f"{sign}{fmt(d)}")} code lines since build #{prev_h["build"]}'
+            f'&nbsp;&middot;&nbsp;'
+            f'<span style="color:#8a6a5a;font-weight:400">range: '
+            f'{html.escape(fmt(min(v for _, v in pts)))} &ndash; '
+            f'{html.escape(fmt(max(v for _, v in pts)))}</span></p>'
+        )
+
+    # View B (per-project) — the trustworthy trend. Available when this repo has
+    # >= 2 rows of its own history.
+    view_b_html = ""
+    if len(same_repo_history) >= 2:
+        b_points   = [(r["build"], r["code_lines"]) for r in same_repo_history]
+        b_spark    = svg_sparkline(b_points)
+        b_caption  = (
+            f"Filtered to <strong>{html.escape(cur_repo_name)}</strong>"
+            + (f" &middot; branch <code>{html.escape(cur_branch)}</code>" if cur_branch else "")
+            + f" &middot; {len(same_repo_history)} scan"
+            + ("s" if len(same_repo_history) != 1 else "")
+            + " of this project. Apples-to-apples: only this repository's builds."
+        )
+        view_b_html = f"""
+    <div class="sparkline-wrap">{b_spark}</div>
+    <p class="chart-hint">{b_caption}</p>
+    {_trend_delta_line(same_repo_history)}"""
+    elif len(same_repo_history) == 1 or cur_repo_norm:
+        view_b_html = f"""
+    <p class="muted-msg">Only one recorded scan of
+    <strong>{html.escape(cur_repo_name)}</strong> so far &mdash; a per-project trend
+    line appears once this repository has been scanned at least twice by this job.</p>"""
+
+    # View A (all builds of this Jenkins job) — may mix projects.
+    view_a_html = ""
     if len(trend_history) >= 2:
-        trend_points = [(r["build"], r["code_lines"]) for r in trend_history]
-        sparkline    = svg_sparkline(trend_points)
-        t_last_h     = trend_history[-1]
-        t_prev_h     = trend_history[-2]
-        tr_delta     = t_last_h["code_lines"] - t_prev_h["code_lines"]
-        tr_sign      = "+" if tr_delta > 0 else ""
-        tr_col       = _delta_color(tr_delta)
-        n_builds     = len(trend_history)
-        trend_section = f"""
+        a_points = [(r["build"], r["code_lines"]) for r in trend_history]
+        a_spark  = svg_sparkline(a_points)
+        mixed_note = ""
+        if n_distinct_repos > 1:
+            mixed_note = (
+                f'<p class="trend-mixed-warn">&#9888; Mixed projects &mdash; this '
+                f"Jenkins job has scanned <strong>{n_distinct_repos}</strong> distinct "
+                "repositories. Points below can jump between unrelated codebases; use "
+                "the <em>This project only</em> view above for a like-for-like trend.</p>"
+            )
+        view_a_html = f"""
+    {mixed_note}
+    <div class="sparkline-wrap">{a_spark}</div>
+    <p class="chart-hint">Every build of this Jenkins job, regardless of which repository was scanned.</p>
+    {_trend_delta_line(trend_history)}"""
+
+    # Assemble the card only if there is at least one view to show.
+    if view_a_html or view_b_html:
+        # If only one repo exists in history, A == B; say so instead of a toggle.
+        single_repo = (n_distinct_repos <= 1)
+        if single_repo:
+            body = view_b_html or view_a_html
+            note = ""
+            if view_b_html and view_a_html:
+                note = ('<p class="chart-hint">This Jenkins job has only ever scanned this '
+                        "one repository, so the all-builds and per-project trends are identical.</p>")
+            trend_section = f"""
 <div class="card">
-  <div class="card-title">Code Lines Trend &mdash; last {n_builds} build{"s" if n_builds != 1 else ""}</div>
-  <div class="sparkline-wrap">
-    {sparkline}
+  <div class="card-title">Code Lines Trend</div>
+  {note}
+  {body}
+</div>"""
+        else:
+            trend_section = f"""
+<div class="card">
+  <div class="card-title">Code Lines Trend</div>
+  <div class="trend-toggle">
+    <input type="radio" name="trend-view" id="trend-view-b" class="trend-radio" checked>
+    <input type="radio" name="trend-view" id="trend-view-a" class="trend-radio">
+    <div class="trend-tabs">
+      <label for="trend-view-b" class="trend-tab trend-tab-b">This project only ({html.escape(cur_repo_name)})</label>
+      <label for="trend-view-a" class="trend-tab trend-tab-a">All builds of this Jenkins job</label>
+    </div>
+    <div class="trend-panel trend-panel-b">
+      {view_b_html or '<p class="muted-msg">No per-project history yet.</p>'}
+    </div>
+    <div class="trend-panel trend-panel-a">
+      {view_a_html or '<p class="muted-msg">No job-wide history yet.</p>'}
+    </div>
   </div>
-  <p class="chart-hint">Hover any point to see that build's code-line total and its change.</p>
-  <p class="trend-delta" style="color:{tr_col}">
-    {html.escape(f"{tr_sign}{fmt(tr_delta)}")} code lines since build #{t_prev_h["build"]}
-    &nbsp;&middot;&nbsp;
-    <span style="color:#8a6a5a;font-weight:400">
-      range: {html.escape(fmt(min(v for _,v in trend_points)))}
-      &ndash; {html.escape(fmt(max(v for _,v in trend_points)))}
-    </span>
-  </p>
 </div>"""
     else:
         trend_section = ""
@@ -1509,6 +1717,50 @@ body {{
 /* ── Trend sparkline ────────────────────────────────────────────────────── */
 .sparkline-wrap {{ overflow-x: auto; margin-bottom: 8px; }}
 .trend-delta {{ font-size: 13px; font-weight: 700; margin-top: 4px; line-height: 1.5; }}
+.trend-mixed-warn {{
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #8a5a00;
+  background: #fff8ec;
+  border: 1px solid #e8c37a;
+  border-left: 4px solid #d4a017;
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+}}
+.trend-mixed-warn strong {{ color: #b04a00; }}
+/* Dependency-free tab toggle for the dual trend view (radio + sibling CSS). */
+.trend-radio {{ position: absolute; opacity: 0; pointer-events: none; }}
+.trend-tabs {{
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}}
+.trend-tab {{
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid #e0d8d0;
+  background: #f9f5f0;
+  color: #8a6a5a;
+  user-select: none;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}}
+.trend-tab:hover {{ border-color: #d4691c; color: #b04a00; }}
+.trend-panel {{ display: none; }}
+/* View B is the default (checked) tab; View A shows when its radio is checked. */
+#trend-view-b:checked ~ .trend-tabs .trend-tab-b,
+#trend-view-a:checked ~ .trend-tabs .trend-tab-a {{
+  background: #b04a00;
+  border-color: #b04a00;
+  color: #fff;
+}}
+#trend-view-b:checked ~ .trend-panel-b {{ display: block; }}
+#trend-view-a:checked ~ .trend-panel-a {{ display: block; }}
 
 /* ── Data tables ─────────────────────────────────────────────────────────── */
 .data-table {{

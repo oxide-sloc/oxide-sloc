@@ -76,6 +76,11 @@ enum Commands {
     Validate(ValidateArgs),
     /// Deliver a saved report via SMTP or webhook
     Send(Box<SendArgs>),
+    /// Materialize a saved JSON result into the local web-UI run layout under an
+    /// output directory, registering it in registry.json so the web UI's Compare /
+    /// "Scan Delta" page can pick it up. Ideal for dropping CI results into a user's
+    /// local `out/web/`.
+    Bundle(BundleArgs),
     /// Clone a repository and scan it at a specific branch, tag, or commit SHA
     GitScan(GitScanArgs),
     /// Scan two git refs and emit a comparison (diff) report
@@ -418,6 +423,29 @@ struct ValidateArgs {
     config: Option<PathBuf>,
 }
 
+// ── bundle ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Args)]
+struct BundleArgs {
+    /// Path to the JSON analysis result produced by `analyze --json-out`
+    #[arg(value_name = "RESULT_JSON")]
+    input: PathBuf,
+
+    /// Output directory that mirrors the local web UI's `out/web/` — the run
+    /// directory and `registry.json` are created/updated under here
+    #[arg(long, value_name = "DIR")]
+    out_dir: PathBuf,
+
+    /// Run identifier. Defaults to the run_id recorded in the JSON, else a new UUID.
+    #[arg(long, value_name = "ID")]
+    run_id: Option<String>,
+
+    /// Project label for the run directory / registry entry. Defaults to the
+    /// basename of the first input root, matching the web UI's derivation.
+    #[arg(long, value_name = "LABEL")]
+    label: Option<String>,
+}
+
 // ── send ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Args)]
@@ -732,6 +760,7 @@ async fn main() -> Result<()> {
         Commands::Init(args) => run_init(&args),
         Commands::Validate(args) => run_validate(&args),
         Commands::Send(args) => run_send(*args).await,
+        Commands::Bundle(args) => run_bundle(&args),
         Commands::GitScan(args) => run_git_scan(args).await,
         Commands::GitCompare(args) => run_git_compare(args),
         Commands::Watch(args) => run_watch(args).await,
@@ -1132,6 +1161,39 @@ fn run_report(args: &ReportArgs) -> Result<()> {
         eprintln!("wrote {}", path.display());
     }
 
+    Ok(())
+}
+
+// ── bundle handler ────────────────────────────────────────────────────────────
+
+fn run_bundle(args: &BundleArgs) -> Result<()> {
+    let run = read_json(&args.input)
+        .with_context(|| format!("failed to read result JSON: {}", args.input.display()))?;
+
+    // Resolve the run id: explicit flag, else the run_id embedded in the JSON, else a
+    // fresh UUID (uuid is already a CLI dependency — reuse it, no new dep).
+    let run_id = args
+        .run_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map_or_else(
+            || {
+                let embedded = run.tool.run_id.trim();
+                if embedded.is_empty() {
+                    uuid::Uuid::new_v4().simple().to_string()
+                } else {
+                    embedded.to_string()
+                }
+            },
+            String::from,
+        );
+
+    let run_dir = sloc_web::bundle_run(&run, &args.out_dir, &run_id, args.label.as_deref())
+        .context("failed to bundle run into local web-UI layout")?;
+
+    // The created run directory is the actionable output — print it to stdout.
+    println!("{}", run_dir.display());
     Ok(())
 }
 

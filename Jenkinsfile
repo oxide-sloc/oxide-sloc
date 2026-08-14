@@ -187,7 +187,11 @@ pipeline {
         string(
             name:         'REPORT_TITLE',
             defaultValue: 'oxide-sloc CI Report',
-            description:  '(optional) Title shown in the generated HTML and PDF reports.'
+            description:  '(optional) Title shown in the generated HTML and PDF reports. ' +
+                          'When LEFT AT THIS DEFAULT (or blank), the pipeline auto-derives a ' +
+                          'project-scoped title "<RepoName> CI SLOC Report" from the scanned ' +
+                          'repo name (SCAN_REPO_URL, else the tooling repo) so the report ' +
+                          'identifies the project. Set any other value to use it verbatim.'
         )
         string(
             name:         'OUTPUT_SUBDIR',

@@ -1975,15 +1975,35 @@ fn skipped_record(
     }
 }
 
+/// Normalize a raw lossy path string: strip any Windows verbatim / extended-length prefix,
+/// then convert backslashes to forward slashes.
+///
+/// `std::fs::canonicalize()` on Windows returns extended-length paths that begin with
+/// `\\?\` (or `\\?\UNC\` for UNC shares). Once backslashes are normalized to forward
+/// slashes this would otherwise leak into report output as `//?/C:/...`, which looks
+/// broken. This operates purely on the raw string, so it behaves identically on every
+/// platform (the tests run on Linux too).
+///
+/// - `\\?\C:\foo`            -> `C:/foo`
+/// - `\\?\UNC\server\share`  -> `//server/share`
+/// - anything else           -> backslashes replaced with slashes, otherwise unchanged
+fn normalize_path_str(raw: &str) -> String {
+    if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+        // `\\?\UNC\server\share\...` denotes `\\server\share\...` -> `//server/share/...`
+        format!("//{}", unc.replace('\\', "/"))
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.replace('\\', "/")
+    } else {
+        raw.replace('\\', "/")
+    }
+}
+
 fn relative_path_string(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+    normalize_path_str(&path.strip_prefix(root).unwrap_or(path).to_string_lossy())
 }
 
 fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    normalize_path_str(&path.to_string_lossy())
 }
 
 /// Summary of the git-repository shape under a selected scan root.
@@ -2575,6 +2595,32 @@ pub fn read_json(path: &Path) -> Result<AnalysisRun> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_path_str_strips_verbatim_drive_prefix() {
+        assert_eq!(
+            normalize_path_str(r"\\?\C:\jenkins-agent\repo\CMakeLists.txt"),
+            "C:/jenkins-agent/repo/CMakeLists.txt"
+        );
+    }
+
+    #[test]
+    fn normalize_path_str_strips_verbatim_unc_prefix() {
+        assert_eq!(
+            normalize_path_str(r"\\?\UNC\server\share\proj\main.rs"),
+            "//server/share/proj/main.rs"
+        );
+    }
+
+    #[test]
+    fn normalize_path_str_leaves_plain_paths_unchanged() {
+        // Relative path with backslashes -> only slash normalization applies.
+        assert_eq!(normalize_path_str(r"src\foo\bar.rs"), "src/foo/bar.rs");
+        // Already-forward-slash path is untouched.
+        assert_eq!(normalize_path_str("src/foo/bar.rs"), "src/foo/bar.rs");
+        // Plain absolute drive path (no verbatim prefix) is untouched except slashes.
+        assert_eq!(normalize_path_str(r"C:\foo\bar.rs"), "C:/foo/bar.rs");
+    }
 
     #[test]
     fn effective_counts_respect_code_only_policy() {
