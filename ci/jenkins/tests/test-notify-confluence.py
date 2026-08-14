@@ -202,12 +202,7 @@ def check(name, cond, detail=""):
     RESULTS.append((name, bool(cond), detail))
 
 
-def main() -> None:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-
+def _scenario_glob_fallback():
     # (a) glob fallback: result file is named result_project.json, slug is a
     #     DIFFERENT value so the slug-named file is absent — must still populate.
     st = _State()
@@ -220,6 +215,8 @@ def main() -> None:
           p.returncode == 0 and "3,475" in body,
           f"rc={p.returncode} body_has_metric={'3,475' in body}")
 
+
+def _scenario_no_result_json():
     # (b) no result JSON at all -> warning printed, still exits 0.
     st = _State()
     srv, port = _start(st)
@@ -230,6 +227,8 @@ def main() -> None:
           p.returncode == 0 and "no scan result JSON found" in p.stdout,
           f"rc={p.returncode} out={p.stdout.strip()[:80]!r}")
 
+
+def _scenario_republish_updates():
     # (c) create then re-publish same title -> update (PUT), never a 2nd create.
     st = _State()
     srv, port = _start(st)
@@ -243,13 +242,14 @@ def main() -> None:
           f"creates={creates} puts={len(st.puts)}")
     check("c2. update log line mentions 'updated'",
           "updated" in p2.stdout, p2.stdout.strip()[:80])
-
     # (d) both HTML and PDF attachments POSTed.
     check("d. both HTML+PDF attachments uploaded",
           "oxide-sloc-report.html" in st.attachment_posts
           and "oxide-sloc-report.pdf" in st.attachment_posts,
           f"attachments={st.attachment_posts}")
 
+
+def _scenario_non_fatal_failures():
     # (e1) 401 -> non-fatal exit 0.
     st = _State(fail_status=401)
     srv, port = _start(st)
@@ -257,14 +257,12 @@ def main() -> None:
     p = _run(out, "project", f"http://127.0.0.1:{port}")
     srv.shutdown()
     check("e1. HTTP 401 is non-fatal (exit 0)", p.returncode == 0, f"rc={p.returncode}")
-
     # (e2) blank base URL -> "not configured" skip, exit 0.
     out = _mk_out()
     p = _run(out, "project", "")
     check("e2. blank base URL exits 0 with 'not configured'",
           p.returncode == 0 and "not configured" in p.stdout,
           f"rc={p.returncode} out={p.stdout.strip()[:80]!r}")
-
     # (e3) unreachable host -> "unreachable ... skipping cleanly", exit 0.
     out = _mk_out()
     # 127.0.0.1:1 is a closed port -> connection refused.
@@ -273,6 +271,8 @@ def main() -> None:
           p.returncode == 0 and "unreachable" in p.stdout,
           f"rc={p.returncode} out={p.stdout.strip()[:80]!r}")
 
+
+def _scenario_attachment_data_fallback():
     # (f) attachment create returns 400 -> fall back to /data endpoint.
     st = _State(attach_first_400=True)
     srv, port = _start(st)
@@ -283,7 +283,8 @@ def main() -> None:
           p.returncode == 0 and len(st.data_endpoint_hits) >= 2,
           f"data_hits={len(st.data_endpoint_hits)}")
 
-    # ── report ──────────────────────────────────────────────────────────────
+
+def _report() -> bool:
     print("=" * 78)
     print("notify-confluence.py — regression tests")
     print("=" * 78)
@@ -296,7 +297,20 @@ def main() -> None:
         print(line)
     print("-" * 78)
     print("OVERALL:", "ALL PASSED" if all_ok else "SOME FAILED")
-    sys.exit(0 if all_ok else 1)
+    return all_ok
+
+
+def main() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    _scenario_glob_fallback()
+    _scenario_no_result_json()
+    _scenario_republish_updates()
+    _scenario_non_fatal_failures()
+    _scenario_attachment_data_fallback()
+    sys.exit(0 if _report() else 1)
 
 
 if __name__ == "__main__":

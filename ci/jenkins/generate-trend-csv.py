@@ -57,6 +57,126 @@ def _csv_field(value: str) -> str:
     return s
 
 
+def _write_style_csv(out, style_summary):
+    """Write the optional style_analysis.csv (no-op with a note when absent)."""
+    if not style_summary:
+        print("No style_summary in result.json — skipping style CSV")
+        return
+    col_threshold = style_summary.get("col_threshold", 80)
+    with open(os.path.join(out, "style_analysis.csv"), "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "style_files_analyzed",
+            f"{col_threshold}_col_compliant_pct",
+            "style_language_groups",
+        ])
+        w.writerow([
+            style_summary.get("files_analyzed", 0),
+            style_summary.get("line_col_compliant_pct", 0),
+            len(style_summary.get("by_language", [])),
+        ])
+    print(f"Style trend CSV: {col_threshold}-col compliant={style_summary.get('line_col_compliant_pct', 0)}%")
+
+
+def _write_sloc_csvs(out, data):
+    """Write summary.csv, per_language.csv, and (optionally) style_analysis.csv."""
+    totals = data["summary_totals"]
+    with open(os.path.join(out, "summary.csv"), "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["code_lines", "comment_lines", "blank_lines", "files_analyzed"])
+        w.writerow([
+            totals["code_lines"], totals["comment_lines"],
+            totals["blank_lines"], totals["files_analyzed"],
+        ])
+
+    langs = data.get("totals_by_language", [])
+    with open(os.path.join(out, "per_language.csv"), "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["language", "code_lines"])
+        for lang in langs:
+            display = lang.get("language", {})
+            name = display if isinstance(display, str) else str(display)
+            w.writerow([name, lang["code_lines"]])
+
+    print("SLOC trend CSVs written to:", out)
+    _write_style_csv(out, data.get("style_summary"))
+
+
+def _write_coverage_csv(out):
+    """Write coverage.csv from coverage/lcov.info (no-op with a note when absent)."""
+    lcov_path = os.path.join(out, "coverage", "lcov.info")
+    if not os.path.exists(lcov_path):
+        print("lcov.info not found — skipping coverage CSV")
+        return
+    total = hit = 0
+    with open(lcov_path) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("LF:"):
+                total += int(line[3:])
+            elif line.startswith("LH:"):
+                hit += int(line[3:])
+    pct = round(hit / total * 100, 1) if total > 0 else 0.0
+    with open(os.path.join(out, "coverage.csv"), "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["line_coverage_pct"])
+        w.writerow([pct])
+    print(f"Coverage trend CSV: {pct}% line coverage ({hit}/{total} lines hit)")
+
+
+def _row_identity(data):
+    """Resolve (repo_url, branch, commit) for a history row.
+
+    repo_url/branch/commit come from the env the pipeline exports; repo_url falls
+    back to the result JSON's own git_remote_url, commit to git_commit_(short|long),
+    branch to git_branch — so a self-scan (no external SCAN_REPO_URL) still records
+    identity. repo_url is normalized for credential-agnostic same-repo comparison.
+    """
+    repo_url = os.environ.get('SLOC_TREND_REPO_URL', '').strip()
+    if not repo_url:
+        repo_url = str(data.get('git_remote_url', '') or '').strip()
+    repo_url = _norm_repo_url(repo_url)
+    branch = os.environ.get('SLOC_TREND_BRANCH', '').strip()
+    if not branch:
+        branch = str(data.get('git_branch', '') or '').strip()
+    commit = os.environ.get('SLOC_TREND_COMMIT', '').strip()
+    if not commit:
+        commit = str(data.get('git_commit_short') or data.get('git_commit_long') or '').strip()
+    return repo_url, branch, commit
+
+
+def _append_history(history_file, data, totals):
+    """Append this build's row to the persistent per-job history CSV (capped at 50)."""
+    ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    build_num = os.environ.get('BUILD_NUMBER', '0')
+    hist_dir = os.path.dirname(history_file)
+    if hist_dir:
+        os.makedirs(hist_dir, exist_ok=True)
+
+    repo_url, branch, commit = _row_identity(data)
+
+    # New 9-column header. Appended columns keep old 6-column CSVs parseable.
+    header = ('timestamp,build,code_lines,comment_lines,blank_lines,'
+              'files_analyzed,repo_url,branch,commit\n')
+    if not os.path.exists(history_file):
+        with open(history_file, 'w') as hf:
+            hf.write(header)
+    with open(history_file, 'a') as hf:
+        hf.write(
+            f"{ts},{build_num},{totals['code_lines']},"
+            f"{totals['comment_lines']},{totals['blank_lines']},"
+            f"{totals['files_analyzed']},"
+            f"{_csv_field(repo_url)},{_csv_field(branch)},{_csv_field(commit)}\n"
+        )
+    with open(history_file) as hf:
+        lines = hf.readlines()
+    if len(lines) > 51:
+        with open(history_file, 'w') as hf:
+            hf.write(lines[0])
+            hf.writelines(lines[-50:])
+    print(f"Trend history updated: {history_file} ({len(lines)} entries)")
+
+
 def main():
     if len(sys.argv) < 4:
         print("Usage: generate-trend-csv.py <out_dir> <project_slug> <history_file>")
@@ -68,115 +188,22 @@ def main():
 
     # ── SLOC summary CSV ─────────────────────────────────────────────────────
     result_path = os.path.join(out, f"result_{proj}.json")
+    data = None
     totals = None
     if os.path.exists(result_path):
         with open(result_path) as f:
             data = json.load(f)
         totals = data["summary_totals"]
-
-        with open(os.path.join(out, "summary.csv"), "w", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["code_lines", "comment_lines", "blank_lines", "files_analyzed"])
-            w.writerow([
-                totals["code_lines"], totals["comment_lines"],
-                totals["blank_lines"], totals["files_analyzed"],
-            ])
-
-        langs = data.get("totals_by_language", [])
-        with open(os.path.join(out, "per_language.csv"), "w", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["language", "code_lines"])
-            for lang in langs:
-                display = lang.get("language", {})
-                name = display if isinstance(display, str) else str(display)
-                w.writerow([name, lang["code_lines"]])
-
-        print("SLOC trend CSVs written to:", out)
-
-        style_summary = data.get("style_summary")
-        if style_summary:
-            col_threshold = style_summary.get("col_threshold", 80)
-            with open(os.path.join(out, "style_analysis.csv"), "w", newline="") as f:
-                w = csv.writer(f)
-                w.writerow([
-                    "style_files_analyzed",
-                    f"{col_threshold}_col_compliant_pct",
-                    "style_language_groups",
-                ])
-                w.writerow([
-                    style_summary.get("files_analyzed", 0),
-                    style_summary.get("line_col_compliant_pct", 0),
-                    len(style_summary.get("by_language", [])),
-                ])
-            print(f"Style trend CSV: {col_threshold}-col compliant={style_summary.get('line_col_compliant_pct', 0)}%")
-        else:
-            print("No style_summary in result.json — skipping style CSV")
+        _write_sloc_csvs(out, data)
     else:
         print("result.json not found — skipping SLOC CSV generation")
 
     # ── Coverage CSV ─────────────────────────────────────────────────────────
-    lcov_path = os.path.join(out, "coverage", "lcov.info")
-    if os.path.exists(lcov_path):
-        total = hit = 0
-        with open(lcov_path) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("LF:"):
-                    total += int(line[3:])
-                elif line.startswith("LH:"):
-                    hit += int(line[3:])
-        pct = round(hit / total * 100, 1) if total > 0 else 0.0
-        with open(os.path.join(out, "coverage.csv"), "w", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["line_coverage_pct"])
-            w.writerow([pct])
-        print(f"Coverage trend CSV: {pct}% line coverage ({hit}/{total} lines hit)")
-    else:
-        print("lcov.info not found — skipping coverage CSV")
+    _write_coverage_csv(out)
 
     # ── Persistent trend history ─────────────────────────────────────────────
     if history_file and totals and os.path.exists(result_path):
-        ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-        build_num = os.environ.get('BUILD_NUMBER', '0')
-        hist_dir = os.path.dirname(history_file)
-        if hist_dir:
-            os.makedirs(hist_dir, exist_ok=True)
-
-        # Repo identity for this row. repo_url/branch/commit come from the env the
-        # pipeline exports; repo_url falls back to the result JSON's own
-        # git_remote_url, commit to git_commit_(short|long), branch to git_branch —
-        # so a self-scan (no external SCAN_REPO_URL) still records identity.
-        repo_url = os.environ.get('SLOC_TREND_REPO_URL', '').strip()
-        if not repo_url:
-            repo_url = str(data.get('git_remote_url', '') or '').strip()
-        repo_url = _norm_repo_url(repo_url)
-        branch = os.environ.get('SLOC_TREND_BRANCH', '').strip()
-        if not branch:
-            branch = str(data.get('git_branch', '') or '').strip()
-        commit = os.environ.get('SLOC_TREND_COMMIT', '').strip()
-        if not commit:
-            commit = str(data.get('git_commit_short') or data.get('git_commit_long') or '').strip()
-
-        # New 9-column header. Appended columns keep old 6-column CSVs parseable.
-        header = ('timestamp,build,code_lines,comment_lines,blank_lines,'
-                  'files_analyzed,repo_url,branch,commit\n')
-        if not os.path.exists(history_file):
-            with open(history_file, 'w') as hf:
-                hf.write(header)
-        with open(history_file, 'a') as hf:
-            hf.write(
-                f"{ts},{build_num},{totals['code_lines']},"
-                f"{totals['comment_lines']},{totals['blank_lines']},"
-                f"{totals['files_analyzed']},"
-                f"{_csv_field(repo_url)},{_csv_field(branch)},{_csv_field(commit)}\n"
-            )
-        with open(history_file) as hf:
-            lines = hf.readlines()
-        if len(lines) > 51:
-            with open(history_file, 'w') as hf:
-                hf.write(lines[0])
-                hf.writelines(lines[-50:])
-        print(f"Trend history updated: {history_file} ({len(lines)} entries)")
+        _append_history(history_file, data, totals)
 
 
 if __name__ == '__main__':

@@ -71,10 +71,7 @@ def strip_line_comments(src):
     return "\n".join(out)
 
 
-def test_helpers():
-    src = read(HELPERS)
-    code = strip_line_comments(src)
-
+def _check_resolve_bash(src):
     check("helpers: resolveBash() defined", "def resolveBash()" in src)
     check("helpers: resolveBash returns null on Unix",
           re.search(r"def resolveBash\(\)\s*\{\s*if \(isUnix\(\)\)\s*\{\s*return null",
@@ -98,6 +95,8 @@ def test_helpers():
           "LOCALAPPDATA" in src,
           "must probe %LOCALAPPDATA%\\Programs\\Git (per-user install, no admin)")
 
+
+def _check_shx(src, code):
     check("helpers: shx() defined", "def shx(String cmd)" in src)
     check("helpers: shxStdout() defined", "def shxStdout(String cmd)" in src)
     check("helpers: shxStatus() defined", "def shxStatus(String cmd)" in src)
@@ -121,6 +120,8 @@ def test_helpers():
     check("helpers: temp-script cleaned up in a finally",
           "finally" in src and "del /q" in src)
 
+
+def _check_init_env(src, code):
     check("helpers: initEnv() defined", "def initEnv()" in src)
     # Unix values must be byte-identical to the old environment{} block.
     check("helpers: initEnv Unix PATH byte-identical to old environment block",
@@ -161,13 +162,17 @@ def test_helpers():
     check("helpers: initEnv exports a POSIX history-home",
           "env.HISTORY_HOME_POSIX" in src)
 
+
+def _check_py_bin(src):
     check("helpers: pyBin() defined with python3->python->py fallback",
           "def pyBin()" in src and "command -v python3" in src
           and "command -v python " in src and "command -v py" in src)
     check("helpers: pyBin honours SLOC_PY override", "env.SLOC_PY" in src)
 
-    # No bare `sh` call sites outside the helper definitions. The only allowed
-    # `sh`/`sh(` tokens are the Unix branch inside shx/shxStdout/shxStatus.
+
+def _find_bare_sh(code):
+    # The only allowed `sh`/`sh(` tokens are the Unix branch inside
+    # shx/shxStdout/shxStatus.
     bare = []
     for i, line in enumerate(code.splitlines(), 1):
         s = line.strip()
@@ -179,6 +184,12 @@ def test_helpers():
             continue  # shxStatus() Unix branch
         if re.search(r"(^|[^\w.])sh\s+['\"]", line) or re.search(r"(^|[^\w.])sh\s*\(", line):
             bare.append((i, s))
+    return bare
+
+
+def _check_call_sites(code):
+    # No bare `sh` call sites outside the helper definitions.
+    bare = _find_bare_sh(code)
     check("helpers: no bare `sh` call sites remain (all via shx/shxStdout/shxStatus)",
           not bare,
           "; ".join(f"L{n}:{t[:50]}" for n, t in bare))
@@ -189,6 +200,16 @@ def test_helpers():
     check("helpers: no hardcoded `python3 ci/...` (all via ${pyBin()})",
           not py_hardcodes,
           "; ".join(f"L{n}" for n, _ in py_hardcodes))
+
+
+def test_helpers():
+    src = read(HELPERS)
+    code = strip_line_comments(src)
+    _check_resolve_bash(src)
+    _check_shx(src, code)
+    _check_init_env(src, code)
+    _check_py_bin(src)
+    _check_call_sites(code)
 
 
 def test_jenkinsfile():

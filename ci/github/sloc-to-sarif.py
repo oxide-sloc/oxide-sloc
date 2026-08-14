@@ -102,6 +102,32 @@ def _result(rule_id, level, uri, message):
     }
 
 
+def _finding_for_record(rec, dens_warn, dens_note, min_code):
+    """Return a SARIF result dict for an over-threshold per-file record, else None."""
+    if not isinstance(rec, dict):
+        return None
+    uri = rec.get("relative_path") or rec.get("path") or ""
+    if not uri or not _is_production_source(uri):
+        return None
+    cc = rec.get("cyclomatic_complexity")
+    code = (rec.get("effective_counts") or {}).get("code_lines", 0)
+    if not (isinstance(cc, int) and isinstance(code, int) and code >= min_code):
+        return None
+    density = cc / code
+    if density >= dens_warn:
+        return _result(
+            "high-cyclomatic-complexity", "warning", uri,
+            f"Complexity density {density:.2f} branches/line "
+            f"(~{cc} over {code:,} code lines; threshold {dens_warn:.2f}). "
+            "Consider simplifying the branch-heavy logic.")
+    if density >= dens_note:
+        return _result(
+            "high-cyclomatic-complexity", "note", uri,
+            f"Complexity density {density:.2f} branches/line "
+            f"(~{cc} over {code:,} code lines; threshold {dens_note:.2f}).")
+    return None
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         sys.stderr.write("usage: sloc-to-sarif.py <result.json> <out.sarif>\n")
@@ -117,26 +143,9 @@ def main() -> None:
 
     results = []
     for rec in data.get("per_file_records", []):
-        if not isinstance(rec, dict):
-            continue
-        uri = rec.get("relative_path") or rec.get("path") or ""
-        if not uri or not _is_production_source(uri):
-            continue
-        cc = rec.get("cyclomatic_complexity")
-        code = (rec.get("effective_counts") or {}).get("code_lines", 0)
-        if isinstance(cc, int) and isinstance(code, int) and code >= min_code:
-            density = cc / code
-            if density >= dens_warn:
-                results.append(_result(
-                    "high-cyclomatic-complexity", "warning", uri,
-                    f"Complexity density {density:.2f} branches/line "
-                    f"(~{cc} over {code:,} code lines; threshold {dens_warn:.2f}). "
-                    "Consider simplifying the branch-heavy logic."))
-            elif density >= dens_note:
-                results.append(_result(
-                    "high-cyclomatic-complexity", "note", uri,
-                    f"Complexity density {density:.2f} branches/line "
-                    f"(~{cc} over {code:,} code lines; threshold {dens_note:.2f})."))
+        finding = _finding_for_record(rec, dens_warn, dens_note, min_code)
+        if finding is not None:
+            results.append(finding)
 
     sarif = {
         "version": "2.1.0",

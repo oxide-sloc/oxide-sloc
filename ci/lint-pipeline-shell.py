@@ -81,6 +81,30 @@ def _match_paren(text: str, i: int) -> int:
     return len(text)
 
 
+def _sh_paren_step(text: str, k: int):
+    """Handle the `sh(...)` paren-call form starting at the '(' at index k.
+
+    Returns (script_text, script_abs_start, has_return) or None when the call has
+    no string literal.
+    """
+    end = _match_paren(text, k)
+    span = text[k:end]
+    has_return = "returnStatus" in span or "returnStdout" in span
+    # Locate the script string: prefer the value after a `script:` label, else the
+    # first string literal in the call.
+    search_from = k
+    lbl = re.search(r"script\s*:", span)
+    if lbl:
+        search_from = k + lbl.end()
+    j = search_from
+    while j < end:
+        if text[j] in "'\"":
+            content, start, _ = _read_string(text, j)
+            return content, start, has_return
+        j += 1
+    return None
+
+
 def _iter_sh_steps(text: str):
     """Yield (script_text, script_abs_start, has_return) for each `sh` step."""
     for m in re.finditer(r"(?<![\w.$])sh(?![\w])", text):
@@ -90,73 +114,67 @@ def _iter_sh_steps(text: str):
         if k >= len(text):
             continue
         if text[k] == "(":
-            end = _match_paren(text, k)
-            span = text[k:end]
-            has_return = "returnStatus" in span or "returnStdout" in span
-            # Locate the script string: prefer the value after a `script:` label,
-            # else the first string literal in the call.
-            search_from = k
-            lbl = re.search(r"script\s*:", span)
-            if lbl:
-                search_from = k + lbl.end()
-            j = search_from
-            while j < end:
-                if text[j] in "'\"":
-                    content, start, _ = _read_string(text, j)
-                    yield content, start, has_return
-                    break
-                j += 1
+            step = _sh_paren_step(text, k)
+            if step is not None:
+                yield step
         elif text[k] in "'\"":
             content, start, _ = _read_string(text, k)
             yield content, start, False
 
 
 # ── shell-aware top-level pipe detection ─────────────────────────────────────
+def _skip_quoted(script: str, i: int, n: int, quote: str) -> int:
+    """Advance past a quoted region whose opening quote is at index i.
+
+    Honours backslash escapes only inside double quotes (matching shell rules and
+    the original inline state machine). Returns the index just after the closing
+    quote, or n if the quote is unterminated.
+    """
+    i += 1
+    while i < n:
+        c = script[i]
+        if quote == '"' and c == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if c == quote:
+            return i + 1
+        i += 1
+    return i
+
+
+def _is_double_pipe(script: str, i: int, n: int) -> bool:
+    """True when the `|` at index i is part of a `||` operator."""
+    return (i + 1 < n and script[i + 1] == "|") or (i > 0 and script[i - 1] == "|")
+
+
+def _pipe_filter_word(script: str, i: int) -> str:
+    """The command word immediately after the `|` at index i (or '')."""
+    mm = re.match(r"\s*([\w./-]+)", script[i + 1 :])
+    return mm.group(1) if mm else ""
+
+
 def _top_level_pipes(script: str):
     """Return the filter word after each top-level `|` (skips ||, $(...), quotes)."""
     pipes = []
     i, n = 0, len(script)
-    sq = dq = bt = False
     sub = 0
     while i < n:
         c = script[i]
-        if sq:
-            if c == "'":
-                sq = False
-            i += 1
+        if c in "'\"`":
+            i = _skip_quoted(script, i, n, c)
             continue
-        if dq:
-            if c == "\\" and i + 1 < n:
-                i += 2
-                continue
-            if c == '"':
-                dq = False
-            i += 1
-            continue
-        if bt:
-            if c == "`":
-                bt = False
-            i += 1
-            continue
-        if c == "'":
-            sq = True
-        elif c == '"':
-            dq = True
-        elif c == "`":
-            bt = True
-        elif c == "$" and i + 1 < n and script[i + 1] == "(":
+        if c == "$" and i + 1 < n and script[i + 1] == "(":
             sub += 1
             i += 2
             continue
-        elif c == ")" and sub > 0:
+        if c == ")" and sub > 0:
             sub -= 1
         elif c == "|":
-            if (i + 1 < n and script[i + 1] == "|") or (i > 0 and script[i - 1] == "|"):
+            if _is_double_pipe(script, i, n):
                 i += 1
                 continue  # part of ||
             if sub == 0:
-                mm = re.match(r"\s*([\w./-]+)", script[i + 1 :])
-                pipes.append(mm.group(1) if mm else "")
+                pipes.append(_pipe_filter_word(script, i))
         i += 1
     return pipes
 
@@ -166,34 +184,45 @@ def _line_of(text: str, abs_off: int) -> int:
 
 
 # ── rule engine ──────────────────────────────────────────────────────────────
+def _rule2_finding(path, text, script, start, starts_bash):
+    """Rule 2: `set -o pipefail` in a non-bash sh step (dash aborts). Tuple or None."""
+    if "pipefail" in script and not starts_bash:
+        return (path, _line_of(text, start), 2,
+                "`set -o pipefail` in an sh step without a #!/bin/bash shebang "
+                "(Jenkins sh is dash and aborts on it)")
+    return None
+
+
+def _rule1_finding(path, text, script, start, has_return):
+    """Rule 1: status-masking top-level pipe in an sh step. Tuple or None."""
+    pipes = _top_level_pipes(script)
+    if not pipes:
+        return None
+    masking = [f for f in pipes if f in MASKING_FILTERS]
+    if not (has_return or masking):
+        return None
+    why = ("piped `sh` step under returnStatus/returnStdout"
+           if has_return else "top-level pipe into `%s`" % masking[0])
+    return (path, _line_of(text, start), 1,
+            "status-masking pipe in sh step (%s); under dash the pipeline's "
+            "exit status is the last command's. Add a #!/bin/bash shebang + "
+            "`set -o pipefail`, or redirect to a log and check the status "
+            "directly." % why)
+
+
 def check_groovy(path: str, text: str, findings: list):
     for script, start, has_return in _iter_sh_steps(text):
         first = next((ln for ln in script.splitlines() if ln.strip()), "").strip()
         starts_bash = first.startswith("#!") and "bash" in first
-        # Rule 2: pipefail in a non-bash sh step (dash rejects it outright).
-        if "pipefail" in script and not starts_bash:
-            findings.append(
-                (path, _line_of(text, start), 2,
-                 "`set -o pipefail` in an sh step without a #!/bin/bash shebang "
-                 "(Jenkins sh is dash and aborts on it)")
-            )
-        # Rule 1: status-masking top-level pipe (exempt when bash + pipefail).
+        f2 = _rule2_finding(path, text, script, start, starts_bash)
+        if f2:
+            findings.append(f2)
+        # Rule 1 is exempt when bash + pipefail.
         if starts_bash and "pipefail" in script:
             continue
-        pipes = _top_level_pipes(script)
-        if not pipes:
-            continue
-        masking = [f for f in pipes if f in MASKING_FILTERS]
-        if has_return or masking:
-            why = ("piped `sh` step under returnStatus/returnStdout"
-                   if has_return else "top-level pipe into `%s`" % masking[0])
-            findings.append(
-                (path, _line_of(text, start), 1,
-                 "status-masking pipe in sh step (%s); under dash the pipeline's "
-                 "exit status is the last command's. Add a #!/bin/bash shebang + "
-                 "`set -o pipefail`, or redirect to a log and check the status "
-                 "directly." % why)
-            )
+        f1 = _rule1_finding(path, text, script, start, has_return)
+        if f1:
+            findings.append(f1)
 
 
 def check_shell(path: str, text: str, findings: list):

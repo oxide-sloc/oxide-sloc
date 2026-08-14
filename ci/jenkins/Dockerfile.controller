@@ -44,9 +44,9 @@
 #   4.  docker build ... (rebuild the image)
 #   5.  docker compose up -d  (or equivalent restart)
 
-# Digest pinned to prevent silent base-image substitution.
+# Digest pinned (tag lts-jdk21) to prevent silent base-image substitution.
 # To update: docker pull jenkins/jenkins:lts-jdk21 && docker inspect --format '{{index .RepoDigests 0}}' jenkins/jenkins:lts-jdk21
-FROM jenkins/jenkins:lts-jdk21@sha256:f4f65e6cd1405cd889b7f5ac33f9d5cdc2a099de6b87fe8a3933b9c5d53d1d02
+FROM jenkins/jenkins@sha256:f4f65e6cd1405cd889b7f5ac33f9d5cdc2a099de6b87fe8a3933b9c5d53d1d02
 
 USER root
 

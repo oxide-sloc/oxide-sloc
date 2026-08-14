@@ -37,9 +37,9 @@
 # The toolchain version is read from rust-toolchain.toml at image build time.
 # After bumping the channel value, rebuild the image and redeploy the container.
 
-# Digest pinned to prevent silent base-image substitution.
+# Digest pinned (tag lts-jdk21) to prevent silent base-image substitution.
 # To update: docker pull jenkins/jenkins:lts-jdk21 && docker inspect --format '{{index .RepoDigests 0}}' jenkins/jenkins:lts-jdk21
-FROM jenkins/jenkins:lts-jdk21@sha256:f4f65e6cd1405cd889b7f5ac33f9d5cdc2a099de6b87fe8a3933b9c5d53d1d02
+FROM jenkins/jenkins@sha256:f4f65e6cd1405cd889b7f5ac33f9d5cdc2a099de6b87fe8a3933b9c5d53d1d02
 
 USER root
 
@@ -85,16 +85,12 @@ RUN set -eux; \
     rm /tmp/rustup-init.sh /tmp/rust-toolchain.toml; \
     chmod -R a+rX /opt/rust-toolchain; \
     mkdir -p /var/jenkins_home/.rust-cache; \
-    chown -R jenkins:jenkins /var/jenkins_home/.rust-cache
-
-# Install CI tooling into the baked-in toolchain so every pipeline run can use
-# cargo-nextest (JUnit test results) and cargo-llvm-cov (coverage) without
-# touching the network.  Source for both tools is vendored in ci/tools/Cargo.toml
-# so that air-gapped agents can also install them via `cargo install --offline`.
-RUN set -eux; \
-    export CARGO_HOME=/opt/rust-toolchain/cargo \
-           RUSTUP_HOME=/opt/rust-toolchain/rustup \
-           PATH="/opt/rust-toolchain/cargo/bin:${PATH}"; \
+    chown -R jenkins:jenkins /var/jenkins_home/.rust-cache; \
+    # Install CI tooling into the baked-in toolchain so every pipeline run can use
+    # cargo-nextest (JUnit test results) and cargo-llvm-cov (coverage) without
+    # touching the network.  Source for both tools is vendored in ci/tools/Cargo.toml
+    # so that air-gapped agents can also install them via `cargo install --offline`.
+    export PATH="/opt/rust-toolchain/cargo/bin:${PATH}"; \
     cargo install cargo-nextest --locked; \
     cargo install cargo-llvm-cov --locked; \
     chmod -R a+rX /opt/rust-toolchain

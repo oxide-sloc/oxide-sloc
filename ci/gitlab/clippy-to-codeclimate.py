@@ -69,56 +69,60 @@ def _rel_path(file_name):
     return path
 
 
+def _parse_record(line):
+    """Parse one NDJSON line; return the record only if it's a compiler-message."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return None  # non-JSON progress lines, etc.
+    if record.get("reason") != "compiler-message":
+        return None
+    return record
+
+
+def _finding_from_message(message):
+    """Build a Code Climate finding dict from a compiler message, or None."""
+    severity = _SEVERITY.get(message.get("level", ""))
+    if severity is None:
+        return None  # skip non-diagnostic levels we don't map
+    span = _primary_span(message)
+    if not span or not span.get("file_name"):
+        return None  # summary notes ("aborting due to N errors") have no span
+    text = message.get("message", "").strip()
+    if not text:
+        return None
+    check_name = (message.get("code") or {}).get("code") or "clippy"
+    path = _rel_path(span["file_name"])
+    begin = int(span.get("line_start", 1))
+    # Non-cryptographic dedup key for identical findings; not a security digest.
+    fingerprint = hashlib.sha1(
+        f"{path}:{begin}:{check_name}:{text}".encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()
+    return {
+        "description": text,
+        "check_name": check_name,
+        "fingerprint": fingerprint,
+        "severity": severity,
+        "location": {"path": path, "lines": {"begin": begin}},
+    }
+
+
 def convert(raw):
     findings = []
     seen = set()  # de-dupe identical (path, line, check, message) fingerprints
     for line in raw.splitlines():
-        line = line.strip()
-        if not line:
+        record = _parse_record(line)
+        if record is None:
             continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue  # non-JSON progress lines, etc.
-        if record.get("reason") != "compiler-message":
+        finding = _finding_from_message(record.get("message") or {})
+        if finding is None or finding["fingerprint"] in seen:
             continue
-        message = record.get("message") or {}
-        level = message.get("level", "")
-        severity = _SEVERITY.get(level)
-        if severity is None:
-            continue  # skip non-diagnostic levels we don't map
-
-        span = _primary_span(message)
-        if not span or not span.get("file_name"):
-            continue  # summary notes ("aborting due to N errors") have no span
-
-        code = message.get("code") or {}
-        check_name = code.get("code") or "clippy"
-        text = message.get("message", "").strip()
-        if not text:
-            continue
-
-        path = _rel_path(span["file_name"])
-        begin = int(span.get("line_start", 1))
-
-        # Non-cryptographic dedup key for identical findings; not a security digest.
-        fingerprint = hashlib.sha1(
-            f"{path}:{begin}:{check_name}:{text}".encode("utf-8"),
-            usedforsecurity=False,
-        ).hexdigest()
-        if fingerprint in seen:
-            continue
-        seen.add(fingerprint)
-
-        findings.append(
-            {
-                "description": text,
-                "check_name": check_name,
-                "fingerprint": fingerprint,
-                "severity": severity,
-                "location": {"path": path, "lines": {"begin": begin}},
-            }
-        )
+        seen.add(finding["fingerprint"])
+        findings.append(finding)
     return findings
 
 

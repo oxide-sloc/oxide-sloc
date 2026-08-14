@@ -124,7 +124,8 @@ def probe_http(url: str, user: str, token: str, timeout: int = _PROBE_TIMEOUT):
             return resp.status
     except urllib.error.HTTPError as e:
         return e.code
-    except (urllib.error.URLError, OSError, ValueError):
+    except (OSError, ValueError):
+        # urllib.error.URLError is a subclass of OSError, so it is caught here too.
         return None
 
 
@@ -154,10 +155,12 @@ def decide(
       always fully functional. Job-admin still lets us publish reports and set
       the build description.
     """
-    plugins_source = (
-        "update-center" if update_center_reachable
-        else ("offline-bundle" if offline_hpi_present else "none")
-    )
+    if update_center_reachable:
+        plugins_source = "update-center"
+    elif offline_hpi_present:
+        plugins_source = "offline-bundle"
+    else:
+        plugins_source = "none"
     can_install_plugins = bool(
         reachable and system_admin and plugins_source != "none"
     )
@@ -213,7 +216,7 @@ def decide(
     }
 
 
-def assess(out_dir: str) -> dict:
+def assess() -> dict:
     """Probe the live controller and return the capability decision."""
     base = os.environ.get("JENKINS_BASE_URL", "").rstrip("/")
     if not base:
@@ -265,7 +268,7 @@ def main() -> None:
         os.makedirs(out_dir, exist_ok=True)
     except OSError:
         pass
-    caps = assess(out_dir)
+    caps = assess()
     path = os.path.join(out_dir, "capabilities.json")
     try:
         with open(path, "w", encoding="utf-8") as fh:

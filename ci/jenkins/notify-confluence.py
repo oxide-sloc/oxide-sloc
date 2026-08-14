@@ -54,6 +54,7 @@ import urllib.request
 from typing import Optional
 
 _TIMEOUT = 10
+_JSON_CONTENT_TYPE = "application/json"
 
 
 def _auth_header() -> Optional[str]:
@@ -71,15 +72,16 @@ def _req(method: str, url: str, auth: str, body: Optional[dict] = None):
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", auth)
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "application/json")
+    req.add_header("Content-Type", _JSON_CONTENT_TYPE)
+    req.add_header("Accept", _JSON_CONTENT_TYPE)
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # nosec B310 - configured http(s) Confluence API URL; errors caught below
             payload = resp.read().decode("utf-8")
             return resp.status, json.loads(payload) if payload else {}
     except urllib.error.HTTPError as e:
         return e.code, None
-    except (urllib.error.URLError, OSError, ValueError):
+    except (OSError, ValueError):
+        # urllib.error.URLError is a subclass of OSError, so it is caught here too.
         return None, None
 
 
@@ -120,13 +122,14 @@ def _multipart_post(url: str, auth: str, filename: str, ctype: str, data: bytes)
     req.add_header("Authorization", auth)
     req.add_header("X-Atlassian-Token", "nocheck")
     req.add_header("Content-Type", f"multipart/form-data; boundary={_BOUNDARY}")
-    req.add_header("Accept", "application/json")
+    req.add_header("Accept", _JSON_CONTENT_TYPE)
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # nosec B310 - configured http(s) Confluence API URL; errors caught below
             return resp.status, None
     except urllib.error.HTTPError as e:
         return e.code, None
-    except (urllib.error.URLError, OSError, ValueError):
+    except (OSError, ValueError):
+        # urllib.error.URLError is a subclass of OSError, so it is caught here too.
         return None, None
 
 
@@ -222,6 +225,77 @@ def _storage_body(data: dict, report_url: str) -> str:
     )
 
 
+def _load_scan_result(out_dir: str, slug: str) -> dict:
+    """Load the scan-result JSON for the summary table.
+
+    Prefers ``result_<slug>.json`` but ALWAYS falls back to any ``result_*.json``
+    — if the scan wrote its output under a name that drifts from the SLOC_PROJECT
+    slug, looking only for result_<slug>.json would silently publish an all-zeros
+    table. Returns {} (and warns) when nothing loadable is found.
+    """
+    import glob as _glob
+
+    candidates = []
+    if slug:
+        candidates.append(os.path.join(out_dir, f"result_{slug}.json"))
+    candidates += sorted(_glob.glob(os.path.join(out_dir, "result_*.json")))
+    seen = set()
+    candidates = [c for c in candidates if not (c in seen or seen.add(c))]
+    for c in candidates:
+        try:
+            with open(c, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            continue
+    print(f"notify-confluence: warning — no scan result JSON found in '{out_dir}'; "
+          "summary table will be empty.")
+    return {}
+
+
+def _find_page_results(api: str, space: str, title: str, auth: str):
+    """GET existing page(s) by title within the space. Returns the results list,
+    or None when Confluence is unreachable (caller skips cleanly)."""
+    from urllib.parse import quote
+    q = f"{api}?spaceKey={quote(space)}&title={quote(title)}&expand=version"
+    status, found = _req("GET", q, auth)
+    if status is None:
+        return None
+    return (found or {}).get("results", []) if isinstance(found, dict) else []
+
+
+def _build_common(title: str, space: str, body_storage: str) -> dict:
+    common = {
+        "type": "page",
+        "title": title,
+        "space": {"key": space},
+        "body": {"storage": {"value": body_storage, "representation": "storage"}},
+    }
+    parent = os.environ.get("CONFLUENCE_PARENT_ID", "").strip()
+    if parent:
+        common["ancestors"] = [{"id": parent}]
+    return common
+
+
+def _upsert_page(api: str, title: str, common: dict, results: list, auth: str):
+    """Create the page, or update the first existing match. Returns (ok, page_id)."""
+    if results:
+        page = results[0]
+        pid = page.get("id")
+        ver = int(page.get("version", {}).get("number", 1)) + 1
+        common["version"] = {"number": ver}
+        st, _ = _req("PUT", f"{api}/{pid}", auth, common)
+        ok = st is not None and 200 <= st < 300
+        print(f"notify-confluence: {'updated' if ok else 'update failed ('+str(st)+') for'} "
+              f"page '{title}' (v{ver}).")
+        return ok, pid
+    st, created = _req("POST", api, auth, common)
+    ok = st is not None and 200 <= st < 300
+    pid = (created or {}).get("id") if isinstance(created, dict) else None
+    print(f"notify-confluence: {'created' if ok else 'create failed ('+str(st)+') for'} "
+          f"page '{title}'.")
+    return ok, pid
+
+
 def main() -> None:
     out_dir = sys.argv[1] if len(sys.argv) >= 2 else "."
     slug = sys.argv[2] if len(sys.argv) >= 3 else ""
@@ -234,29 +308,7 @@ def main() -> None:
               "(need CONFLUENCE_BASE_URL, CONFLUENCE_SPACE_KEY, CONFLUENCE_TOKEN) - skipping.")
         return
 
-    # Load the scan result for the summary table. Prefer the slug-named file, but
-    # ALWAYS fall back to any result_*.json — if the scan wrote its output under a
-    # name that drifts from the SLOC_PROJECT slug, looking only for result_<slug>.json
-    # would leave data={} and silently publish an all-zeros table.
-    data = {}
-    import glob as _glob
-
-    candidates = []
-    if slug:
-        candidates.append(os.path.join(out_dir, f"result_{slug}.json"))
-    candidates += sorted(_glob.glob(os.path.join(out_dir, "result_*.json")))
-    seen = set()
-    candidates = [c for c in candidates if not (c in seen or seen.add(c))]
-    for c in candidates:
-        try:
-            with open(c, encoding="utf-8") as fh:
-                data = json.load(fh)
-            break
-        except (OSError, ValueError):
-            continue
-    if not data:
-        print(f"notify-confluence: warning — no scan result JSON found in '{out_dir}'; "
-              "summary table will be empty.")
+    data = _load_scan_result(out_dir, slug)
 
     title = os.environ.get("CONFLUENCE_PAGE_TITLE", "").strip() or (
         f"oxide-sloc — {os.environ.get('JOB_NAME', slug) or 'report'}"
@@ -265,40 +317,13 @@ def main() -> None:
     body_storage = _storage_body(data, report_url)
 
     api = f"{base}/rest/api/content"
-    # Find an existing page by title within the space.
-    from urllib.parse import quote
-    q = f"{api}?spaceKey={quote(space)}&title={quote(title)}&expand=version"
-    status, found = _req("GET", q, auth)
-    if status is None:
+    results = _find_page_results(api, space, title, auth)
+    if results is None:
         print("notify-confluence: Confluence unreachable (air-gapped?) - skipping cleanly.")
         return
 
-    results = (found or {}).get("results", []) if isinstance(found, dict) else []
-    common = {
-        "type": "page",
-        "title": title,
-        "space": {"key": space},
-        "body": {"storage": {"value": body_storage, "representation": "storage"}},
-    }
-    parent = os.environ.get("CONFLUENCE_PARENT_ID", "").strip()
-    if parent:
-        common["ancestors"] = [{"id": parent}]
-
-    if results:
-        page = results[0]
-        pid = page.get("id")
-        ver = int(page.get("version", {}).get("number", 1)) + 1
-        common["version"] = {"number": ver}
-        st, _ = _req("PUT", f"{api}/{pid}", auth, common)
-        ok = st is not None and 200 <= st < 300
-        print(f"notify-confluence: {'updated' if ok else 'update failed ('+str(st)+') for'} "
-              f"page '{title}' (v{ver}).")
-    else:
-        st, created = _req("POST", api, auth, common)
-        ok = st is not None and 200 <= st < 300
-        pid = (created or {}).get("id") if isinstance(created, dict) else None
-        print(f"notify-confluence: {'created' if ok else 'create failed ('+str(st)+') for'} "
-              f"page '{title}'.")
+    common = _build_common(title, space, body_storage)
+    ok, pid = _upsert_page(api, title, common, results, auth)
 
     # Best-effort: embed the full HTML/PDF report as attachments on the page.
     if ok and pid:
