@@ -1,0 +1,46 @@
+# Example: trigger an oxide-sloc scan from GitLab CI once the build succeeds.
+#
+# Two patterns are shown. Pick whichever fits your topology.
+#
+# CI/CD variables to set (Settings -> CI/CD -> Variables), masked:
+#   OXIDE_SLOC_URL     https://sloc.internal.example.com
+#   OXIDE_SLOC_SECRET  shared HMAC secret of a matching scan schedule
+
+stages:
+  - build
+  - notify-sloc
+
+build:
+  stage: build
+  script:
+    - echo "…your real build…"
+
+# ── Pattern A: same pipeline, a later stage POSTs to the oxide-sloc server ─────
+# `needs`/stage ordering means this only runs after `build` passed. If `build`
+# fails the pipeline stops and this job never runs — that IS the success gate.
+trigger-oxide-sloc:
+  stage: notify-sloc
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl openssl git bash
+  script:
+    - |
+      ci/downstream-trigger/trigger-oxide-sloc.sh \
+        --repo "$CI_REPOSITORY_URL" \
+        --branch "$CI_COMMIT_REF_NAME" \
+        --commit "$CI_COMMIT_SHA" \
+        --status success \
+        --system gitlab \
+        --job "$CI_PROJECT_PATH" \
+        --build-id "$CI_PIPELINE_ID" \
+        --build-url "$CI_PIPELINE_URL"
+
+# ── Pattern B: no server — trigger a downstream (multi-project) pipeline ───────
+# The native `trigger:` keyword is the cleanest multi-project handoff, but works
+# only on reasonably modern GitLab. The portable script is the fallback that also
+# works from an old shell runner:
+#
+#   trigger-oxide-sloc.sh --mode dispatch --dispatch gitlab \
+#     --url "https://gitlab.example.com/api/v4/projects/<scan-project-id>/trigger/pipeline" \
+#     --token "$SLOC_TRIGGER_TOKEN" --repo "$CI_REPOSITORY_URL" \
+#     --branch "$CI_COMMIT_REF_NAME" --commit "$CI_COMMIT_SHA" --build-id "$CI_PIPELINE_ID"

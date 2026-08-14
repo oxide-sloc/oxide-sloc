@@ -12,6 +12,11 @@ pub enum WebhookProvider {
     GitHub,
     GitLab,
     Bitbucket,
+    /// Provider-agnostic build-completion trigger (`/webhooks/ci`). Fired by an
+    /// upstream CI build finishing rather than by a git push, so it carries no
+    /// native provider payload — any CI system (incl. very old pipelines) can
+    /// post a small signed JSON body.
+    Ci,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

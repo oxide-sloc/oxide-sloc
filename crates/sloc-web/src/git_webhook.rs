@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use sloc_git::{
-    ScanSchedule, ScanScheduleKind, ScanScheduleProvider, WebhookEvent, clone_or_fetch,
-    create_worktree, destroy_worktree, get_sha, parse_bitbucket_push, parse_github_push,
-    parse_gitlab_push,
+    ScanSchedule, ScanScheduleKind, ScanScheduleProvider, WebhookEvent, WebhookProvider,
+    clone_or_fetch, create_worktree, destroy_worktree, get_sha, parse_bitbucket_push,
+    parse_github_push, parse_gitlab_push,
     webhook::{verify_bitbucket_sig, verify_github_sig},
 };
 
@@ -47,6 +47,41 @@ pub struct CreateScheduleRequest {
 #[derive(Debug, Deserialize)]
 pub struct ScheduleIdQuery {
     pub id: uuid::Uuid,
+}
+
+/// Provider-agnostic build-completion payload posted to `/webhooks/ci`.
+///
+/// Deliberately tiny and forgiving so that even very old CI systems (a Jenkins
+/// freestyle job, a shell step in a legacy pipeline) can emit it with nothing
+/// more than `curl`. Only `repo_url` + `branch` are required to match a
+/// configured scan schedule; everything else is optional but strengthens the
+/// guards (`status` gates on success, `upstream.build_id` enables idempotency).
+#[derive(Debug, Deserialize)]
+pub struct CiBuildCompletePayload {
+    pub repo_url: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Optional exact commit to scan. If omitted, the branch tip is used.
+    #[serde(default)]
+    pub commit_sha: Option<String>,
+    /// Upstream build result. Anything not recognised as success is skipped.
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub upstream: Option<CiUpstream>,
+}
+
+/// Provenance of the upstream build. Used for logging and the idempotency key.
+#[derive(Debug, Default, Deserialize)]
+pub struct CiUpstream {
+    #[serde(default)]
+    pub system: Option<String>,
+    #[serde(default)]
+    pub job: Option<String>,
+    #[serde(default)]
+    pub build_id: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 // ── schedule CRUD ─────────────────────────────────────────────────────────────
@@ -191,6 +226,161 @@ pub async fn handle_bitbucket_webhook(
     let sig = header_str(&headers, "x-hub-signature");
     dispatch_hmac_webhook(state, event, &body, &sig, is_valid_bitbucket_sig).await;
     StatusCode::ACCEPTED.into_response()
+}
+
+/// Generic build-completion receiver: an upstream CI build finishing triggers a
+/// downstream oxide-sloc scan. Unlike the push receivers this is not tied to any
+/// provider's payload shape, so any pipeline — however old — can drive it with a
+/// single signed `curl`. Three independent guards must all pass before a scan
+/// runs: the upstream status must be a success, the body HMAC must validate
+/// against a matching schedule's secret, and the upstream build id must not have
+/// been processed already (idempotency). Auth outcomes are never leaked back to
+/// the caller — a bad signature is indistinguishable from success — but the two
+/// non-secret skip reasons (unsuccessful build, duplicate delivery) are reported
+/// so operators can debug their wiring.
+pub async fn handle_ci_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let payload: CiBuildCompletePayload = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            info!(error = %e, "ci webhook payload parse failed");
+            return (StatusCode::BAD_REQUEST, format!("invalid ci payload: {e}")).into_response();
+        }
+    };
+
+    let repo_url = payload.repo_url.trim().to_owned();
+    let branch = payload.branch.as_deref().unwrap_or("").trim().to_owned();
+    if repo_url.is_empty() || branch.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "ci payload requires non-empty repo_url and branch",
+        )
+            .into_response();
+    }
+
+    // Guard 1 — success gate. A missing status is treated as success so the
+    // simplest possible caller ("my build reached its final step") still works;
+    // anything explicitly non-success is a normal, non-secret skip.
+    let status = payload.status.as_deref().unwrap_or("success");
+    if !is_success_status(status) {
+        info!(
+            repo = %repo_url, branch = %branch, status,
+            "ci webhook: upstream build not successful — no scan triggered"
+        );
+        return skip_response("upstream build not successful");
+    }
+
+    let sig = header_str(&headers, "x-sloc-signature");
+    let build_key = ci_build_key(payload.upstream.as_ref());
+    let upstream_url = payload
+        .upstream
+        .as_ref()
+        .and_then(|u| u.url.clone())
+        .unwrap_or_default();
+
+    // Guard 2 — HMAC. Only schedules whose secret validates the exact body bytes
+    // are eligible. Guard 3 — idempotency: skip any schedule that already
+    // recorded this upstream build id, and optimistically claim the id now so a
+    // flaky upstream retrying its notification cannot double-trigger.
+    let mut store = state.schedules.lock().await;
+    let matching_ids: Vec<uuid::Uuid> = store
+        .find_matching(&repo_url, &branch)
+        .into_iter()
+        .filter(|s| matches_hmac(s, &body, &sig, &is_valid_github_sig))
+        .map(|s| s.id)
+        .collect();
+    let valid_sig_count = matching_ids.len();
+
+    let mut fresh: Vec<ScanSchedule> = Vec::new();
+    for id in &matching_ids {
+        if let Some(s) = store.by_id_mut(*id) {
+            if let Some(key) = &build_key {
+                if s.last_ci_build.as_deref() == Some(key.as_str()) {
+                    continue; // duplicate delivery of the same upstream build
+                }
+                s.last_ci_build = Some(key.clone());
+            }
+            fresh.push(s.clone());
+        }
+    }
+    let duplicate = valid_sig_count > 0 && fresh.is_empty();
+    if !fresh.is_empty() {
+        let _ = store.save(&state.schedules_path);
+    }
+    drop(store);
+
+    info!(
+        repo = %repo_url,
+        branch = %branch,
+        upstream_url = %upstream_url,
+        valid_signatures = valid_sig_count,
+        triggered = fresh.len(),
+        "inbound ci build-complete webhook received"
+    );
+
+    if duplicate {
+        return skip_response("duplicate upstream build");
+    }
+
+    // commit_sha is optional — fall back to the branch tip. `scan_commit` fetches
+    // then worktrees this ref, so a branch name resolves fine and keeps pipelines
+    // that cannot emit a SHA working.
+    let commit_ref = payload
+        .commit_sha
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&branch)
+        .to_owned();
+
+    let event = WebhookEvent {
+        provider: WebhookProvider::Ci,
+        repo_url,
+        branch,
+        commit_sha: commit_ref,
+        pusher: build_key,
+    };
+    spawn_scans(state, event, fresh);
+    StatusCode::ACCEPTED.into_response()
+}
+
+/// A non-secret 200 skip: the request was well-formed and (where relevant)
+/// correctly signed, but a guard other than authentication declined the scan.
+fn skip_response(reason: &str) -> Response {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "status": "skipped", "reason": reason })),
+    )
+        .into_response()
+}
+
+/// Recognised success tokens across CI systems (Jenkins `SUCCESS`, GitLab
+/// `success`, a raw exit code `0`, a boolean `true`, etc.). Case-insensitive.
+fn is_success_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "success" | "succeeded" | "passed" | "pass" | "ok" | "green" | "completed" | "0" | "true"
+    )
+}
+
+/// Build the `<system>:<job>:<build_id>` idempotency key. Returns `None` when no
+/// build id is supplied — such deliveries cannot be de-duplicated, so callers
+/// that want the guard must always send `upstream.build_id`.
+fn ci_build_key(upstream: Option<&CiUpstream>) -> Option<String> {
+    let u = upstream?;
+    let non_empty = |o: &Option<String>| {
+        o.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let build_id = non_empty(&u.build_id)?;
+    let system = non_empty(&u.system).unwrap_or_else(|| "ci".to_owned());
+    let job = non_empty(&u.job).unwrap_or_else(|| "-".to_owned());
+    Some(format!("{system}:{job}:{build_id}"))
 }
 
 // ── dispatch helpers ──────────────────────────────────────────────────────────
@@ -450,6 +640,112 @@ fn ct_eq(a: &str, b: &str) -> bool {
 mod tests {
     use super::*;
     use sloc_git::{ScanScheduleKind, ScanScheduleProvider};
+
+    // ── /webhooks/ci guards ───────────────────────────────────────────────────
+
+    #[test]
+    fn success_status_accepts_common_tokens() {
+        for s in [
+            "success",
+            "SUCCESS",
+            " Success ",
+            "passed",
+            "pass",
+            "ok",
+            "green",
+            "completed",
+            "0",
+            "true",
+        ] {
+            assert!(is_success_status(s), "{s:?} should be a success");
+        }
+    }
+
+    #[test]
+    fn success_status_rejects_failures_and_unknowns() {
+        for s in [
+            "failure", "failed", "1", "error", "aborted", "unstable", "canceled", "false", "",
+            "running",
+        ] {
+            assert!(!is_success_status(s), "{s:?} should not be a success");
+        }
+    }
+
+    #[test]
+    fn ci_build_key_requires_build_id() {
+        // No upstream at all → no key (dedup disabled).
+        assert_eq!(ci_build_key(None), None);
+        // Upstream present but no build id → still no key.
+        let u = CiUpstream {
+            system: Some("jenkins".into()),
+            job: Some("api".into()),
+            build_id: None,
+            url: None,
+        };
+        assert_eq!(ci_build_key(Some(&u)), None);
+    }
+
+    #[test]
+    fn ci_build_key_composes_stable_and_fills_defaults() {
+        let full = CiUpstream {
+            system: Some("jenkins".into()),
+            job: Some("api-pipeline".into()),
+            build_id: Some("1234".into()),
+            url: None,
+        };
+        assert_eq!(
+            ci_build_key(Some(&full)).as_deref(),
+            Some("jenkins:api-pipeline:1234")
+        );
+        // Missing system/job fall back to fixed placeholders so the key is stable.
+        let sparse = CiUpstream {
+            system: None,
+            job: None,
+            build_id: Some("42".into()),
+            url: None,
+        };
+        assert_eq!(ci_build_key(Some(&sparse)).as_deref(), Some("ci:-:42"));
+    }
+
+    #[test]
+    fn ci_signature_roundtrips_against_schedule_secret() {
+        // What a trigger script computes must be what a matching schedule accepts.
+        let secret = "s3cr3t-shared-key";
+        let body = br#"{"repo_url":"https://x/y.git","branch":"main","status":"success"}"#;
+        let sig = format!(
+            "sha256={}",
+            sloc_git::webhook::hmac_sha256_hex(secret.as_bytes(), body)
+        );
+
+        let sched = ScanSchedule::new_webhook(
+            "https://x/y.git".into(),
+            "main".into(),
+            ScanScheduleProvider::Any,
+            "ci".into(),
+            Some(secret.into()),
+        );
+        assert!(matches_hmac(&sched, body, &sig, &is_valid_github_sig));
+        // A tampered body must not validate under the same signature.
+        let tampered = br#"{"repo_url":"https://x/y.git","branch":"main","status":"SUCCESS "}"#;
+        assert!(!matches_hmac(&sched, tampered, &sig, &is_valid_github_sig));
+    }
+
+    #[test]
+    fn ci_payload_parses_minimal_and_full() {
+        let minimal: CiBuildCompletePayload =
+            serde_json::from_slice(br#"{"repo_url":"https://x/y.git","branch":"main"}"#).unwrap();
+        assert_eq!(minimal.repo_url, "https://x/y.git");
+        assert!(minimal.commit_sha.is_none() && minimal.upstream.is_none());
+
+        let full: CiBuildCompletePayload = serde_json::from_slice(
+            br#"{"repo_url":"https://x/y.git","branch":"main","commit_sha":"abc",
+                 "status":"success","upstream":{"system":"gitlab","job":"build",
+                 "build_id":"9","url":"https://ci/9"}}"#,
+        )
+        .unwrap();
+        assert_eq!(full.commit_sha.as_deref(), Some("abc"));
+        assert_eq!(full.upstream.unwrap().build_id.as_deref(), Some("9"));
+    }
 
     // ── ct_eq ─────────────────────────────────────────────────────────────────
 

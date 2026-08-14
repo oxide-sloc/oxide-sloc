@@ -1,0 +1,51 @@
+# Example: trigger an oxide-sloc scan after ANOTHER GitHub Actions workflow finishes.
+#
+# Drop this in .github/workflows/ of the repo you want scanned. It listens for a
+# named upstream workflow ("CI" here) completing, then signs a build-complete
+# event and posts it to your oxide-sloc server. `workflow_run` fires regardless
+# of how old or simple the upstream workflow is — you do not have to modify it.
+#
+# Secrets to add (Settings -> Secrets and variables -> Actions):
+#   OXIDE_SLOC_URL     e.g. https://sloc.internal.example.com
+#   OXIDE_SLOC_SECRET  the shared HMAC secret of a matching scan schedule
+name: oxide-sloc downstream scan
+
+on:
+  workflow_run:
+    workflows: ["CI"]          # <- the upstream workflow name(s)
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  trigger-scan:
+    runs-on: ubuntu-latest
+    # Guard: only when the upstream run actually succeeded.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger oxide-sloc
+        env:
+          OXIDE_SLOC_URL: ${{ secrets.OXIDE_SLOC_URL }}
+          OXIDE_SLOC_SECRET: ${{ secrets.OXIDE_SLOC_SECRET }}
+        run: |
+          ci/downstream-trigger/trigger-oxide-sloc.sh \
+            --repo "${{ github.event.repository.clone_url }}" \
+            --branch "${{ github.event.workflow_run.head_branch }}" \
+            --commit "${{ github.event.workflow_run.head_sha }}" \
+            --status success \
+            --system github \
+            --job "${{ github.event.workflow_run.name }}" \
+            --build-id "${{ github.event.workflow_run.id }}" \
+            --build-url "${{ github.event.workflow_run.html_url }}"
+
+# ── Alternative: no oxide-sloc server, dispatch a downstream pipeline instead ──
+# If oxide-sloc runs as a CI step (not a server), have the upstream repo fire a
+# repository_dispatch at the repo that hosts the scan job:
+#
+#   ci/downstream-trigger/trigger-oxide-sloc.sh --mode dispatch --dispatch github \
+#     --url https://api.github.com/repos/<owner>/<scan-repo>/dispatches \
+#     --token "$GH_PAT" --repo "$REPO" --branch "$BRANCH" --build-id "$RUN_ID"
+#
+# and receive it in the scan repo with:  on: { repository_dispatch: { types: [oxide-sloc-scan] } }

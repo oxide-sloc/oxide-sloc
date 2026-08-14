@@ -58,6 +58,11 @@ pub struct ScanSchedule {
     pub last_scan_sha: Option<String>,
     pub last_scan_at: Option<DateTime<Utc>>,
     pub last_run_id: Option<String>,
+    /// Idempotency marker for `/webhooks/ci`: the `<system>:<job>:<build_id>`
+    /// key of the most recently processed upstream build. A repeat delivery of
+    /// the same key is treated as a duplicate and does not re-trigger a scan.
+    #[serde(default)]
+    pub last_ci_build: Option<String>,
     pub enabled: bool,
 }
 
@@ -82,6 +87,7 @@ impl ScanSchedule {
             last_scan_sha: None,
             last_scan_at: None,
             last_run_id: None,
+            last_ci_build: None,
             enabled: true,
         }
     }
@@ -100,6 +106,7 @@ impl ScanSchedule {
             last_scan_sha: None,
             last_scan_at: None,
             last_run_id: None,
+            last_ci_build: None,
             enabled: true,
         }
     }

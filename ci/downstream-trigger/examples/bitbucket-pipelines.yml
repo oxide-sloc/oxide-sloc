@@ -1,0 +1,41 @@
+# Example: trigger an oxide-sloc scan from Bitbucket Pipelines.
+#
+# Repository variables (Repository settings -> Repository variables), secured:
+#   OXIDE_SLOC_URL     https://sloc.internal.example.com
+#   OXIDE_SLOC_SECRET  shared HMAC secret of a matching scan schedule
+#
+# Bitbucket only runs later steps if earlier ones passed, so reaching the trigger
+# step already implies success. `after-script` additionally runs on failure, so
+# it inspects BITBUCKET_EXIT_CODE and the script's own success gate skips a
+# failed build.
+
+pipelines:
+  default:
+    - step:
+        name: Build
+        script:
+          - echo "…your real build…"
+    - step:
+        name: Trigger oxide-sloc scan
+        image: alpine:latest
+        script:
+          - apk add --no-cache curl openssl git bash
+          - >
+            ci/downstream-trigger/trigger-oxide-sloc.sh
+            --repo "https://bitbucket.org/${BITBUCKET_REPO_FULL_NAME}.git"
+            --branch "$BITBUCKET_BRANCH"
+            --commit "$BITBUCKET_COMMIT"
+            --status success
+            --system bitbucket
+            --job "$BITBUCKET_REPO_FULL_NAME"
+            --build-id "$BITBUCKET_BUILD_NUMBER"
+            --build-url "https://bitbucket.org/${BITBUCKET_REPO_FULL_NAME}/pipelines/results/${BITBUCKET_BUILD_NUMBER}"
+
+# ── after-script variant (fires on success AND failure; gate handles it) ──────
+#   after-script:
+#     - >
+#       ci/downstream-trigger/trigger-oxide-sloc.sh
+#       --repo "https://bitbucket.org/${BITBUCKET_REPO_FULL_NAME}.git"
+#       --branch "$BITBUCKET_BRANCH" --commit "$BITBUCKET_COMMIT"
+#       --status "$([ "$BITBUCKET_EXIT_CODE" = 0 ] && echo success || echo failure)"
+#       --system bitbucket --build-id "$BITBUCKET_BUILD_NUMBER"

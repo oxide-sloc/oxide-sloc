@@ -13,7 +13,8 @@ This document covers how to wire oxide-sloc into your CI/CD pipelines and how to
 ## Table of contents
 
 1. [General approach](#general-approach)
-2. [Jenkins](#jenkins)
+2. [Downstream triggers — scan when any build finishes](#downstream-triggers--scan-when-any-build-finishes)
+3. [Jenkins](#jenkins)
    - [Obtaining credentials](#obtaining-credentials)
    - [Local credential storage](#local-credential-storage)
    - [Pre-flight check](#pre-flight-check)
@@ -22,7 +23,7 @@ This document covers how to wire oxide-sloc into your CI/CD pipelines and how to
    - [Publishing to Confluence](#publishing-to-confluence)
    - [Trend charts](#trend-charts-plot-plugin)
    - [Setting the artifact-viewer CSP](#setting-the-artifact-viewer-csp)
-3. [Atlassian Suite (Confluence + Bitbucket) — built-in CI integration](#atlassian-suite-confluence--bitbucket--built-in-ci-integration)
+4. [Atlassian Suite (Confluence + Bitbucket) — built-in CI integration](#atlassian-suite-confluence--bitbucket--built-in-ci-integration)
    - [The two surfaces](#the-two-surfaces)
    - [Three-tier permission model](#three-tier-permission-model)
    - [Job parameters + credential IDs](#job-parameters--credential-ids)
@@ -30,10 +31,10 @@ This document covers how to wire oxide-sloc into your CI/CD pipelines and how to
    - [Auth schemes](#atlassian-auth-schemes)
    - [Plugin-optional design (Tier-3 fallback)](#plugin-optional-design-tier-3-fallback)
    - [Troubleshooting (keyed to log lines)](#atlassian-troubleshooting-keyed-to-log-lines)
-4. [GitHub Actions](#github-actions)
+5. [GitHub Actions](#github-actions)
    - [VirusTotal binary scanning](#virustotal-binary-scanning)
-5. [GitLab CI](#gitlab-ci)
-6. [Artifact Repository Integration](#artifact-repository-integration)
+6. [GitLab CI](#gitlab-ci)
+7. [Artifact Repository Integration](#artifact-repository-integration)
    - [JFrog Artifactory](#jfrog-artifactory)
    - [Sonatype Nexus Repository Manager 3](#sonatype-nexus-repository-manager-3)
    - [Sonatype Nexus Repository Manager 2](#sonatype-nexus-repository-manager-2)
@@ -42,8 +43,8 @@ This document covers how to wire oxide-sloc into your CI/CD pipelines and how to
    - [Azure Blob Storage](#azure-blob-storage)
    - [Generic HTTP PUT](#generic-http-put)
    - [Registering artifact repo credentials](#registering-artifact-repo-credentials)
-7. [Environment variables reference](#environment-variables-reference)
-8. [CLI flag quick reference](#cli-flag-quick-reference)
+8. [Environment variables reference](#environment-variables-reference)
+9. [CLI flag quick reference](#cli-flag-quick-reference)
 
 ---
 
@@ -120,6 +121,70 @@ Once committed, the Jenkinsfile Setup stage extracts the bundle automatically �
 internet access needed during the pipeline run.
 
 The JSON output (`result.json`) is machine-readable and stable across versions — use it to feed dashboards, Confluence, Slack webhooks, or custom tooling. The HTML report is a self-contained single-file document suitable for artifact storage and browser viewing.
+
+---
+
+## Downstream triggers — scan when any build finishes
+
+The sections below show how to run a scan *inside* each CI system. This section
+is the complement: how to make **any upstream build**, on any CI, kick off an
+oxide-sloc scan the moment it finishes — the classic "when the app build goes
+green, go measure it" handoff — without that upstream pipeline needing to be
+modern or plugin-rich.
+
+Everything for this lives in [`ci/downstream-trigger/`](../ci/downstream-trigger/)
+(see its `README.md` for the full guide). The short version:
+
+- **One portable trigger**, `trigger-oxide-sloc.sh` (POSIX sh; `.ps1` twin for
+  Windows), is added to the **final step** of the upstream build. It is
+  deliberately dependency-light so it runs unchanged in a decade-old Jenkins
+  freestyle job, an Alpine GitLab runner, a Bitbucket step, or a GitHub Action.
+- It supports two models: **`server`** — POST a signed build-complete event to a
+  running `oxide-sloc serve` at `POST /webhooks/ci`; and **`dispatch`** — start a
+  downstream CI pipeline (`github` / `gitlab` / `jenkins` / `bitbucket`) that
+  runs `oxide-sloc analyze`.
+- The **guards are in the caller**, so they hold regardless of the upstream's
+  age: a success-only gate, HMAC-SHA256 body signing, `<system>:<job>:<build_id>`
+  idempotency (a doubled notification triggers one scan), retry-with-backoff, and
+  fail-closed config validation. The server adds a matching HMAC check and never
+  leaks an auth oracle (a bad signature looks identical to success).
+
+### The `/webhooks/ci` endpoint
+
+A provider-agnostic build-completion receiver, public but secured per-schedule by
+HMAC (not the server API key):
+
+```bash
+# Sign the exact body with the shared secret of a matching scan schedule.
+BODY='{"repo_url":"https://git.example.com/org/app.git","branch":"main","status":"success","upstream":{"system":"jenkins","job":"app","build_id":"1234"}}'
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SHARED_SECRET" | sed 's/^.*= *//')"
+curl -X POST "$OXIDE_SLOC_URL/webhooks/ci" \
+  -H 'Content-Type: application/json' -H "X-Sloc-Signature: $SIG" --data "$BODY"
+```
+
+Register the matching schedule first (repo + branch + secret) via the
+`/integrations` page or `POST /api/schedules`. Responses: `202` accepted (scan
+spawned, or nothing matched — indistinguishable by design); `200
+{"status":"skipped",...}` for the non-secret guards (unsuccessful build,
+duplicate build id); `400` for a malformed body.
+
+### Per-platform wiring
+
+Copy-paste examples live in
+[`ci/downstream-trigger/examples/`](../ci/downstream-trigger/examples/):
+
+| Platform | Example | Fires on |
+|---|---|---|
+| GitHub Actions | `github-actions.yml` | `workflow_run` completion of a named workflow |
+| GitLab CI | `gitlab-ci.yml` | a later stage after `build` passes (or a multi-project trigger) |
+| Bitbucket Pipelines | `bitbucket-pipelines.yml` | a trailing step / `after-script` |
+| Jenkins (modern) | `jenkins-declarative.Jenkinsfile` | `post { success { … } }` |
+| Jenkins (legacy) | `jenkins-freestyle-post-build.sh` | a final "Execute shell" build step — no plugins |
+
+> Jenkins additionally has a native job-to-job path: the bundled `Jenkinsfile`
+> exposes `CHAIN_DOWNSTREAM_JOB` to chain the oxide-sloc job into a larger
+> pipeline. The downstream trigger here is the tool-agnostic complement that
+> brings the same reach to GitHub, GitLab, and Bitbucket.
 
 ---
 

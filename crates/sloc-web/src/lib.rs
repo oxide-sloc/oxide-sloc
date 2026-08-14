@@ -858,6 +858,12 @@ fn build_router(state: AppState) -> Router {
             "/webhooks/bitbucket",
             post(git_webhook::handle_bitbucket_webhook).layer(DefaultBodyLimit::max(512 * 1024)),
         )
+        // Provider-agnostic build-completion trigger: any upstream CI build (even
+        // a legacy pipeline) can post a small signed JSON body to launch a scan.
+        .route(
+            "/webhooks/ci",
+            post(git_webhook::handle_ci_webhook).layer(DefaultBodyLimit::max(512 * 1024)),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .layer(middleware::from_fn(consent_gate))
         .layer(middleware::from_fn(csrf_protect))
