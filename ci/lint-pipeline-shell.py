@@ -153,6 +153,22 @@ def _pipe_filter_word(script: str, i: int) -> str:
     return mm.group(1) if mm else ""
 
 
+def _is_subshell_open(script: str, i: int, n: int) -> bool:
+    """True when index i begins a `$(` command substitution."""
+    return script[i] == "$" and i + 1 < n and script[i + 1] == "("
+
+
+def _pipe_word_at(script: str, i: int, n: int, sub: int):
+    """Filter word for a top-level `|` at index i, or None.
+
+    Returns None for `||` (either bar — `_is_double_pipe` catches both) and for a
+    `|` inside a `$(...)` substitution (sub > 0).
+    """
+    if _is_double_pipe(script, i, n) or sub != 0:
+        return None
+    return _pipe_filter_word(script, i)
+
+
 def _top_level_pipes(script: str):
     """Return the filter word after each top-level `|` (skips ||, $(...), quotes)."""
     pipes = []
@@ -163,18 +179,14 @@ def _top_level_pipes(script: str):
         if c in "'\"`":
             i = _skip_quoted(script, i, n, c)
             continue
-        if c == "$" and i + 1 < n and script[i + 1] == "(":
+        if _is_subshell_open(script, i, n):
             sub += 1
             i += 2
             continue
         if c == ")" and sub > 0:
             sub -= 1
-        elif c == "|":
-            if _is_double_pipe(script, i, n):
-                i += 1
-                continue  # part of ||
-            if sub == 0:
-                pipes.append(_pipe_filter_word(script, i))
+        elif c == "|" and (word := _pipe_word_at(script, i, n, sub)) is not None:
+            pipes.append(word)
         i += 1
     return pipes
 
