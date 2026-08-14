@@ -731,56 +731,8 @@ def parse_trend_history(path: str) -> list:
 # Main dashboard generator
 # ---------------------------------------------------------------------------
 
-def generate(out_dir: str, slug: Optional[str] = None) -> None:
-    """Read CI artifacts from out_dir and write dashboard_<slug>.html."""
-    out_dir = os.path.abspath(out_dir)
-
-    # ── Auto-detect slug ────────────────────────────────────────────────────
-    if slug is None:
-        candidates = glob(os.path.join(out_dir, "result_*.json"))
-        if not candidates:
-            print(
-                f"ERROR: No result_*.json found in {out_dir}. "
-                "Pass a project-slug argument or run the SLOC analysis first.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        candidates.sort()
-        basename = os.path.basename(candidates[0])           # result_myproject.json
-        slug = basename[len("result_"):-len(".json")]
-
-    # ── Load SLOC JSON ──────────────────────────────────────────────────────
-    json_path = os.path.join(out_dir, f"result_{slug}.json")
-    if not os.path.isfile(json_path):
-        print(
-            f"ERROR: {json_path} not found. Run oxide-sloc analyze with --json-out first.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    with open(json_path, encoding="utf-8") as fh:
-        data = json.load(fh)
-
-    # oxide-sloc result.json structure:
-    #   data["tool"]              → {name, version, run_id, timestamp_utc}
-    #   data["summary_totals"]    → aggregate counts
-    #   data["totals_by_language"] → list of per-language dicts
-    #       each entry: {"language": str|dict, "code_lines": int, ...}
-    tool_meta = data.get("tool") if isinstance(data.get("tool"), dict) else {}
-    # Version: prefer the value baked into the scan result so the dashboard shows
-    # the exact oxide-sloc build that produced it; fall back to the env override.
-    app_version = str(tool_meta.get("version") or os.environ.get("SLOC_VERSION", "")).strip()
-    # Timestamp: use the scan's own instant, not "now", so re-generating the
-    # dashboard from archived artifacts keeps the original time.
-    scan_dt = _parse_iso_utc(tool_meta.get("timestamp_utc")) or datetime.now(timezone.utc)
-
-    totals = data.get("summary_totals", {})
-    code_lines     = int(totals.get("code_lines",    0))
-    comment_lines  = int(totals.get("comment_lines", 0))
-    blank_lines    = int(totals.get("blank_lines",   0))
-    files_analyzed = int(totals.get("files_analyzed", 0))
-
-    # Per-language breakdown
+def _build_lang_data(data):
+    """Return (lang_rows, lang_table_rows, top_lang), sorted by code lines desc."""
     lang_rows = []        # (name, code_lines) for bar chart
     lang_table_rows = []  # full row dicts for table
     for entry in data.get("totals_by_language", []):
@@ -802,8 +754,11 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
     lang_rows.sort(key=lambda x: x[1], reverse=True)
     lang_table_rows.sort(key=lambda x: x["code_lines"], reverse=True)
     top_lang = lang_rows[0][0] if lang_rows else None
+    return lang_rows, lang_table_rows, top_lang
 
-    # Top files by code lines
+
+def _build_top_files(data):
+    """Return the top-20 files by code lines: list of {path, language, code_lines}."""
     top_files = []
     for rec in data.get("per_file_records", []):
         if not isinstance(rec, dict):
@@ -819,84 +774,17 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
             "code_lines": int(rec.get("code_lines", 0)),
         })
     top_files.sort(key=lambda x: x["code_lines"], reverse=True)
-    top_files = top_files[:20]
+    return top_files[:20]
 
-    # ── Load test results ───────────────────────────────────────────────────
-    junit_path = os.path.join(out_dir, "test-results", "junit.xml")
-    junit = parse_junit(junit_path)
 
-    # ── Load coverage ───────────────────────────────────────────────────────
-    lcov_path = os.path.join(out_dir, "coverage", "lcov.info")
-    cov_hit, cov_found = parse_lcov(lcov_path)
-    cov_pct = round(cov_hit / cov_found * 100, 1) if cov_found > 0 else None
-
-    # ── Load trend history ──────────────────────────────────────────────────
-    # Path supplied as SLOC_HISTORY_FILE env var (set by Jenkinsfile) or 3rd arg.
-    history_file  = os.environ.get("SLOC_HISTORY_FILE", "")
-    trend_history = parse_trend_history(history_file) if history_file else []
-
-    # ── Determine THIS run's repo identity ──────────────────────────────────
-    # Used to (a) compute the "Code Lines Δ" chip only against the most recent
-    # PREVIOUS row of the SAME repo (never across unrelated projects the same
-    # Jenkins job scanned), and (b) drive the per-project "View B" trend below.
-    # Source order: the SLOC_TREND_REPO_URL env the pipeline exports (the
-    # effective scanned repo URL) → the scan result's own git_remote_url.
-    cur_repo_url_raw = (os.environ.get("SLOC_TREND_REPO_URL", "").strip()
-                        or str(data.get("git_remote_url", "") or "").strip())
-    cur_repo_norm = _norm_repo_url(cur_repo_url_raw)
-    cur_repo_name = _repo_name(cur_repo_url_raw) or slug
-    cur_branch    = str(data.get("git_branch", "") or "").strip()
-
-    # Rows in history that belong to THIS project (normalized-URL match). When the
-    # current repo URL is unknown (empty), we cannot filter reliably — treat the
-    # per-project view as "all rows" so the dashboard still renders a trend.
-    if cur_repo_norm:
-        same_repo_history = [
-            r for r in trend_history if _norm_repo_url(r.get("repo_url", "")) == cur_repo_norm
-        ]
-    else:
-        same_repo_history = list(trend_history)
-
-    # Distinct normalized repos seen in this Jenkins job's history (for the
-    # "mixed projects" warning on the all-builds view).
-    distinct_repos = sorted({
-        _norm_repo_url(r.get("repo_url", "")) for r in trend_history
-        if _norm_repo_url(r.get("repo_url", ""))
-    })
-    n_distinct_repos = len(distinct_repos)
-
-    # ── Load CI capabilities (plugin-install permission / degradation state) ──
-    capabilities = None
-    caps_path = os.path.join(out_dir, "capabilities.json")
-    if os.path.isfile(caps_path):
-        try:
-            with open(caps_path, encoding="utf-8") as fh:
-                capabilities = json.load(fh)
-        except (OSError, ValueError):
-            capabilities = None
-
-    # ── Environment ─────────────────────────────────────────────────────────
-    build_number = os.environ.get("BUILD_NUMBER", "")
-    build_url    = os.environ.get("BUILD_URL", "")
-    job_name     = os.environ.get("JOB_NAME", "")
-    scan_path    = os.environ.get("SCAN_PATH", "")
-    # Render in the app's timezone (Pacific by default) to match the web report.
-    timestamp    = fmt_local(scan_dt)
-
-    # ── Build chip sections ─────────────────────────────────────────────────
-
-    # Delta from the most recent PREVIOUS build OF THE SAME REPO. Comparing the
-    # last two rows of the raw job history would mix unrelated projects (this one
-    # Jenkins job can scan many repos), so filter to same_repo_history first. The
-    # last row of same_repo_history is THIS build; index [-2] is its same-repo
-    # predecessor. If there is no prior same-repo row, show "n/a (first scan)".
-    delta_chip_html = ""
+def _delta_chip(same_repo_history, code_lines, cur_repo_name):
+    """Build the 'Code Lines Δ' chip vs the previous same-repo build (or n/a)."""
     if len(same_repo_history) >= 2:
         t_prev_build = same_repo_history[-2]
         delta = code_lines - t_prev_build["code_lines"]
         sign = "+" if delta > 0 else ""
         delta_col = _delta_color(delta)
-        delta_chip_html = chip(
+        return chip(
             f'<span style="color:{delta_col}" title="vs build #{t_prev_build["build"]}">'
             f"{sign}{fmt(delta)}</span>",
             "Code Lines Δ",
@@ -908,20 +796,165 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
                 "so unrelated projects this job scanned never skew the delta."
             ),
         )
-    else:
-        delta_chip_html = chip(
-            '<span style="color:#8a6a5a" title="first scan of this repository">n/a</span>',
-            "Code Lines Δ",
-            "first scan of this repo",
-            tip=(
-                "No previous scan of this repository is recorded in this Jenkins "
-                "job's history yet, so there is nothing to compare against. The "
-                "delta appears from the second scan of the same repo onward."
-            ),
-        )
+    return chip(
+        '<span style="color:#8a6a5a" title="first scan of this repository">n/a</span>',
+        "Code Lines Δ",
+        "first scan of this repo",
+        tip=(
+            "No previous scan of this repository is recorded in this Jenkins "
+            "job's history yet, so there is nothing to compare against. The "
+            "delta appears from the second scan of the same repo onward."
+        ),
+    )
 
-    # SLOC summary chips
-    sloc_chips = "".join([
+
+def _files_section(top_files):
+    """Top-files-by-code-lines card (empty string when there are no records)."""
+    if not top_files:
+        return ""
+    _file_rows = "\n".join(
+        f"<tr>"
+        f'<td class="trunc" title="{html.escape(f["path"])}">{html.escape(f["path"])}</td>'
+        f"<td>{html.escape(f['language'])}</td>"
+        f"<td class='num'>{fmt(f['code_lines'])}</td>"
+        f"</tr>"
+        for f in top_files
+    )
+    return f"""
+<div class="card">
+  <div class="card-title">Top Files by Code Lines</div>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Path</th>
+        <th>Language</th>
+        <th class="num">Code Lines</th>
+      </tr>
+    </thead>
+    <tbody>
+      {_file_rows}
+    </tbody>
+  </table>
+</div>"""
+
+
+def _test_section(junit):
+    """Test-results card (a 'not found' note when junit is None)."""
+    if junit is None:
+        return """
+<div class="card">
+  <div class="card-title">Test Results</div>
+  <p class="muted-msg">JUnit XML not found at <code>test-results/junit.xml</code>.<br>
+  Set <code>TEST_RUNNER = cargo-nextest</code> and <code>PUBLISH_TEST_RESULTS = true</code>
+  in the pipeline parameters to enable test reporting.</p>
+</div>"""
+    pass_colour = "#2a6846" if junit["failures"] == 0 and junit["errors"] == 0 else "#b23030"
+    status_text = (
+        "All tests passed."
+        if junit["failures"] == 0 and junit["errors"] == 0
+        else f"{junit['failures']} failed, {junit['errors']} error(s)."
+    )
+    test_chips = "".join([
+        chip(fmt(junit["tests"]), "Total Tests",
+             tip="Total number of test cases executed by cargo-nextest."),
+        chip(
+            f'<span style="color:{pass_colour}">{fmt(junit["passed"])}</span>',
+            "Passed",
+            tip="Tests that completed successfully.",
+        ),
+        chip(
+            f'<span style="color:#b23030">{fmt(junit["failures"])}</span>',
+            "Failed",
+            tip="Tests that ran but did not meet their assertions.",
+        ),
+        chip(
+            f'<span style="color:#b23030">{fmt(junit["errors"])}</span>',
+            "Errors",
+            tip="Tests that could not complete due to a runtime error.",
+        ),
+        chip(fmt(junit["skipped"]), "Skipped",
+             tip="Tests that were ignored or filtered out of this run."),
+    ])
+    time_str = f"{junit['time']:.2f}s" if junit["time"] > 0 else ""
+    return f"""
+<div class="card">
+  <div class="card-title">Test Results</div>
+  <div class="summary-strip summary-strip-5">{test_chips}</div>
+  <p class="status-msg" style="color:{pass_colour}">
+    {html.escape(status_text)}
+    {(' <span class="muted">(' + html.escape(time_str) + ')</span>') if time_str else ''}
+  </p>
+</div>"""
+
+
+def _coverage_section(cov_pct, cov_hit, cov_found):
+    """Code-coverage card (a 'not found' note when cov_pct is None)."""
+    if cov_pct is None:
+        return """
+<div class="card">
+  <div class="card-title">Code Coverage</div>
+  <p class="muted-msg">Coverage data not found at <code>coverage/lcov.info</code>.<br>
+  Enable <code>COVERAGE_STANDALONE = true</code> in the pipeline parameters to
+  generate LCOV coverage data.</p>
+</div>"""
+    cov_bar = svg_progress(cov_pct)
+    return f"""
+<div class="card">
+  <div class="card-title">Code Coverage</div>
+  <div class="cov-bar">{cov_bar}</div>
+  <p class="cov-detail">
+    {html.escape(f"{cov_pct:.1f}%")} line coverage
+    &nbsp;&middot;&nbsp;
+    {html.escape(fmt_full(cov_hit))} / {html.escape(fmt_full(cov_found))} lines hit
+  </p>
+</div>"""
+
+
+def _capability_banner(capabilities):
+    """Calm 'native mode' banner when plugin install was degraded (else empty)."""
+    if not (isinstance(capabilities, dict) and capabilities.get("degraded")):
+        return ""
+    reason = str(capabilities.get("degraded_reason", "")).strip() or (
+        "Enhanced Jenkins visualization plugins could not be enabled for this "
+        "build; the native oxide-sloc dashboard is shown instead."
+    )
+    requested = [str(p) for p in capabilities.get("requested_plugins", []) if p]
+    plugin_list = ""
+    if requested:
+        chips = "".join(
+            f'<span class="plugin-chip">{html.escape(p)}</span>' for p in requested
+        )
+        plugin_list = (
+            '<div class="banner-plugins"><span class="banner-plugins-label">'
+            "Plugins that would add richer views:</span>"
+            f'<div class="plugin-chip-row">{chips}</div></div>'
+        )
+    return f"""
+<div class="capability-banner" role="status">
+  <div class="capability-banner-icon" aria-hidden="true">&#9888;</div>
+  <div class="capability-banner-body">
+    <div class="capability-banner-title">Running in native mode &mdash; enhanced plugins not enabled</div>
+    <p class="capability-banner-text">{html.escape(reason)}</p>
+    {plugin_list}
+  </div>
+</div>"""
+
+
+def _load_capabilities(out_dir):
+    """Load capabilities.json (plugin-install permission / degradation), or None."""
+    caps_path = os.path.join(out_dir, "capabilities.json")
+    if not os.path.isfile(caps_path):
+        return None
+    try:
+        with open(caps_path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _sloc_chips(code_lines, comment_lines, blank_lines, files_analyzed, top_lang, delta_chip_html):
+    """The 5-up SLOC summary chip strip (code/comment/blank/files + delta)."""
+    return "".join([
         chip(
             f'<span title="{fmt_full(code_lines)}">{fmt(code_lines)}</span>',
             "Code Lines",
@@ -958,28 +991,23 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
         ),
         delta_chip_html,
     ])
-    sloc_strip_class = "summary-strip summary-strip-5" if delta_chip_html else "summary-strip"
 
-    # Language chart
-    lang_chart = svg_hbar(lang_rows[:20])
-    lang_caption = (
-        f"{len(lang_rows)} language{'s' if len(lang_rows) != 1 else ''} detected"
-        " · hover a bar for its exact count and share of the total"
+
+def _lang_table_html(lang_table_rows):
+    """Per-language metrics table (empty string when there are no rows)."""
+    if not lang_table_rows:
+        return ""
+    _tbl_rows = "\n".join(
+        f"<tr>"
+        f"<td>{html.escape(r['name'])}</td>"
+        f"<td class='num'>{fmt(r['code_lines'])}</td>"
+        f"<td class='num'>{fmt(r['comment_lines'])}</td>"
+        f"<td class='num'>{fmt(r['blank_lines'])}</td>"
+        f"<td class='num'>{fmt(r['files_analyzed'])}</td>"
+        f"</tr>"
+        for r in lang_table_rows
     )
-
-    # Per-language metrics table
-    if lang_table_rows:
-        _tbl_rows = "\n".join(
-            f"<tr>"
-            f"<td>{html.escape(r['name'])}</td>"
-            f"<td class='num'>{fmt(r['code_lines'])}</td>"
-            f"<td class='num'>{fmt(r['comment_lines'])}</td>"
-            f"<td class='num'>{fmt(r['blank_lines'])}</td>"
-            f"<td class='num'>{fmt(r['files_analyzed'])}</td>"
-            f"</tr>"
-            for r in lang_table_rows
-        )
-        lang_table_html = f"""
+    return f"""
 <table class="data-table" style="margin-top:18px">
   <thead>
     <tr>
@@ -994,145 +1022,10 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
     {_tbl_rows}
   </tbody>
 </table>"""
-    else:
-        lang_table_html = ""
 
-    # Top files section
-    if top_files:
-        _file_rows = "\n".join(
-            f"<tr>"
-            f'<td class="trunc" title="{html.escape(f["path"])}">{html.escape(f["path"])}</td>'
-            f"<td>{html.escape(f['language'])}</td>"
-            f"<td class='num'>{fmt(f['code_lines'])}</td>"
-            f"</tr>"
-            for f in top_files
-        )
-        files_section = f"""
-<div class="card">
-  <div class="card-title">Top Files by Code Lines</div>
-  <table class="data-table">
-    <thead>
-      <tr>
-        <th>Path</th>
-        <th>Language</th>
-        <th class="num">Code Lines</th>
-      </tr>
-    </thead>
-    <tbody>
-      {_file_rows}
-    </tbody>
-  </table>
-</div>"""
-    else:
-        files_section = ""
 
-    # Test results section
-    if junit is not None:
-        pass_colour = "#2a6846" if junit["failures"] == 0 and junit["errors"] == 0 else "#b23030"
-        status_text = (
-            "All tests passed."
-            if junit["failures"] == 0 and junit["errors"] == 0
-            else f"{junit['failures']} failed, {junit['errors']} error(s)."
-        )
-        test_chips = "".join([
-            chip(fmt(junit["tests"]), "Total Tests",
-                 tip="Total number of test cases executed by cargo-nextest."),
-            chip(
-                f'<span style="color:{pass_colour}">{fmt(junit["passed"])}</span>',
-                "Passed",
-                tip="Tests that completed successfully.",
-            ),
-            chip(
-                f'<span style="color:#b23030">{fmt(junit["failures"])}</span>',
-                "Failed",
-                tip="Tests that ran but did not meet their assertions.",
-            ),
-            chip(
-                f'<span style="color:#b23030">{fmt(junit["errors"])}</span>',
-                "Errors",
-                tip="Tests that could not complete due to a runtime error.",
-            ),
-            chip(fmt(junit["skipped"]), "Skipped",
-                 tip="Tests that were ignored or filtered out of this run."),
-        ])
-        time_str = f"{junit['time']:.2f}s" if junit["time"] > 0 else ""
-        test_section = f"""
-<div class="card">
-  <div class="card-title">Test Results</div>
-  <div class="summary-strip summary-strip-5">{test_chips}</div>
-  <p class="status-msg" style="color:{pass_colour}">
-    {html.escape(status_text)}
-    {(' <span class="muted">(' + html.escape(time_str) + ')</span>') if time_str else ''}
-  </p>
-</div>"""
-    else:
-        test_section = """
-<div class="card">
-  <div class="card-title">Test Results</div>
-  <p class="muted-msg">JUnit XML not found at <code>test-results/junit.xml</code>.<br>
-  Set <code>TEST_RUNNER = cargo-nextest</code> and <code>PUBLISH_TEST_RESULTS = true</code>
-  in the pipeline parameters to enable test reporting.</p>
-</div>"""
-
-    # Coverage section
-    if cov_pct is not None:
-        cov_bar = svg_progress(cov_pct)
-        coverage_section = f"""
-<div class="card">
-  <div class="card-title">Code Coverage</div>
-  <div class="cov-bar">{cov_bar}</div>
-  <p class="cov-detail">
-    {html.escape(f"{cov_pct:.1f}%")} line coverage
-    &nbsp;&middot;&nbsp;
-    {html.escape(fmt_full(cov_hit))} / {html.escape(fmt_full(cov_found))} lines hit
-  </p>
-</div>"""
-    else:
-        coverage_section = """
-<div class="card">
-  <div class="card-title">Code Coverage</div>
-  <p class="muted-msg">Coverage data not found at <code>coverage/lcov.info</code>.<br>
-  Enable <code>COVERAGE_STANDALONE = true</code> in the pipeline parameters to
-  generate LCOV coverage data.</p>
-</div>"""
-
-    # ── CI capabilities banner ──────────────────────────────────────────────
-    # When richer visualization plugins could not be installed (no system-admin
-    # rights, or an air-gapped controller with no offline bundle), show a calm
-    # warning banner explaining it — never an error. When plugins are active, or
-    # no capability probe ran, show nothing (or a subtle confirmation).
-    capability_banner = ""
-    if isinstance(capabilities, dict) and capabilities.get("degraded"):
-        reason = str(capabilities.get("degraded_reason", "")).strip() or (
-            "Enhanced Jenkins visualization plugins could not be enabled for this "
-            "build; the native oxide-sloc dashboard is shown instead."
-        )
-        requested = [str(p) for p in capabilities.get("requested_plugins", []) if p]
-        plugin_list = ""
-        if requested:
-            chips = "".join(
-                f'<span class="plugin-chip">{html.escape(p)}</span>' for p in requested
-            )
-            plugin_list = (
-                '<div class="banner-plugins"><span class="banner-plugins-label">'
-                "Plugins that would add richer views:</span>"
-                f'<div class="plugin-chip-row">{chips}</div></div>'
-            )
-        capability_banner = f"""
-<div class="capability-banner" role="status">
-  <div class="capability-banner-icon" aria-hidden="true">&#9888;</div>
-  <div class="capability-banner-body">
-    <div class="capability-banner-title">Running in native mode &mdash; enhanced plugins not enabled</div>
-    <p class="capability-banner-text">{html.escape(reason)}</p>
-    {plugin_list}
-  </div>
-</div>"""
-
-    # ── Report & Exports section ────────────────────────────────────────────
-    # Link to the sibling artifacts so the dashboard is the single entry point:
-    # open the full interactive report or download any export from one place.
-    # Every href is a plain filename resolved relative to this HTML, so the links
-    # work identically in the Jenkins-published view and in the downloaded bundle.
+def _downloads_section(out_dir, slug):
+    """Report & Exports card, listing only the sibling artifacts that exist."""
     export_defs = [
         (f"report_{slug}.html", "Full HTML report", "Interactive per-file report", "open"),
         (f"report_{slug}.pdf", "PDF", "Print-ready PDF export", "download"),
@@ -1164,8 +1057,9 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
             f'<span class="export-link-verb">{verb} &#8594;</span>'
             f"</a>"
         )
-    if export_links:
-        downloads_section = f"""
+    if not export_links:
+        return ""
+    return f"""
 <div class="card">
   <div class="card-title">Report &amp; Exports</div>
   <p class="export-hint">Use these links instead of the top-right <strong>Zip</strong>
@@ -1175,41 +1069,28 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
     {''.join(export_links)}
   </div>
 </div>"""
-    else:
-        downloads_section = ""
 
-    # ── Trend sparkline section (TWO views) ─────────────────────────────────
-    # A single per-Jenkins-job history CSV can interleave rows from DIFFERENT
-    # repositories (this one job scans many projects), so a naive all-rows
-    # sparkline can jump wildly between unrelated codebases. We render two views
-    # in one card with a dependency-free inline toggle:
-    #
-    #   View B "This project only (<repo>)" — DEFAULT. Rows whose normalized
-    #          repo_url matches this run's repo. Apples-to-apples.
-    #   View A "All builds of this Jenkins job" — every row, with a prominent
-    #          warning that it may mix N distinct repositories.
-    #
-    # The toggle is two radio-driven <label>s + CSS sibling selectors — no JS
-    # required, matching the existing dashboard's dependency-free style.
-    def _trend_delta_line(hist):
-        pts = [(r["build"], r["code_lines"]) for r in hist]
-        last_h = hist[-1]
-        prev_h = hist[-2]
-        d = last_h["code_lines"] - prev_h["code_lines"]
-        sign = "+" if d > 0 else ""
-        col = _delta_color(d)
-        return (
-            f'<p class="trend-delta" style="color:{col}">'
-            f'{html.escape(f"{sign}{fmt(d)}")} code lines since build #{prev_h["build"]}'
-            f'&nbsp;&middot;&nbsp;'
-            f'<span style="color:#8a6a5a;font-weight:400">range: '
-            f'{html.escape(fmt(min(v for _, v in pts)))} &ndash; '
-            f'{html.escape(fmt(max(v for _, v in pts)))}</span></p>'
-        )
 
-    # View B (per-project) — the trustworthy trend. Available when this repo has
-    # >= 2 rows of its own history.
-    view_b_html = ""
+def _trend_delta_line(hist):
+    """One-line 'Δ since build #N · range' caption for a trend history slice."""
+    pts = [(r["build"], r["code_lines"]) for r in hist]
+    last_h = hist[-1]
+    prev_h = hist[-2]
+    d = last_h["code_lines"] - prev_h["code_lines"]
+    sign = "+" if d > 0 else ""
+    col = _delta_color(d)
+    return (
+        f'<p class="trend-delta" style="color:{col}">'
+        f'{html.escape(f"{sign}{fmt(d)}")} code lines since build #{prev_h["build"]}'
+        f'&nbsp;&middot;&nbsp;'
+        f'<span style="color:#8a6a5a;font-weight:400">range: '
+        f'{html.escape(fmt(min(v for _, v in pts)))} &ndash; '
+        f'{html.escape(fmt(max(v for _, v in pts)))}</span></p>'
+    )
+
+
+def _trend_view_b(same_repo_history, cur_repo_name, cur_branch, cur_repo_norm):
+    """Per-project trend view (the trustworthy one), or a 'need 2 scans' note."""
     if len(same_repo_history) >= 2:
         b_points   = [(r["build"], r["code_lines"]) for r in same_repo_history]
         b_spark    = svg_sparkline(b_points)
@@ -1220,53 +1101,60 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
             + ("s" if len(same_repo_history) != 1 else "")
             + " of this project. Apples-to-apples: only this repository's builds."
         )
-        view_b_html = f"""
+        return f"""
     <div class="sparkline-wrap">{b_spark}</div>
     <p class="chart-hint">{b_caption}</p>
     {_trend_delta_line(same_repo_history)}"""
-    elif len(same_repo_history) == 1 or cur_repo_norm:
-        view_b_html = f"""
+    if len(same_repo_history) == 1 or cur_repo_norm:
+        return f"""
     <p class="muted-msg">Only one recorded scan of
     <strong>{html.escape(cur_repo_name)}</strong> so far &mdash; a per-project trend
     line appears once this repository has been scanned at least twice by this job.</p>"""
+    return ""
 
-    # View A (all builds of this Jenkins job) — may mix projects.
-    view_a_html = ""
-    if len(trend_history) >= 2:
-        a_points = [(r["build"], r["code_lines"]) for r in trend_history]
-        a_spark  = svg_sparkline(a_points)
-        mixed_note = ""
-        if n_distinct_repos > 1:
-            mixed_note = (
-                f'<p class="trend-mixed-warn">&#9888; Mixed projects &mdash; this '
-                f"Jenkins job has scanned <strong>{n_distinct_repos}</strong> distinct "
-                "repositories. Points below can jump between unrelated codebases; use "
-                "the <em>This project only</em> view above for a like-for-like trend.</p>"
-            )
-        view_a_html = f"""
+
+def _trend_view_a(trend_history, n_distinct_repos):
+    """All-builds trend view (may mix repositories), or empty when < 2 rows."""
+    if len(trend_history) < 2:
+        return ""
+    a_points = [(r["build"], r["code_lines"]) for r in trend_history]
+    a_spark  = svg_sparkline(a_points)
+    mixed_note = ""
+    if n_distinct_repos > 1:
+        mixed_note = (
+            f'<p class="trend-mixed-warn">&#9888; Mixed projects &mdash; this '
+            f"Jenkins job has scanned <strong>{n_distinct_repos}</strong> distinct "
+            "repositories. Points below can jump between unrelated codebases; use "
+            "the <em>This project only</em> view above for a like-for-like trend.</p>"
+        )
+    return f"""
     {mixed_note}
     <div class="sparkline-wrap">{a_spark}</div>
     <p class="chart-hint">Every build of this Jenkins job, regardless of which repository was scanned.</p>
     {_trend_delta_line(trend_history)}"""
 
-    # Assemble the card only if there is at least one view to show.
-    if view_a_html or view_b_html:
-        # If only one repo exists in history, A == B; say so instead of a toggle.
-        single_repo = (n_distinct_repos <= 1)
-        if single_repo:
-            body = view_b_html or view_a_html
-            note = ""
-            if view_b_html and view_a_html:
-                note = ('<p class="chart-hint">This Jenkins job has only ever scanned this '
-                        "one repository, so the all-builds and per-project trends are identical.</p>")
-            trend_section = f"""
+
+def _trend_section(same_repo_history, trend_history, cur_repo_name, cur_branch,
+                   cur_repo_norm, n_distinct_repos):
+    """Two-view (per-project / all-builds) code-lines trend card, or empty string."""
+    view_b_html = _trend_view_b(same_repo_history, cur_repo_name, cur_branch, cur_repo_norm)
+    view_a_html = _trend_view_a(trend_history, n_distinct_repos)
+    if not (view_a_html or view_b_html):
+        return ""
+    # If only one repo exists in history, A == B; say so instead of a toggle.
+    if n_distinct_repos <= 1:
+        body = view_b_html or view_a_html
+        note = ""
+        if view_b_html and view_a_html:
+            note = ('<p class="chart-hint">This Jenkins job has only ever scanned this '
+                    "one repository, so the all-builds and per-project trends are identical.</p>")
+        return f"""
 <div class="card">
   <div class="card-title">Code Lines Trend</div>
   {note}
   {body}
 </div>"""
-        else:
-            trend_section = f"""
+    return f"""
 <div class="card">
   <div class="card-title">Code Lines Trend</div>
   <div class="trend-toggle">
@@ -1284,24 +1172,224 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
     </div>
   </div>
 </div>"""
-    else:
-        trend_section = ""
 
-    # ── Header meta ─────────────────────────────────────────────────────────
-    header_meta_parts = []
+
+def _header_meta_html(app_version, job_name, build_number, scan_path, timestamp):
+    """The header meta spans (version / job / build / scan-path / timestamp)."""
+    parts = []
     if app_version:
-        header_meta_parts.append(
+        parts.append(
             f'<span title="oxide-sloc application version">oxide-sloc '
             f"v{html.escape(app_version)}</span>"
         )
     if job_name:
-        header_meta_parts.append(f"<span>Job: {html.escape(job_name)}</span>")
+        parts.append(f"<span>Job: {html.escape(job_name)}</span>")
     if build_number:
-        header_meta_parts.append(f"<span>Build #{html.escape(build_number)}</span>")
+        parts.append(f"<span>Build #{html.escape(build_number)}</span>")
     if scan_path:
-        header_meta_parts.append(f"<span>Scan path: <code>{html.escape(scan_path)}</code></span>")
-    header_meta_parts.append(
+        parts.append(f"<span>Scan path: <code>{html.escape(scan_path)}</code></span>")
+    parts.append(
         f'<span title="Scan time, shown in US Pacific time">{html.escape(timestamp)}</span>'
+    )
+    return "".join(parts)
+
+
+def _tool_meta_fields(data):
+    """Return (app_version, scan_dt) from the result's tool metadata."""
+    tool_meta = data.get("tool") if isinstance(data.get("tool"), dict) else {}
+    # Version: prefer the value baked into the scan result so the dashboard shows
+    # the exact oxide-sloc build that produced it; fall back to the env override.
+    app_version = str(tool_meta.get("version") or os.environ.get("SLOC_VERSION", "")).strip()
+    # Timestamp: use the scan's own instant, not "now", so re-generating the
+    # dashboard from archived artifacts keeps the original time.
+    scan_dt = _parse_iso_utc(tool_meta.get("timestamp_utc")) or datetime.now(timezone.utc)
+    return app_version, scan_dt
+
+
+def _repo_history_context(data, slug, trend_history):
+    """Resolve this run's repo identity and its slice of the trend history.
+
+    Returns (cur_repo_name, cur_branch, cur_repo_norm, same_repo_history,
+    distinct_repos, n_distinct_repos). Source order for the repo URL: the
+    SLOC_TREND_REPO_URL env the pipeline exports → the scan result's own
+    git_remote_url.
+    """
+    cur_repo_url_raw = (os.environ.get("SLOC_TREND_REPO_URL", "").strip()
+                        or str(data.get("git_remote_url", "") or "").strip())
+    cur_repo_norm = _norm_repo_url(cur_repo_url_raw)
+    cur_repo_name = _repo_name(cur_repo_url_raw) or slug
+    cur_branch    = str(data.get("git_branch", "") or "").strip()
+
+    # Rows in history that belong to THIS project (normalized-URL match). When the
+    # current repo URL is unknown (empty), we cannot filter reliably — treat the
+    # per-project view as "all rows" so the dashboard still renders a trend.
+    if cur_repo_norm:
+        same_repo_history = [
+            r for r in trend_history if _norm_repo_url(r.get("repo_url", "")) == cur_repo_norm
+        ]
+    else:
+        same_repo_history = list(trend_history)
+
+    # Distinct normalized repos seen in this Jenkins job's history (for the
+    # "mixed projects" warning on the all-builds view).
+    distinct_repos = sorted({
+        _norm_repo_url(r.get("repo_url", "")) for r in trend_history
+        if _norm_repo_url(r.get("repo_url", ""))
+    })
+    return (cur_repo_name, cur_branch, cur_repo_norm, same_repo_history,
+            distinct_repos, len(distinct_repos))
+
+
+def generate(out_dir: str, slug: Optional[str] = None) -> None:
+    """Read CI artifacts from out_dir and write dashboard_<slug>.html."""
+    out_dir = os.path.abspath(out_dir)
+
+    # ── Auto-detect slug ────────────────────────────────────────────────────
+    if slug is None:
+        candidates = glob(os.path.join(out_dir, "result_*.json"))
+        if not candidates:
+            print(
+                f"ERROR: No result_*.json found in {out_dir}. "
+                "Pass a project-slug argument or run the SLOC analysis first.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        candidates.sort()
+        basename = os.path.basename(candidates[0])           # result_myproject.json
+        slug = basename[len("result_"):-len(".json")]
+
+    # ── Load SLOC JSON ──────────────────────────────────────────────────────
+    json_path = os.path.join(out_dir, f"result_{slug}.json")
+    if not os.path.isfile(json_path):
+        print(
+            f"ERROR: {json_path} not found. Run oxide-sloc analyze with --json-out first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    with open(json_path, encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    # oxide-sloc result.json structure:
+    #   data["tool"]              → {name, version, run_id, timestamp_utc}
+    #   data["summary_totals"]    → aggregate counts
+    #   data["totals_by_language"] → list of per-language dicts
+    #       each entry: {"language": str|dict, "code_lines": int, ...}
+    app_version, scan_dt = _tool_meta_fields(data)
+
+    totals = data.get("summary_totals", {})
+    code_lines     = int(totals.get("code_lines",    0))
+    comment_lines  = int(totals.get("comment_lines", 0))
+    blank_lines    = int(totals.get("blank_lines",   0))
+    files_analyzed = int(totals.get("files_analyzed", 0))
+
+    # Per-language breakdown
+    lang_rows, lang_table_rows, top_lang = _build_lang_data(data)
+
+    # Top files by code lines
+    top_files = _build_top_files(data)
+
+    # ── Load test results ───────────────────────────────────────────────────
+    junit_path = os.path.join(out_dir, "test-results", "junit.xml")
+    junit = parse_junit(junit_path)
+
+    # ── Load coverage ───────────────────────────────────────────────────────
+    lcov_path = os.path.join(out_dir, "coverage", "lcov.info")
+    cov_hit, cov_found = parse_lcov(lcov_path)
+    cov_pct = round(cov_hit / cov_found * 100, 1) if cov_found > 0 else None
+
+    # ── Load trend history ──────────────────────────────────────────────────
+    # Path supplied as SLOC_HISTORY_FILE env var (set by Jenkinsfile) or 3rd arg.
+    history_file  = os.environ.get("SLOC_HISTORY_FILE", "")
+    trend_history = parse_trend_history(history_file) if history_file else []
+
+    # ── Determine THIS run's repo identity + per-project history slice ───────
+    # Used to (a) compute the "Code Lines Δ" chip only against the most recent
+    # PREVIOUS row of the SAME repo (never across unrelated projects the same
+    # Jenkins job scanned), and (b) drive the per-project "View B" trend below.
+    (cur_repo_name, cur_branch, cur_repo_norm, same_repo_history,
+     distinct_repos, n_distinct_repos) = _repo_history_context(data, slug, trend_history)
+
+    # ── Load CI capabilities (plugin-install permission / degradation state) ──
+    capabilities = _load_capabilities(out_dir)
+
+    # ── Environment ─────────────────────────────────────────────────────────
+    build_number = os.environ.get("BUILD_NUMBER", "")
+    build_url    = os.environ.get("BUILD_URL", "")
+    job_name     = os.environ.get("JOB_NAME", "")
+    scan_path    = os.environ.get("SCAN_PATH", "")
+    # Render in the app's timezone (Pacific by default) to match the web report.
+    timestamp    = fmt_local(scan_dt)
+
+    # ── Build chip sections ─────────────────────────────────────────────────
+
+    # Delta from the most recent PREVIOUS build OF THE SAME REPO. Comparing the
+    # last two rows of the raw job history would mix unrelated projects (this one
+    # Jenkins job can scan many repos), so filter to same_repo_history first. The
+    # last row of same_repo_history is THIS build; index [-2] is its same-repo
+    # predecessor. If there is no prior same-repo row, show "n/a (first scan)".
+    delta_chip_html = _delta_chip(same_repo_history, code_lines, cur_repo_name)
+
+    # SLOC summary chips
+    sloc_chips = _sloc_chips(
+        code_lines, comment_lines, blank_lines, files_analyzed, top_lang, delta_chip_html
+    )
+    sloc_strip_class = "summary-strip summary-strip-5" if delta_chip_html else "summary-strip"
+
+    # Language chart
+    lang_chart = svg_hbar(lang_rows[:20])
+    lang_caption = (
+        f"{len(lang_rows)} language{'s' if len(lang_rows) != 1 else ''} detected"
+        " · hover a bar for its exact count and share of the total"
+    )
+
+    # Per-language metrics table
+    lang_table_html = _lang_table_html(lang_table_rows)
+
+    # Top files section
+    files_section = _files_section(top_files)
+
+    # Test results section
+    test_section = _test_section(junit)
+
+    # Coverage section
+    coverage_section = _coverage_section(cov_pct, cov_hit, cov_found)
+
+    # ── CI capabilities banner ──────────────────────────────────────────────
+    # When richer visualization plugins could not be installed (no system-admin
+    # rights, or an air-gapped controller with no offline bundle), show a calm
+    # warning banner explaining it — never an error. When plugins are active, or
+    # no capability probe ran, show nothing (or a subtle confirmation).
+    capability_banner = _capability_banner(capabilities)
+
+    # ── Report & Exports section ────────────────────────────────────────────
+    # Link to the sibling artifacts so the dashboard is the single entry point:
+    # open the full interactive report or download any export from one place.
+    # Every href is a plain filename resolved relative to this HTML, so the links
+    # work identically in the Jenkins-published view and in the downloaded bundle.
+    downloads_section = _downloads_section(out_dir, slug)
+
+    # ── Trend sparkline section (TWO views) ─────────────────────────────────
+    # A single per-Jenkins-job history CSV can interleave rows from DIFFERENT
+    # repositories (this one job scans many projects), so a naive all-rows
+    # sparkline can jump wildly between unrelated codebases. We render two views
+    # in one card with a dependency-free inline toggle:
+    #
+    #   View B "This project only (<repo>)" — DEFAULT. Rows whose normalized
+    #          repo_url matches this run's repo. Apples-to-apples.
+    #   View A "All builds of this Jenkins job" — every row, with a prominent
+    #          warning that it may mix N distinct repositories.
+    #
+    # The toggle is two radio-driven <label>s + CSS sibling selectors — no JS
+    # required, matching the existing dashboard's dependency-free style.
+    trend_section = _trend_section(
+        same_repo_history, trend_history, cur_repo_name, cur_branch,
+        cur_repo_norm, n_distinct_repos,
+    )
+
+    # ── Header meta ─────────────────────────────────────────────────────────
+    header_meta_html = _header_meta_html(
+        app_version, job_name, build_number, scan_path, timestamp
     )
 
     back_link = ""
@@ -1310,8 +1398,6 @@ def generate(out_dir: str, slug: Optional[str] = None) -> None:
             f'<a class="back-link" href="{html.escape(build_url)}">'
             f"&#8592; Back to Jenkins build</a>"
         )
-
-    header_meta_html = "".join(header_meta_parts)
 
     # ── Assemble the full HTML page ─────────────────────────────────────────
     page_title = f"oxide-sloc Graphical Report — {slug}"
