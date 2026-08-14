@@ -20,6 +20,10 @@ ARG BUILDER_IMAGE=rust:1.97-slim-bookworm@sha256:b93beca49a16e4459e51e3886658afe
 ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 FROM ${BUILDER_IMAGE} AS builder
 
+# Fail a piped RUN if any stage in the pipe fails (e.g. `cat vendor.tar.gz.* |
+# tar`), not just the last. bookworm-slim ships bash, so this is safe here.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Upgrade base packages first to pull in any OS-level security fixes
 # that have landed since the image was published. Package versions are left
 # unpinned on purpose so each build tracks the current upstream patch level; the

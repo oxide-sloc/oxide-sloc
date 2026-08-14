@@ -31,6 +31,10 @@
 ARG BUILDER_IMAGE=registry.access.redhat.com/ubi8/ubi:8.10@sha256:efe7eaa64e1efb79c34d0e9ec4ac6d0a95f512dfa8673c2d0d7dfa78a6787efe
 FROM ${BUILDER_IMAGE} AS builder
 
+# Fail a piped RUN if any stage in the pipe fails (e.g. `echo ... | sha256sum -c`
+# and `cat vendor.tar.gz.* | tar`), not just the last. UBI 8 ships bash.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # This builder stage runs as root only while compiling and is then discarded; the
 # `export` stage below (FROM scratch) ships just the binary, so no root-owned
 # runtime layer is ever produced.
