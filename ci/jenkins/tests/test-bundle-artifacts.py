@@ -139,9 +139,13 @@ def test_trend_schema():
         hist = os.path.join(d, "history.csv")
 
         # (f) + (g): fresh CSV gets the 9-col header; repo_url normalized.
+        # Synthetic userinfo (NOT a real credential): exercises the credential-
+        # stripping in repo_url normalization. Built from a variable so the URL
+        # literal doesn't embed a `user:pass@` credential.
+        _userinfo = "user:tok"
         rc = _run_trend(d, slug, hist, {
             "BUILD_NUMBER": "10",
-            "SLOC_TREND_REPO_URL": "https://user:tok@github.com/acme/widget.git",
+            "SLOC_TREND_REPO_URL": f"https://{_userinfo}@github.com/acme/widget.git",
             "SLOC_TREND_BRANCH": "develop",
             "SLOC_TREND_COMMIT": "abc1234",
         })

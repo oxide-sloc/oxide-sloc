@@ -42,6 +42,32 @@ import tarfile
 import zipfile
 
 
+def _submodule_html_plan(out_dir: str):
+    """Per-submodule HTML reports (sub_<name>.html) → html/."""
+    plan = []
+    entries = sorted(os.listdir(out_dir)) if os.path.isdir(out_dir) else []
+    for entry in entries:
+        if entry.startswith("sub_") and entry.endswith(".html"):
+            src = os.path.join(out_dir, entry)
+            if os.path.isfile(src):
+                plan.append((src, f"html/{entry}"))
+    return plan
+
+
+def _local_import_plan(out_dir: str):
+    """local-import/ tree (from `oxide-sloc bundle`) preserved under local-import/."""
+    li_root = os.path.join(out_dir, "local-import")
+    if not os.path.isdir(li_root):
+        return []
+    plan = []
+    for root, _dirs, files in os.walk(li_root):
+        for f in files:
+            src = os.path.join(root, f)
+            rel = os.path.relpath(src, li_root).replace(os.sep, "/")
+            plan.append((src, f"local-import/{rel}"))
+    return plan
+
+
 def _plan(out_dir: str, slug: str):
     """Return a list of (src_abs, arcname) for every existing flat artifact.
 
@@ -84,22 +110,8 @@ def _plan(out_dir: str, slug: str):
         if os.path.isfile(src):
             plan.append((src, f"{folder}/{os.path.basename(name)}"))
 
-    # Per-submodule HTML reports (sub_<name>.html) → html/
-    for entry in sorted(os.listdir(out_dir)) if os.path.isdir(out_dir) else []:
-        if entry.startswith("sub_") and entry.endswith(".html"):
-            src = os.path.join(out_dir, entry)
-            if os.path.isfile(src):
-                plan.append((src, f"html/{entry}"))
-
-    # local-import/ tree (from `oxide-sloc bundle`) → preserved under local-import/
-    li_root = os.path.join(out_dir, "local-import")
-    if os.path.isdir(li_root):
-        for root, _dirs, files in os.walk(li_root):
-            for f in files:
-                src = os.path.join(root, f)
-                rel = os.path.relpath(src, li_root).replace(os.sep, "/")
-                plan.append((src, f"local-import/{rel}"))
-
+    plan += _submodule_html_plan(out_dir)
+    plan += _local_import_plan(out_dir)
     return plan
 
 
