@@ -30,6 +30,12 @@
 #             2 = misconfiguration; 3 = trigger failed after all retries.
 
 set -eu
+# Enable pipefail so a failing left-hand side of a pipe (e.g. curl | tr) is not
+# masked by the last stage's status. It is not POSIX, so guard it: bash/ksh/zsh
+# honour it, dash silently stays without it rather than aborting.
+if (set -o pipefail) 2>/dev/null; then
+    set -o pipefail
+fi
 
 PROG=$(basename "$0")
 

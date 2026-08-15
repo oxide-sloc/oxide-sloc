@@ -31,5 +31,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
-sloc-web = { path = "../sloc-web", version = "1.6.15" }
+sloc-web = { path = "../sloc-web", version = "1.6.16" }
 tokio = { workspace = true, features = ["full"] }

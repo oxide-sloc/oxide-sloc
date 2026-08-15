@@ -43,15 +43,15 @@ tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 uuid = { workspace = true }
-sloc-config = { path = "../sloc-config", version = "1.6.15" }
-sloc-core = { path = "../sloc-core", version = "1.6.15" }
-sloc-git = { path = "../sloc-git", version = "1.6.15" }
-sloc-report = { path = "../sloc-report", version = "1.6.15" }
+sloc-config = { path = "../sloc-config", version = "1.6.16" }
+sloc-core = { path = "../sloc-core", version = "1.6.16" }
+sloc-git = { path = "../sloc-git", version = "1.6.16" }
+sloc-report = { path = "../sloc-report", version = "1.6.16" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
 serde_json = "1"
-sloc-core = { path = "../sloc-core", version = "1.6.15" }
-sloc-languages = { path = "../sloc-languages", version = "1.6.15" }
-sloc-config = { path = "../sloc-config", version = "1.6.15" }
+sloc-core = { path = "../sloc-core", version = "1.6.16" }
+sloc-languages = { path = "../sloc-languages", version = "1.6.16" }
+sloc-config = { path = "../sloc-config", version = "1.6.16" }

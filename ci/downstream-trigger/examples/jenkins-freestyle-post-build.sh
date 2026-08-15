@@ -17,6 +17,11 @@
 # Freestyle exposes GIT_URL / GIT_BRANCH / GIT_COMMIT when the Git SCM plugin is
 # used; adjust if your job uses a different SCM.
 set -e
+# Enable pipefail when the shell supports it (bash/ksh/zsh); dash stays without
+# it rather than aborting. Keeps a failing pipe stage from being masked.
+if (set -o pipefail) 2>/dev/null; then
+    set -o pipefail
+fi
 
 REPO="${GIT_URL:-$(git config --get remote.origin.url)}"
 BRANCH="${GIT_BRANCH#origin/}"

@@ -10,6 +10,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.16] — 2026-08-15
+
+### Added
+
+- **Downstream build triggers**: a portable `ci/downstream-trigger/trigger-oxide-sloc.sh`
+  (POSIX `/bin/sh`, curl + openssl/python HMAC) can be dropped into the final step of any
+  upstream build — Jenkins freestyle, GitLab shell runner, Bitbucket step, or GitHub Actions —
+  to fire an oxide-sloc scan of the built repo when the build finishes, either by POSTing a
+  signed build-complete event to a running `serve` instance or by dispatching a downstream
+  pipeline.
+
+### Changed
+
+- **Jenkins pipeline hardening**: the Jenkins admin credential is injected at runtime instead of
+  baked into the image; per-repo delta/trend reporting, cleaner Top Files paths, and automatic
+  report title/branch detection; artifact bundles and the bundle-artifacts plan builder tidied;
+  Docker builder stages enable bash `pipefail`.
+- **CI refactors**: reduced cognitive complexity in the dashboard generator and CI helper
+  scripts; various Jenkins reliability fixes (bare-Windows-agent bash staging, dist-fallback
+  diagnostics, per-build HTML report publishing).
+
+### Fixed
+
+- **CI lint gate**: the two new `ci/downstream-trigger/*.sh` scripts now enable `set -o pipefail`
+  (guarded so POSIX `/bin/sh`/dash does not abort), clearing the `lint-pipeline-shell` status-
+  masking gate that was failing the Quality gates job.
+
+---
+
 ## [1.6.15] — 2026-08-12
 
 ### Added
