@@ -145,6 +145,33 @@ build job: 'oxide-sloc', wait: true, parameters: [
 ]
 ```
 
+### Kick off oxide-sloc from your existing build pipeline
+
+If you already have a pipeline that *builds something* and you just want it to run a SLOC
+scan afterward, add a trailing stage to **that** job's `Jenkinsfile` — no changes to
+oxide-sloc are needed:
+
+```groovy
+stage('SLOC scan') {
+  steps {
+    build job: 'oxide-sloc',            // seeded oxide-sloc job name
+         wait: true,                    // block on the scan (false = fire-and-forget)
+         propagate: true,               // a failed scan fails this build (false = don't)
+         parameters: [
+           string(name: 'SCAN_REPO_URL',       value: 'https://github.com/acme/widgets.git'),
+           string(name: 'SCAN_REF',            value: env.GIT_COMMIT ?: 'main'),
+           string(name: 'SCAN_CREDENTIALS_ID', value: 'github-scm'),   // private repos
+           string(name: 'REPORT_TITLE',        value: "widgets @ ${env.BUILD_NUMBER}")
+         ]
+  }
+}
+```
+
+To also fire a job *after* the scan, add `string(name: 'CHAIN_DOWNSTREAM_JOB', value:
+'publish-metrics')` — giving a full `your-build → oxide-sloc → publish-metrics` chain. To
+run the scan only on success without failing your build on scan issues, use `wait: false`
+inside a `post { success { … } }` block instead of a stage.
+
 A **multi-repo fan-out** is just this call in a loop over a list of repo URLs —
 one oxide-sloc job scans your whole fleet, each run optionally chaining a
 consumer.

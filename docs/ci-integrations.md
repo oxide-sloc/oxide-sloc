@@ -185,6 +185,10 @@ Copy-paste examples live in
 > exposes `CHAIN_DOWNSTREAM_JOB` to chain the oxide-sloc job into a larger
 > pipeline. The downstream trigger here is the tool-agnostic complement that
 > brings the same reach to GitHub, GitLab, and Bitbucket.
+>
+> To kick oxide-sloc off *from* an existing build pipeline, add a `build job: 'oxide-sloc'`
+> stage to that job — see [ci/jenkins/INTEGRATION.md § Kick off oxide-sloc from your
+> existing build pipeline](../ci/jenkins/INTEGRATION.md#kick-off-oxide-sloc-from-your-existing-build-pipeline).
 
 ---
 
