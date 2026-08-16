@@ -110,6 +110,7 @@ def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")  # emoji-safe on any console
     except Exception:
+        # Best-effort: older Python or a non-reconfigurable stream is fine as-is.
         pass
     if len(sys.argv) < 2:
         sys.stderr.write("usage: sloc-report-md.py <result.json> [diff.json]\n")

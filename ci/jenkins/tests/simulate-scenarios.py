@@ -180,6 +180,7 @@ def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")  # keep glyphs on Windows consoles
     except Exception:
+        # Best-effort: older Python or a non-reconfigurable stream is fine as-is.
         pass
     print("=" * 96)
     print("oxide-sloc Jenkins pipeline — permission / air-gap simulation")

@@ -304,6 +304,7 @@ def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
+        # Best-effort: older Python or a non-reconfigurable stream is fine as-is.
         pass
     _scenario_glob_fallback()
     _scenario_no_result_json()

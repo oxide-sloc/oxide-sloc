@@ -4,7 +4,7 @@ from sys import argv
 
 class Animal:
     def __init__(self):
-        pass
+        self.origin = (os.getcwd(), argv)
 
     def speak(self):
         return "..."

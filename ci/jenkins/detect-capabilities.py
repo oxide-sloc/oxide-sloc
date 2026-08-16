@@ -267,6 +267,7 @@ def main() -> None:
     try:
         os.makedirs(out_dir, exist_ok=True)
     except OSError:
+        # Best-effort: dir may be unwritable; the write below surfaces any real error.
         pass
     caps = assess()
     path = os.path.join(out_dir, "capabilities.json")
