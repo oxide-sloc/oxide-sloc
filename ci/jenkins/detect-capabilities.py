@@ -35,8 +35,8 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
-from typing import Optional
 
 # Visualization / reporting plugins that meaningfully enrich the SLOC report.
 # The canonical manifest (ci/jenkins/plugins.txt) also lists core pipeline
@@ -70,7 +70,7 @@ def _manifest_path() -> str:
     )
 
 
-def read_manifest(_unused: Optional[str] = None) -> list:
+def read_manifest() -> list:
     """Return the enrichment plugin short-names declared in ci/jenkins/plugins.txt.
 
     The manifest lists ``id  # trailing comment`` (and section-header comment
@@ -94,7 +94,7 @@ def read_manifest(_unused: Optional[str] = None) -> list:
     return ordered or list(_ENRICHMENT_PLUGINS)
 
 
-def offline_plugins_available(_unused: Optional[str] = None) -> bool:
+def offline_plugins_available() -> bool:
     """True if the committed offline plugin bundle exists (either the
     jenkins-plugins.tar.xz archive at the repo root, or loose .hpi files in
     ci/jenkins/plugins/). Mirrors install-jenkins-plugins.sh's two source modes."""
@@ -245,7 +245,12 @@ def assess() -> dict:
     # Job config read requires Job/Configure → project-admin probe.
     job_admin = False
     if job:
-        job_path = "/job/".join([""] + job.split("/"))  # folder-safe
+        encoded_segments = [
+            urllib.parse.quote(segment, safe="")
+            for segment in job.split("/")
+            if segment
+        ]
+        job_path = "/job/" + "/job/".join(encoded_segments)  # folder-safe
         cfg = probe_http(f"{base}{job_path}/config.xml", user, token)
         job_admin = cfg == 200
     # Update-centre reachability: the controller's own UC metadata endpoint.

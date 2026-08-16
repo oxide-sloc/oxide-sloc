@@ -729,7 +729,7 @@ pub fn detect_language(
         return Some(lang);
     }
 
-    // Shebang detection (last resort — only for extensionless scripts)
+    // Shebang detection (last resort when filename/extension detection did not match)
     if shebang_detection
         && let Some(line) = first_line
         && let Some(lang) = detect_by_shebang(line)
@@ -3885,9 +3885,6 @@ fn is_object_like_macro(trimmed: &str) -> bool {
 
 fn count_symbols(patterns: &SymbolPatterns, trimmed: &str) -> (u64, u64, u64, u64, u64, u64, u64) {
     let hit = |pats: &[&str]| prefix_hit(pats, trimmed);
-    // C and C++ are the only languages with a non-empty `functions_prefix_paren` list; for them
-    // the generic `looks_like_c_*` heuristics detect definitions with arbitrary return types
-    // (the fixed keyword lists only caught built-in types like `int`/`void`).
     // C and C++ are the only languages with a non-empty `functions_prefix_paren` list. For them
     // the generic `looks_like_c_*` heuristics fully replace the fixed keyword lists (which only
     // caught built-in return types like `int`/`void` and mis-fired on prototype continuation
@@ -3979,8 +3976,17 @@ fn count_branch_in_line(line: &[u8], keywords: &[&str]) -> u32 {
 }
 
 fn starts_with(chars: &[char], index: usize, needle: &str) -> bool {
-    let needle_chars: Vec<char> = needle.chars().collect();
-    chars.get(index..index + needle_chars.len()) == Some(needle_chars.as_slice())
+    let Some(tail) = chars.get(index..) else {
+        return false;
+    };
+
+    for (i, needle_char) in needle.chars().enumerate() {
+        if tail.get(i).copied() != Some(needle_char) {
+            return false;
+        }
+    }
+
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -4960,6 +4966,25 @@ def fn_a():
             Language::Vue,
             Language::Xml,
             Language::Zig,
+            Language::Solidity,
+            Language::Protobuf,
+            Language::Hcl,
+            Language::GraphQl,
+            Language::Ada,
+            Language::Vhdl,
+            Language::Verilog,
+            Language::Tcl,
+            Language::Pascal,
+            Language::VisualBasic,
+            Language::Lisp,
+            Language::Fortran,
+            Language::Nix,
+            Language::Crystal,
+            Language::D,
+            Language::Glsl,
+            Language::Cmake,
+            Language::Elm,
+            Language::Awk,
         ] {
             let slug = lang.as_slug();
             let roundtripped = Language::from_name(slug);

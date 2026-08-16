@@ -23,9 +23,15 @@ BODY="${2:-}"
 message="$(printf 'From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n' \
     "$ALERT_FROM" "$ALERT_TO" "$SUBJECT" "$(date -R)" "$BODY")"
 
+# Avoid exposing SMTP credentials in the process list via --user.
+curl_cfg="$(mktemp)"
+trap 'rm -f "$curl_cfg"' EXIT
+chmod 600 "$curl_cfg"
+printf 'user = "%s:%s"\n' "$ALERT_SMTP_USER" "$ALERT_SMTP_PASS" >"$curl_cfg"
+
 printf '%s' "$message" | curl --silent --show-error --ssl-reqd \
     --url "$ALERT_SMTP_URL" \
     --mail-from "$ALERT_FROM" \
     --mail-rcpt "$ALERT_TO" \
-    --user "$ALERT_SMTP_USER:$ALERT_SMTP_PASS" \
+    --config "$curl_cfg" \
     --upload-file -

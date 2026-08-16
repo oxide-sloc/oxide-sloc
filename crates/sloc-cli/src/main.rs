@@ -529,8 +529,10 @@ struct SendArgs {
 /// Which VCS hosting the pull request lives on.
 #[derive(Debug, Clone, clap::ValueEnum)]
 enum VcsProvider {
-    Github,
-    Gitlab,
+    #[value(name = "github")]
+    GitHub,
+    #[value(name = "gitlab")]
+    GitLab,
 }
 
 #[derive(Debug, Args)]
@@ -1603,6 +1605,7 @@ const fn is_ip_blocked(ip: std::net::IpAddr) -> bool {
                 || v4.is_link_local()
                 || v4.is_broadcast()
                 || v4.is_unspecified()
+                || v4.is_multicast()
         }
         std::net::IpAddr::V6(v6) => {
             v6.is_loopback()
@@ -2373,11 +2376,19 @@ fn print_diff_summary(cmp: &ScanComparison, plain: bool) {
 // ── utilities ─────────────────────────────────────────────────────────────────
 
 fn truncate(input: &str, width: usize) -> String {
-    if input.len() <= width {
+    if width == 0 {
+        return String::new();
+    }
+    if input.chars().count() <= width {
         return input.to_string();
     }
-    let keep = width.saturating_sub(1);
-    format!("{}…", &input[..keep])
+    let keep_chars = width.saturating_sub(1);
+    let cut = input
+        .char_indices()
+        .nth(keep_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(input.len());
+    format!("{}…", &input[..cut])
 }
 
 fn open_path(path: &Path) {
@@ -2655,10 +2666,10 @@ async fn run_pr_comment(args: PrCommentArgs) -> Result<()> {
     let body = build_pr_comment_body(&current, comparison.as_ref(), args.report_url.as_deref());
 
     match args.provider {
-        VcsProvider::Github => {
+        VcsProvider::GitHub => {
             post_github_comment(&args, &body).await?;
         }
-        VcsProvider::Gitlab => {
+        VcsProvider::GitLab => {
             post_gitlab_comment(&args, &body).await?;
         }
     }
@@ -2788,17 +2799,7 @@ async fn post_gitlab_comment(args: &PrCommentArgs, body: &str) -> Result<()> {
         .unwrap_or("https://gitlab.com")
         .trim_end_matches('/');
     // GitLab encodes the namespace/project as URL-encoded path for the API.
-    let encoded_repo: String = args
-        .repo
-        .chars()
-        .map(|c| {
-            if c == '/' {
-                "%2F".to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect();
+    let encoded_repo = percent_encode(&args.repo);
     let url = format!(
         "{base}/api/v4/projects/{encoded_repo}/merge_requests/{}/notes",
         args.pr_number
@@ -3391,4 +3392,19 @@ fn git_clone_path(repo_url: &str, clones_dir: &Path) -> PathBuf {
 
 fn uuid_simple() -> String {
     uuid::Uuid::new_v4().simple().to_string()
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::truncate;
+
+    #[test]
+    fn truncate_handles_zero_width() {
+        assert_eq!(truncate("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_preserves_utf8_boundaries() {
+        assert_eq!(truncate("héllo", 4), "hél…");
+    }
 }
