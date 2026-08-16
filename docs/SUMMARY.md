@@ -16,6 +16,10 @@
 - [Jenkins Setup](jenkins-manual-setup.md)
 - [SonarQube Setup](sonarqube-manual-setup.md)
 
+# Editor & Build Integrations
+
+- [IDE Integrations](ide-integrations.md)
+
 # Reference
 
 - [REST API](openapi.yaml)

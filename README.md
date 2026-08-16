@@ -267,6 +267,20 @@ To scan repositories hosted on **different git instances** than the tool/pipelin
 
 ---
 
+## Editor & Build Integrations
+
+Run oxide-sloc reports without leaving your editor or build:
+
+| Integration | Location | What it does |
+|---|---|---|
+| VS Code extension | [`editors/vscode/`](./editors/vscode/) | Analyze the workspace or a file, view HTML reports, and see a live code-line count in the status bar. |
+| CMake module | [`cmake/OxideSloc.cmake`](./cmake/OxideSloc.cmake) | `include(OxideSloc)` + `oxide_sloc_add_report(...)` adds a report target with exit-code build gating. |
+| CMake example | [`examples/cmake/`](./examples/cmake/) | A runnable sample project wiring the module in. |
+
+See [`docs/ide-integrations.md`](./docs/ide-integrations.md) for setup, settings, and the exit-code table.
+
+---
+
 ## LAN Server
 
 ```bash
@@ -303,8 +317,11 @@ crates/
   sloc-web/         # Axum web server, metrics API, badge endpoint
   sloc-mcp/         # MCP stdio server for AI agent integration
 ci/                 # CI scripts + config presets
-docs/               # airgap.md, ci-integrations.md, server-deployment.md, openapi.yaml
+cmake/              # OxideSloc.cmake reusable CMake module
+docs/               # airgap.md, ci-integrations.md, ide-integrations.md, server-deployment.md, openapi.yaml
 dist/               # Windows pre-built binary (committed by CI after each release)
+editors/            # editors/vscode/ VS Code extension
+examples/           # examples/cmake/ runnable CMake integration sample
 scripts/            # run.sh, serve-server.sh (user-facing entry points)
 testing/            # fixtures/ (scan sample repo) + examples/ (CI configs, sloc.example.toml)
 ```

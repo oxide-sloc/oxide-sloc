@@ -1,0 +1,166 @@
+{
+  "name": "oxide-sloc",
+  "displayName": "oxide-sloc",
+  "description": "Run oxide-sloc code-metrics reports from VS Code: analyze, view HTML reports, and see live SLOC in the status bar.",
+  "version": "0.1.0",
+  "publisher": "oxide-sloc",
+  "license": "AGPL-3.0-or-later",
+  "author": "Nima Shafie",
+  "homepage": "https://github.com/oxide-sloc/oxide-sloc",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oxide-sloc/oxide-sloc.git",
+    "directory": "editors/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/oxide-sloc/oxide-sloc/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "sloc",
+    "loc",
+    "code metrics",
+    "lines of code",
+    "coverage"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "oxideSloc.analyzeWorkspace",
+        "title": "Analyze Workspace",
+        "category": "Oxide SLOC"
+      },
+      {
+        "command": "oxideSloc.analyzeCurrent",
+        "title": "Analyze Current File/Folder",
+        "category": "Oxide SLOC"
+      },
+      {
+        "command": "oxideSloc.openReport",
+        "title": "Open HTML Report",
+        "category": "Oxide SLOC"
+      },
+      {
+        "command": "oxideSloc.startServe",
+        "title": "Start Web UI",
+        "category": "Oxide SLOC"
+      },
+      {
+        "command": "oxideSloc.stopServe",
+        "title": "Stop Web UI",
+        "category": "Oxide SLOC"
+      },
+      {
+        "command": "oxideSloc.refreshStatus",
+        "title": "Refresh Status Bar",
+        "category": "Oxide SLOC"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "oxideSloc.analyzeCurrent",
+          "group": "9_oxideSloc"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "oxideSloc.analyzeCurrent",
+          "group": "9_oxideSloc"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "oxideSloc.startServe",
+          "when": "!oxideSloc.serveRunning"
+        },
+        {
+          "command": "oxideSloc.stopServe",
+          "when": "oxideSloc.serveRunning"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Oxide SLOC",
+      "properties": {
+        "oxideSloc.binaryPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `oxide-sloc` executable. Leave empty to fall back to the `SLOC_BIN` / `OXIDE_SLOC` environment variables, then `oxide-sloc` on `PATH`."
+        },
+        "oxideSloc.analyzeFlags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Extra flags appended verbatim to `oxide-sloc analyze` (for example `--per-file`, `--activity-window`, `90`, `--fail-below`, `1000`)."
+        },
+        "oxideSloc.configPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to a `.oxide-sloc.toml` config file, passed as `--config`. Leave empty to use oxide-sloc's own config discovery."
+        },
+        "oxideSloc.report.viewer": {
+          "type": "string",
+          "enum": [
+            "external",
+            "webview"
+          ],
+          "enumDescriptions": [
+            "Open the HTML report in the default external browser.",
+            "Open the HTML report inside a VS Code webview panel."
+          ],
+          "default": "external",
+          "description": "Where to open generated HTML reports."
+        },
+        "oxideSloc.report.useBinaryOpen": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Pass `--open` to oxide-sloc so it opens the report itself, instead of the extension managing the viewer."
+        },
+        "oxideSloc.statusBar.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a status-bar item with the workspace code-line count."
+        },
+        "oxideSloc.statusBar.autoRefresh": {
+          "type": "boolean",
+          "default": false,
+          "description": "Re-analyze and refresh the status bar on every file save. Off by default; can be slow on large workspaces."
+        },
+        "oxideSloc.serve.port": {
+          "type": "number",
+          "default": 4317,
+          "description": "Port the oxide-sloc web UI listens on when started from VS Code."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vscode/vsce": "^2.24.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.0"
+  }
+}

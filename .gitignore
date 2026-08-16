@@ -115,3 +115,9 @@ CLAUDE.md
 
 # Corporate secure profile — the filled-in env holds secrets; keep only the .example
 deploy/corp.env
+
+# Editor / build integration output - regeneratable, never committed
+editors/vscode/node_modules/
+editors/vscode/out/
+editors/vscode/*.vsix
+examples/cmake/build/
