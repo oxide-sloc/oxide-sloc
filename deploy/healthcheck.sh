@@ -32,18 +32,27 @@ fi
 
 if [ "$cur" != "$prev" ]; then
     if [ "$cur" = "down" ]; then
-        "$HERE/send-alert.sh" \
+        if "$HERE/send-alert.sh" \
             "[oxide-sloc] DOWN on ${HOST}" \
             "Health check to ${HEALTH_URL} FAILED (HTTP ${code}) at $(date -R).
 
 The systemd service may be crash-looping or the process is alive but not
-serving. Check:  systemctl status oxide-sloc  and  journalctl -u oxide-sloc -n 100"
+serving. Check:  systemctl status oxide-sloc  and  journalctl -u oxide-sloc -n 100"; then
+            # Only persist the new state if the alert was sent successfully, so a mail
+            # outage doesn't silently swallow the transition — we retry next tick.
+            echo "$cur" > "$STATE_FILE"
+        else
+            echo "Failed to send DOWN alert; not updating health state." >&2
+        fi
     else
-        "$HERE/send-alert.sh" \
+        if "$HERE/send-alert.sh" \
             "[oxide-sloc] RECOVERED on ${HOST}" \
-            "Health check to ${HEALTH_URL} is OK again (HTTP 200) at $(date -R)."
+            "Health check to ${HEALTH_URL} is OK again (HTTP 200) at $(date -R)."; then
+            # Only persist the new state if the alert was sent successfully, so a mail
+            # outage doesn't silently swallow the transition — we retry next tick.
+            echo "$cur" > "$STATE_FILE"
+        else
+            echo "Failed to send RECOVERED alert; not updating health state." >&2
+        fi
     fi
-    # Only persist the new state if the alert was sent successfully, so a mail
-    # outage doesn't silently swallow the transition — we retry next tick.
-    echo "$cur" > "$STATE_FILE"
 fi
