@@ -7,9 +7,10 @@ integrations that ship in this repository:
 - [CMake](#cmake) - a reusable module that adds a report target to any CMake project.
 - [VS Code](#vs-code) - an extension that runs analyses and shows live SLOC in the editor.
 
-> A Visual Studio (VSIX) extension is tracked separately from this repository - the .NET/VSSDK
-> toolchain does not fit a Rust build. In the meantime, Visual Studio users can point the CMake
-> integration at "Open Folder"/CMake projects, or add oxide-sloc as an External Tool.
+> The Visual Studio (VSIX) extension lives in its own repository,
+> [oxide-sloc-visualstudio](https://github.com/oxide-sloc/oxide-sloc-visualstudio) - the .NET/VSSDK
+> toolchain does not fit a Rust build. Visual Studio users can also point the CMake integration at
+> "Open Folder"/CMake projects.
 
 ## How the binary is located
 
