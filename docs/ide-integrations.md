@@ -1,16 +1,18 @@
 # Editor and Build Integrations
 
 oxide-sloc is a single self-contained binary, so integrating it into an editor or build system is a
-matter of shelling out to `oxide-sloc analyze` and reading its output. This page covers the two
-integrations that ship in this repository:
+matter of shelling out to `oxide-sloc analyze` and reading its output. The editor extensions live in
+their own repositories; the CMake integration ships in this repository:
 
 - [CMake](#cmake) - a reusable module that adds a report target to any CMake project.
-- [VS Code](#vs-code) - an extension that runs analyses and shows live SLOC in the editor.
+- [VS Code](#vs-code) - an extension that runs analyses and shows live SLOC in the editor, in the
+  [oxide-sloc-vscode](https://github.com/oxide-sloc/oxide-sloc-vscode) repository.
+- [Visual Studio](https://github.com/oxide-sloc/oxide-sloc-visual-studio) - a VS 2022 VSIX, in the
+  [oxide-sloc-visual-studio](https://github.com/oxide-sloc/oxide-sloc-visual-studio) repository.
 
-> The Visual Studio (VSIX) extension lives in its own repository,
-> [oxide-sloc-visualstudio](https://github.com/oxide-sloc/oxide-sloc-visualstudio) - the .NET/VSSDK
-> toolchain does not fit a Rust build. Visual Studio users can also point the CMake integration at
-> "Open Folder"/CMake projects.
+> The VS Code and Visual Studio extensions are tracked in separate repositories - their Node/TS and
+> .NET/VSSDK toolchains do not fit the Rust build. Visual Studio users can also point the CMake
+> integration at "Open Folder"/CMake projects, or add oxide-sloc as an External Tool.
 
 ## How the binary is located
 
@@ -70,8 +72,8 @@ in [`OxideSloc.cmake`](../cmake/OxideSloc.cmake) for every option.
 
 ## VS Code
 
-The [`editors/vscode/`](../editors/vscode/) extension adds command-palette entries, Explorer context
-menus, and a status-bar code-line count.
+The [oxide-sloc-vscode](https://github.com/oxide-sloc/oxide-sloc-vscode) extension adds
+command-palette entries, Explorer context menus, and a status-bar code-line count.
 
 - **Oxide SLOC: Analyze Workspace** / **Analyze Current File/Folder** - scan and report.
 - **Oxide SLOC: Open HTML Report** - view the latest report (external browser or webview).
@@ -80,5 +82,6 @@ menus, and a status-bar code-line count.
 
 Reports are written to the extension's storage directory, never into the workspace. Key settings:
 `oxideSloc.binaryPath`, `oxideSloc.analyzeFlags`, `oxideSloc.configPath`, `oxideSloc.report.viewer`,
-`oxideSloc.statusBar.enabled`. See the extension [README](../editors/vscode/README.md) for the full
-list and build instructions (`npm install && npm run compile && npx @vscode/vsce package`).
+`oxideSloc.statusBar.enabled`. See the extension
+[README](https://github.com/oxide-sloc/oxide-sloc-vscode#readme) for the full list and build
+instructions (`npm install && npm run compile && npx @vscode/vsce package`).

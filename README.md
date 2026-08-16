@@ -273,8 +273,8 @@ Run oxide-sloc reports without leaving your editor or build:
 
 | Integration | Location | What it does |
 |---|---|---|
-| VS Code extension | [`editors/vscode/`](./editors/vscode/) | Analyze the workspace or a file, view HTML reports, and see a live code-line count in the status bar. |
-| Visual Studio extension | [oxide-sloc-visualstudio](https://github.com/oxide-sloc/oxide-sloc-visualstudio) | VS 2022 VSIX: analyze the solution or a selected item, a metrics tool window, and HTML report/web UI commands. |
+| VS Code extension | [oxide-sloc-vscode](https://github.com/oxide-sloc/oxide-sloc-vscode) | Analyze the workspace or a file, view HTML reports, and see a live code-line count in the status bar. |
+| Visual Studio extension | [oxide-sloc-visual-studio](https://github.com/oxide-sloc/oxide-sloc-visual-studio) | VS 2022 VSIX: analyze the solution or a selected item, a metrics tool window, and HTML report/web UI commands. |
 | CMake module | [`cmake/OxideSloc.cmake`](./cmake/OxideSloc.cmake) | `include(OxideSloc)` + `oxide_sloc_add_report(...)` adds a report target with exit-code build gating. |
 | CMake example | [`examples/cmake/`](./examples/cmake/) | A runnable sample project wiring the module in. |
 
@@ -321,7 +321,6 @@ ci/                 # CI scripts + config presets
 cmake/              # OxideSloc.cmake reusable CMake module
 docs/               # airgap.md, ci-integrations.md, ide-integrations.md, server-deployment.md, openapi.yaml
 dist/               # Windows pre-built binary (committed by CI after each release)
-editors/            # editors/vscode/ VS Code extension
 examples/           # examples/cmake/ runnable CMake integration sample
 scripts/            # run.sh, serve-server.sh (user-facing entry points)
 testing/            # fixtures/ (scan sample repo) + examples/ (CI configs, sloc.example.toml)
