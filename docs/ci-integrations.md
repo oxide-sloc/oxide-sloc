@@ -31,10 +31,12 @@ This document covers how to wire oxide-sloc into your CI/CD pipelines and how to
    - [Auth schemes](#atlassian-auth-schemes)
    - [Plugin-optional design (Tier-3 fallback)](#plugin-optional-design-tier-3-fallback)
    - [Troubleshooting (keyed to log lines)](#atlassian-troubleshooting-keyed-to-log-lines)
-5. [GitHub Actions](#github-actions)
+5. [Native CLI integration commands (`jira`, `bitbucket-status`, `pr-comment`)](#native-cli-integration-commands-jira-bitbucket-status-pr-comment)
+   - [Cross-CI integration matrix](#cross-ci-integration-matrix)
+6. [GitHub Actions](#github-actions)
    - [VirusTotal binary scanning](#virustotal-binary-scanning)
-6. [GitLab CI](#gitlab-ci)
-7. [Artifact Repository Integration](#artifact-repository-integration)
+7. [GitLab CI](#gitlab-ci)
+8. [Artifact Repository Integration](#artifact-repository-integration)
    - [JFrog Artifactory](#jfrog-artifactory)
    - [Sonatype Nexus Repository Manager 3](#sonatype-nexus-repository-manager-3)
    - [Sonatype Nexus Repository Manager 2](#sonatype-nexus-repository-manager-2)
@@ -43,8 +45,8 @@ This document covers how to wire oxide-sloc into your CI/CD pipelines and how to
    - [Azure Blob Storage](#azure-blob-storage)
    - [Generic HTTP PUT](#generic-http-put)
    - [Registering artifact repo credentials](#registering-artifact-repo-credentials)
-8. [Environment variables reference](#environment-variables-reference)
-9. [CLI flag quick reference](#cli-flag-quick-reference)
+9. [Environment variables reference](#environment-variables-reference)
+10. [CLI flag quick reference](#cli-flag-quick-reference)
 
 ---
 
@@ -1083,15 +1085,119 @@ and the test plan §1.
 
 ---
 
+## Native CLI integration commands (`jira`, `bitbucket-status`, `pr-comment`)
+
+The Jenkins helpers above are Jenkins-specific shell/Python. The **binary itself**
+also ships first-party commands so the *same* integrations work identically from
+GitHub Actions, GitLab CI, Bitbucket Pipelines, or a plain shell — no plugin, no
+Marketplace app. All three target **on-premises Server/Data Center** (built-in
+REST) first and auto-detect Atlassian **Cloud** as a fallback. All three route
+every outbound request through the same SSRF guard the webhook/`send` paths use
+(blocks loopback/link-local/cloud-metadata; RFC-1918 on-prem hosts require the
+explicit `--allow-private-net` / `SLOC_ALLOW_PRIVATE_WEBHOOK=1` opt-in).
+
+### `jira` — post an SLOC summary to a Jira issue
+
+```bash
+# Server/DC (REST v2, wiki-markup comment; Bearer PAT)
+export SLOC_JIRA_URL=https://jira.corp.com
+export SLOC_JIRA_TOKEN=<personal-access-token>
+export SLOC_JIRA_ISSUE=ENG-1234
+oxide-sloc jira result.json --mode comment --report-url https://reports.corp/r/42.html
+
+# Cloud (REST v3, ADF comment; Basic email+token) — auto-detected from *.atlassian.net
+oxide-sloc jira result.json \
+  --jira-url https://acme.atlassian.net --jira-username ci-bot@acme.com \
+  --jira-token <api-token> --issue-key ENG-1234
+```
+
+| Mode | REST call (Server v2 / Cloud v3) | Purpose |
+|---|---|---|
+| `comment` (default) | `POST /rest/api/{2\|3}/issue/{key}/comment` | wiki-markup (Server) / ADF (Cloud) summary comment |
+| `remote-link` | `POST /rest/api/{2\|3}/issue/{key}/remotelink` | attach a link to the full HTML report (`--report-url` required) |
+| `field` | `PUT /rest/api/{2\|3}/issue/{key}` | write the one-line summary into `--field-id` (e.g. `customfield_10050`) |
+
+Auth mirrors Confluence: **set `--jira-username`** (email/username) for Basic
+(Cloud API token / Server password); **leave it blank** for a Bearer PAT.
+`--dry-run` prints the method, URL, and body without any network call — the
+recommended CI smoke hook.
+
+### Native Bitbucket — `pr-comment --provider bitbucket` and `bitbucket-status`
+
+The Jenkins `notify-bitbucket.sh` still works, but the binary now speaks
+Bitbucket natively too, consistent with GitHub/GitLab:
+
+```bash
+# PR comment (Server/DC: --repo PROJECT/repo; Cloud: --repo slug + --workspace)
+oxide-sloc pr-comment result.json --provider bitbucket \
+  --api-url https://bitbucket.corp.com --repo PLAT/payments-api \
+  --pr-number 42 --token <pat> --baseline base.json
+
+# Commit build status (Server/DC keyed by commit; Cloud needs --workspace)
+export SLOC_BB_URL=https://bitbucket.corp.com
+export SLOC_BB_TOKEN=<pat>
+export SLOC_BB_COMMIT=$GIT_COMMIT
+oxide-sloc bitbucket-status result.json --repo PLAT/payments-api --state SUCCESSFUL
+```
+
+| Command | REST call (Server/DC → Cloud) | Body |
+|---|---|---|
+| `pr-comment --provider bitbucket` | `POST /rest/api/1.0/projects/{P}/repos/{r}/pull-requests/{id}/comments` → `POST /2.0/repositories/{ws}/{repo}/pullrequests/{id}/comments` | Markdown PR comment |
+| `bitbucket-status` | `POST /rest/build-status/1.0/commits/{sha}` → `POST /2.0/repositories/{ws}/{repo}/commit/{sha}/statuses/build` | `{state,key,name,url,description}` |
+
+Tier is Cloud when `--workspace` is set or the base host is `bitbucket.org`;
+otherwise Server/DC. Set `--bitbucket-user` for Cloud app-password Basic auth;
+leave it blank for a Bearer access token / Server PAT.
+
+### Cross-CI integration matrix
+
+Every CI system reaches the same set of integrations — via native binary
+commands (portable), the shared `ci/artifact-push.sh`, or (Jenkins) its bundled
+helpers. Each is opt-in and skips cleanly when unconfigured.
+
+| Integration | Jenkins | GitLab CI | GitHub Actions | Native command |
+|---|---|---|---|---|
+| Artifact repo (Nexus/Artifactory/S3/MinIO/Azure/HTTP) | ✅ `artifact-push.sh` | ✅ `artifact-push` | ✅ `integrations.yml` | — (shell) |
+| Confluence page | ✅ `notify-confluence.py` | ✅ `notify:confluence` | ✅ `integrations.yml` | `oxide-sloc send --confluence-*` |
+| Jira issue comment | ✅ `notify:jira`¹ | ✅ `notify:jira` | ✅ `integrations.yml` | `oxide-sloc jira` |
+| Bitbucket build status | ✅ `notify-bitbucket.sh` | ✅ `notify:bitbucket` | ✅ `integrations.yml` | `oxide-sloc bitbucket-status` |
+| PR/MR comment | via `pr-comment` | ✅ `mr-comment` | ✅ `integrations.yml` + `self-analysis` | `oxide-sloc pr-comment` |
+
+¹ Jenkins can call `oxide-sloc jira` from a post-build step exactly as the GitLab
+`notify:jira` job does; a first-party pipeline parameter set mirrors the
+`CONFLUENCE_*` / `BITBUCKET_*` pattern.
+
+---
+
 ## GitHub Actions
 
-Two workflows ship in `.github/workflows/`:
+Workflows ship in `.github/workflows/`:
 
-| Workflow       | Trigger                        | Purpose                                                                              |
-|----------------|--------------------------------|--------------------------------------------------------------------------------------|
-| `ci.yml`       | push to `main`, all PRs        | fmt → lint → build → smoke tests → web UI health check                               |
-| `release.yml`  | push a `v*` tag                | cross-compile for 5 platforms → GPG + cosign sign → VirusTotal scan → publish release |
-| `vt-scan.yml`  | manual (`workflow_dispatch`)   | on-demand VirusTotal scan against a release tag or HEAD build                        |
+| Workflow            | Trigger                        | Purpose                                                                              |
+|---------------------|--------------------------------|--------------------------------------------------------------------------------------|
+| `ci.yml`            | push to `main`, all PRs        | fmt → lint → build → smoke tests → web UI health check                               |
+| `integrations.yml`  | push to `main`, PRs, dispatch  | scan → artifact-repo push → Confluence → Jira → Bitbucket → PR comment (parity with Jenkins/GitLab) |
+| `release.yml`       | push a `v*` tag                | cross-compile for 5 platforms → GPG + cosign sign → VirusTotal scan → publish release |
+| `vt-scan.yml`       | manual (`workflow_dispatch`)   | on-demand VirusTotal scan against a release tag or HEAD build                        |
+
+### `integrations.yml` — external-system parity
+
+This workflow brings GitHub Actions level with the Jenkins and GitLab pipelines.
+A `scan` job builds the binary and analyzes the repo (uploading the reports **and
+the binary** as one artifact), then independent, best-effort jobs deliver to each
+external system. Every delivery job is gated on the relevant repo secret/variable
+so forks and secret-less repos skip it cleanly, and each uses
+`continue-on-error: true` so a downstream outage never fails the pipeline.
+
+Configure under **Settings → Secrets and variables → Actions**:
+
+| Job | Gate | Key secrets / variables |
+|---|---|---|
+| `artifact-push` | `vars.ARTIFACT_REPO_TYPE` set | `vars.ARTIFACT_REPO_URL/EXTRA`, `secrets.ARTIFACT_REPO_USER/PASS` |
+| `confluence` | `secrets.SLOC_CONFLUENCE_TOKEN` set | `secrets.SLOC_CONFLUENCE_URL/USER`, `vars.CONFLUENCE_SPACE` |
+| `jira` | `secrets.SLOC_JIRA_TOKEN` + `vars.JIRA_ISSUE` | `secrets.SLOC_JIRA_URL/USER` |
+| `bitbucket` | `secrets.SLOC_BB_TOKEN` + `vars.BITBUCKET_REPO` | `secrets.SLOC_BB_URL/USER`, `vars.BITBUCKET_WORKSPACE` |
+| `pr-comment` | `pull_request` event | uses the built-in `github.token` (no secret needed) |
 
 ### Adding a scan step to an existing workflow
 
@@ -1647,6 +1753,19 @@ The step stages the compiled binary and scan reports (`result.json`, `report.htm
 | `SLOC_SMTP_USER`      | `send`      | SMTP username (alternative to `--smtp-user`)                           |
 | `SLOC_SMTP_PASS`      | `send`      | SMTP password — prefer this over `--smtp-pass` to keep creds out of process listings |
 | `SLOC_WEBHOOK_TOKEN`  | `send`      | Bearer token for webhook delivery (alternative to `--webhook-token`)   |
+| `SLOC_ALLOW_PRIVATE_WEBHOOK` | `send`, `jira`, `bitbucket-status`, `pr-comment` | `1`/`true` to allow HTTP + RFC-1918 targets (self-hosted / on-prem hosts) |
+| `SLOC_CONFLUENCE_URL/USER/TOKEN/SPACE` | `send` | Confluence base URL, account email/username, API token/PAT, space key |
+| `SLOC_JIRA_URL`       | `jira`      | Jira base URL (`https://jira.corp.com` or `https://acme.atlassian.net`) |
+| `SLOC_JIRA_USER`      | `jira`      | Jira account email/username (Basic auth); omit for a Bearer PAT        |
+| `SLOC_JIRA_TOKEN`     | `jira`      | Jira API token (Cloud) or personal access token (Server/DC)            |
+| `SLOC_JIRA_ISSUE`     | `jira`      | Target issue key, e.g. `ENG-1234` (alternative to `--issue-key`)       |
+| `SLOC_BB_URL`         | `bitbucket-status` | Bitbucket base URL (default `https://api.bitbucket.org`)        |
+| `SLOC_BB_USER`        | `bitbucket-status`, `pr-comment` | Bitbucket username for Cloud app-password Basic auth; omit for Bearer |
+| `SLOC_BB_TOKEN`       | `bitbucket-status` | Bitbucket access token / app password / PAT                     |
+| `SLOC_BB_REPO`        | `bitbucket-status` | `PROJECT/repo` (Server/DC) or repo slug (Cloud, with workspace) |
+| `SLOC_BB_WORKSPACE`   | `bitbucket-status`, `pr-comment` | Bitbucket Cloud workspace (Cloud only)            |
+| `SLOC_BB_COMMIT`      | `bitbucket-status` | Commit SHA the build status attaches to                         |
+| `SLOC_VCS_TOKEN/REPO/API_URL`, `SLOC_PR_NUMBER` | `pr-comment` | Token, repo, API base, and PR/MR number for PR/MR comments |
 | `VT_API_KEY`          | `release.yml` | VirusTotal API v3 key; enables binary scanning on every tagged release |
 | `ARTIFACT_REPO_TYPE`         | Artifact push | Backend: `artifactory` / `nexus` / `nexus2` / `s3` / `minio` / `azure-blob` / `generic-http` |
 | `ARTIFACT_REPO_URL`          | Artifact push | Base URL of the artifact repository (see [Artifact Repository Integration](#artifact-repository-integration)) |
@@ -1683,7 +1802,24 @@ oxide-sloc report out/result.json \
 # Send results via webhook
 oxide-sloc send out/result.json \
   --webhook-url "https://hooks.slack.com/services/..."
+
+# Post a summary comment to a Jira issue (on-prem Server/DC; Cloud auto-detected)
+oxide-sloc jira out/result.json \
+  --jira-url https://jira.corp.com --jira-token "$PAT" \
+  --issue-key ENG-1234 --mode comment --report-url https://reports.corp/r/42.html
+
+# Report a commit build status to Bitbucket
+oxide-sloc bitbucket-status out/result.json \
+  --bitbucket-url https://bitbucket.corp.com --token "$PAT" \
+  --repo PLAT/payments-api --commit "$GIT_COMMIT" --state SUCCESSFUL
+
+# Post an SLOC delta comment to a PR/MR (GitHub / GitLab / Bitbucket)
+oxide-sloc pr-comment out/result.json --baseline out/base.json \
+  --provider github --repo owner/repo --pr-number 42 --token "$TOKEN"
 ```
+
+`jira` and `bitbucket-status` accept `--dry-run` (print method + URL + body, no
+network) — use it as a pipeline smoke test.
 
 ### CI config presets
 

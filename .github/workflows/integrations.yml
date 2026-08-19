@@ -1,0 +1,222 @@
+name: Integrations
+
+# Bring GitHub Actions to parity with the Jenkins and GitLab pipelines: scan the
+# repo, push the artifacts to an external artifact repository (Nexus /
+# Artifactory / S3 / …), and document the result on Confluence, Jira, and
+# Bitbucket. Every delivery job is gated on the relevant secret / variable being
+# present, so forks and secret-less repositories skip it cleanly. These jobs are
+# best-effort: a downstream outage must never fail the pipeline, so delivery
+# steps use `continue-on-error: true`.
+#
+# Configure under Settings → Secrets and variables → Actions:
+#   Variables (non-secret):
+#     ARTIFACT_REPO_TYPE   artifactory | nexus | nexus2 | s3 | minio | azure-blob | generic-http
+#     ARTIFACT_REPO_URL    base URL of the artifact repository
+#     ARTIFACT_REPO_EXTRA  provider-specific extra (Nexus repo name, Azure container, …)
+#     CONFLUENCE_SPACE     Confluence space key (e.g. ENG)
+#     JIRA_ISSUE           target Jira issue key (e.g. ENG-1234)
+#     BITBUCKET_REPO       PROJECT/repo (Server/DC) or repo slug (Cloud)
+#     BITBUCKET_WORKSPACE  Bitbucket Cloud workspace (Cloud only)
+#   Secrets:
+#     ARTIFACT_REPO_USER / ARTIFACT_REPO_PASS   artifact-repo credentials
+#     SLOC_CONFLUENCE_URL / _USER / _TOKEN      Confluence (send)
+#     SLOC_JIRA_URL / _USER / _TOKEN            Jira (jira)
+#     SLOC_BB_URL / _USER / _TOKEN              Bitbucket (bitbucket-status)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integrations-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUST_LOG: warn
+  OUT_DIR: ci-out
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # opt in ahead of the June 2026 forced migration
+
+jobs:
+  scan:
+    name: Scan + build binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: integrations
+
+      - name: Install system dependencies (rfd / native file dialog)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libgtk-3-dev libxdo-dev
+
+      - name: Build release binary
+        run: bash ci/release.sh
+
+      - name: Analyze this repository
+        run: |
+          mkdir -p "$OUT_DIR"
+          ./target/release/oxide-sloc analyze . \
+            --report-title "oxide-sloc — ${{ github.repository }}" \
+            --json-out "$OUT_DIR/result.json" \
+            --html-out "$OUT_DIR/report.html" \
+            --csv-out "$OUT_DIR/report.csv" \
+            --xlsx-out "$OUT_DIR/report.xlsx"
+          test -s "$OUT_DIR/result.json"
+          # Carry the binary alongside the reports so delivery jobs need no rebuild.
+          cp target/release/oxide-sloc "$OUT_DIR/oxide-sloc"
+
+      - name: Upload scan artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: integrations-scan-${{ github.run_number }}
+          path: ci-out/
+          if-no-files-found: error
+
+  artifact-push:
+    name: Push to artifact repository
+    needs: [scan]
+    runs-on: ubuntu-latest
+    if: ${{ vars.ARTIFACT_REPO_TYPE != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Download scan artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: integrations-scan-${{ github.run_number }}
+          path: ci-out
+
+      - name: Push artifacts (Nexus / Artifactory / S3 / …)
+        continue-on-error: true
+        env:
+          ARTIFACT_REPO_TYPE: ${{ vars.ARTIFACT_REPO_TYPE }}
+          ARTIFACT_REPO_URL: ${{ vars.ARTIFACT_REPO_URL }}
+          ARTIFACT_REPO_PATH: oxide-sloc/${{ github.repository }}/${{ github.run_number }}
+          ARTIFACT_REPO_EXTRA: ${{ vars.ARTIFACT_REPO_EXTRA }}
+          ARTIFACT_REPO_USER: ${{ secrets.ARTIFACT_REPO_USER }}
+          ARTIFACT_REPO_PASS: ${{ secrets.ARTIFACT_REPO_PASS }}
+          ARTIFACT_DIR: ci-out
+          ARTIFACT_FILES: "result.json report.html report.csv report.xlsx"
+          ARTIFACT_GENERATE_MANIFEST: "true"
+        run: bash ci/artifact-push.sh
+
+  confluence:
+    name: Document on Confluence
+    needs: [scan]
+    runs-on: ubuntu-latest
+    env:
+      HAS_CONFLUENCE: ${{ secrets.SLOC_CONFLUENCE_TOKEN != '' }}
+    steps:
+      - name: Download scan artifact
+        if: env.HAS_CONFLUENCE == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: integrations-scan-${{ github.run_number }}
+          path: ci-out
+
+      - name: Publish page
+        if: env.HAS_CONFLUENCE == 'true'
+        continue-on-error: true
+        env:
+          SLOC_CONFLUENCE_URL: ${{ secrets.SLOC_CONFLUENCE_URL }}
+          SLOC_CONFLUENCE_USER: ${{ secrets.SLOC_CONFLUENCE_USER }}
+          SLOC_CONFLUENCE_TOKEN: ${{ secrets.SLOC_CONFLUENCE_TOKEN }}
+          SLOC_CONFLUENCE_SPACE: ${{ vars.CONFLUENCE_SPACE }}
+        run: |
+          chmod +x ci-out/oxide-sloc
+          ci-out/oxide-sloc send ci-out/result.json \
+            --confluence-page-title "oxide-sloc — ${{ github.repository }}"
+
+  jira:
+    name: Comment on Jira
+    needs: [scan]
+    runs-on: ubuntu-latest
+    env:
+      HAS_JIRA: ${{ secrets.SLOC_JIRA_TOKEN != '' && vars.JIRA_ISSUE != '' }}
+    steps:
+      - name: Download scan artifact
+        if: env.HAS_JIRA == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: integrations-scan-${{ github.run_number }}
+          path: ci-out
+
+      - name: Post issue comment
+        if: env.HAS_JIRA == 'true'
+        continue-on-error: true
+        env:
+          SLOC_JIRA_URL: ${{ secrets.SLOC_JIRA_URL }}
+          SLOC_JIRA_USER: ${{ secrets.SLOC_JIRA_USER }}
+          SLOC_JIRA_TOKEN: ${{ secrets.SLOC_JIRA_TOKEN }}
+          SLOC_JIRA_ISSUE: ${{ vars.JIRA_ISSUE }}
+        run: |
+          chmod +x ci-out/oxide-sloc
+          ci-out/oxide-sloc jira ci-out/result.json --mode comment
+
+  bitbucket:
+    name: Report build status to Bitbucket
+    needs: [scan]
+    runs-on: ubuntu-latest
+    env:
+      HAS_BITBUCKET: ${{ secrets.SLOC_BB_TOKEN != '' && vars.BITBUCKET_REPO != '' }}
+    steps:
+      - name: Download scan artifact
+        if: env.HAS_BITBUCKET == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: integrations-scan-${{ github.run_number }}
+          path: ci-out
+
+      - name: Post build status
+        if: env.HAS_BITBUCKET == 'true'
+        continue-on-error: true
+        env:
+          SLOC_BB_URL: ${{ secrets.SLOC_BB_URL }}
+          SLOC_BB_USER: ${{ secrets.SLOC_BB_USER }}
+          SLOC_BB_TOKEN: ${{ secrets.SLOC_BB_TOKEN }}
+          SLOC_BB_REPO: ${{ vars.BITBUCKET_REPO }}
+          SLOC_BB_WORKSPACE: ${{ vars.BITBUCKET_WORKSPACE }}
+          SLOC_BB_COMMIT: ${{ github.sha }}
+        run: |
+          chmod +x ci-out/oxide-sloc
+          ci-out/oxide-sloc bitbucket-status ci-out/result.json --state SUCCESSFUL
+
+  pr-comment:
+    name: Comment on the pull request
+    needs: [scan]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download scan artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: integrations-scan-${{ github.run_number }}
+          path: ci-out
+
+      - name: Post SLOC summary comment
+        continue-on-error: true
+        env:
+          SLOC_VCS_TOKEN: ${{ github.token }}
+          SLOC_VCS_REPO: ${{ github.repository }}
+          SLOC_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          chmod +x ci-out/oxide-sloc
+          ci-out/oxide-sloc pr-comment ci-out/result.json --provider github

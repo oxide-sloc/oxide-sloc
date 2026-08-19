@@ -19,6 +19,7 @@
 #   SLOC_SMTP_HOST/USER/PASS   SMTP credentials                  — deliver:email
 #   SLOC_CONFLUENCE_URL/USER/TOKEN/SPACE   Confluence creds      — notify:confluence
 #   BITBUCKET_BASE_URL/TOKEN/USER/WORKSPACE/REPO   Bitbucket     — notify:bitbucket
+#   SLOC_JIRA_URL/USER/TOKEN + SLOC_JIRA_ISSUE   Jira creds+key  — notify:jira
 #   ARTIFACT_REPO_USER / ARTIFACT_REPO_PASS   artifact-repo creds — artifact-push
 #
 # Air-gap scope: this pipeline vendors the Rust *toolchain* (committed under
@@ -688,6 +689,24 @@ notify:bitbucket:
     - bash ci/jenkins/notify-bitbucket.sh SUCCESSFUL
   rules:
     - if: '$BITBUCKET_BASE_URL != ""'
+
+# Native Jira issue comment (oxide-sloc jira). Reads SLOC_JIRA_URL/USER/TOKEN
+# from masked CI variables and SLOC_JIRA_ISSUE (the target issue key, e.g.
+# ENG-1234). Targets on-premises Jira Server/Data Center (built-in REST, no
+# marketplace app); Atlassian Cloud is auto-detected as a fallback.
+notify:jira:
+  stage: deliver
+  needs:
+    - job: analyze
+      artifacts: true
+  script:
+    - |
+      ./target/release/oxide-sloc jira "${OUT_DIR}/result.json" \
+        --mode comment \
+        ${CI_PAGES_URL:+--report-url "${CI_PAGES_URL}"}
+  allow_failure: true
+  rules:
+    - if: '$SLOC_JIRA_URL != "" && $SLOC_JIRA_TOKEN != "" && $SLOC_JIRA_ISSUE != ""'
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Publish — artifact repository push (all 7 backends) + downstream trigger

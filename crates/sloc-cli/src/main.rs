@@ -28,6 +28,9 @@ use sloc_report::{
     write_pdf_from_run, write_xlsx,
 };
 
+mod atlassian;
+use atlassian::{AtlassianTier, atlassian_auth, atlassian_ssrf_check, detect_tier};
+
 // ── ANSI color helpers ────────────────────────────────────────────────────────
 
 fn color_enabled() -> bool {
@@ -91,10 +94,19 @@ enum Commands {
     /// Runs as the local user against the output tree — no server or login needed.
     /// Dry-run by default; pass --yes to actually delete.
     Prune(PruneArgs),
-    /// Post an SLOC diff comment to a pull request on GitHub or GitLab.
+    /// Post an SLOC diff comment to a pull request on GitHub, GitLab, or Bitbucket.
     /// Designed to be called from Jenkins post-build steps and CI pipelines.
     #[command(name = "pr-comment")]
     PrComment(PrCommentArgs),
+    /// Post an SLOC summary to a Jira issue (comment, remote link, or custom field).
+    /// Targets on-premises Jira Server/Data Center (built-in REST, no marketplace app);
+    /// Atlassian Cloud is auto-detected as a fallback. Designed for CI pipelines.
+    Jira(JiraArgs),
+    /// Post an SLOC build status to a Bitbucket commit.
+    /// Targets on-premises Bitbucket Server/Data Center (built-in REST); Bitbucket
+    /// Cloud is auto-detected as a fallback. Designed for CI pipelines.
+    #[command(name = "bitbucket-status")]
+    BitbucketStatus(BitbucketStatusArgs),
     /// Verify the integrity of a hash-chained audit log.
     /// Recomputes each record's keyed MAC and checks the chain links; reports the
     /// first altered/removed record. Requires the same key used when writing
@@ -533,6 +545,8 @@ enum VcsProvider {
     GitHub,
     #[value(name = "gitlab")]
     GitLab,
+    #[value(name = "bitbucket")]
+    Bitbucket,
 }
 
 #[derive(Debug, Args)]
@@ -550,13 +564,15 @@ struct PrCommentArgs {
     #[arg(long, value_enum, default_value = "github")]
     provider: VcsProvider,
 
-    /// GitHub/GitLab API base URL. Defaults to `https://api.github.com` for GitHub
-    /// or `https://gitlab.com` for GitLab. Override for self-hosted instances.
+    /// API base URL. Defaults to `https://api.github.com` (GitHub),
+    /// `https://gitlab.com` (GitLab), or `https://api.bitbucket.org` (Bitbucket).
+    /// Override for self-hosted / Server-Data-Center instances.
     #[arg(long, value_name = "URL", env = "SLOC_VCS_API_URL")]
     api_url: Option<String>,
 
-    /// Repository in `owner/repo` format (GitHub) or numeric project ID / `namespace/project`
-    /// (GitLab).
+    /// Repository. `owner/repo` (GitHub), numeric project ID or `namespace/project`
+    /// (GitLab), repo slug (Bitbucket Cloud, with --workspace), or `PROJECT/repo`
+    /// (Bitbucket Server/DC).
     #[arg(long, value_name = "REPO", env = "SLOC_VCS_REPO")]
     repo: String,
 
@@ -564,14 +580,174 @@ struct PrCommentArgs {
     #[arg(long, value_name = "NUMBER", env = "SLOC_PR_NUMBER")]
     pr_number: u64,
 
-    /// API token with `repo` (GitHub) or `api` (GitLab) scope.
+    /// API token with `repo` (GitHub), `api` (GitLab), or PR-write (Bitbucket) scope.
     /// Defaults to `SLOC_VCS_TOKEN` env var.
     #[arg(long, value_name = "TOKEN", env = "SLOC_VCS_TOKEN")]
     token: String,
 
+    /// Bitbucket Cloud workspace (ignored by GitHub/GitLab and Bitbucket Server/DC).
+    #[arg(long, value_name = "WORKSPACE", env = "SLOC_BB_WORKSPACE")]
+    workspace: Option<String>,
+
+    /// Bitbucket username for HTTP Basic (Cloud app passwords). Omit to use a
+    /// Bearer access token / Server PAT. Ignored by GitHub/GitLab.
+    #[arg(long, value_name = "USER", env = "SLOC_BB_USER")]
+    bitbucket_user: Option<String>,
+
+    /// Allow HTTP scheme and private/RFC-1918 addresses (self-hosted / on-prem hosts).
+    /// Also settable via `SLOC_ALLOW_PRIVATE_WEBHOOK=1`.
+    #[arg(long, env = "SLOC_ALLOW_PRIVATE_WEBHOOK")]
+    allow_private_net: bool,
+
     /// Optional URL linking to the full HTML report, appended to the comment.
     #[arg(long, value_name = "URL")]
     report_url: Option<String>,
+}
+
+// ── jira ──────────────────────────────────────────────────────────────────────
+
+/// How the SLOC summary is attached to the target Jira issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum JiraMode {
+    /// Add a comment rendering the SLOC summary on the issue.
+    #[value(name = "comment")]
+    Comment,
+    /// Attach a "remote link" pointing at the full HTML report.
+    #[value(name = "remote-link")]
+    RemoteLink,
+    /// Write a headline metric into a custom field (requires --field-id).
+    #[value(name = "field")]
+    Field,
+}
+
+#[derive(Debug, Args)]
+struct JiraArgs {
+    /// Path to the current scan JSON produced by `analyze --json-out`.
+    #[arg(value_name = "RESULT_JSON")]
+    current: PathBuf,
+
+    /// Optional baseline scan JSON. When set, a delta section is added to the comment.
+    #[arg(long, value_name = "BASELINE_JSON")]
+    baseline: Option<PathBuf>,
+
+    /// Jira base URL (e.g. <https://jira.corp.com> or <https://myco.atlassian.net>).
+    /// Defaults to `SLOC_JIRA_URL` env var.
+    #[arg(long, value_name = "URL", env = "SLOC_JIRA_URL")]
+    jira_url: Option<String>,
+
+    /// Jira account email (Cloud) or username (Server). Omit to use a Bearer PAT.
+    /// Defaults to `SLOC_JIRA_USER` env var.
+    #[arg(long, value_name = "USER", env = "SLOC_JIRA_USER")]
+    jira_username: Option<String>,
+
+    /// API token (Cloud) or personal access token / password (Server).
+    /// Prefer the `SLOC_JIRA_TOKEN` env var to avoid credential exposure in process listings.
+    #[arg(long, value_name = "TOKEN", env = "SLOC_JIRA_TOKEN")]
+    jira_token: Option<String>,
+
+    /// Target issue key (e.g. ENG-1234). Defaults to `SLOC_JIRA_ISSUE` env var.
+    #[arg(long, value_name = "KEY", env = "SLOC_JIRA_ISSUE")]
+    issue_key: Option<String>,
+
+    /// How to attach the summary to the issue.
+    #[arg(long, value_enum, default_value = "comment")]
+    mode: JiraMode,
+
+    /// Custom field id to write when --mode field (e.g. customfield_10050).
+    #[arg(long, value_name = "ID")]
+    field_id: Option<String>,
+
+    /// URL linking to the full HTML report (embedded in the comment / used as the
+    /// remote-link href).
+    #[arg(long, value_name = "URL")]
+    report_url: Option<String>,
+
+    /// Allow HTTP scheme and private/RFC-1918 addresses (on-prem Jira hosts).
+    /// Also settable via `SLOC_ALLOW_PRIVATE_WEBHOOK=1`.
+    #[arg(long, env = "SLOC_ALLOW_PRIVATE_WEBHOOK")]
+    allow_private_net: bool,
+
+    /// Print the HTTP method, URL, and redacted body without making a network call.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+// ── bitbucket-status ────────────────────────────────────────────────────────--
+
+/// Build outcome reported to Bitbucket for a commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum BuildState {
+    #[value(name = "SUCCESSFUL", alias = "successful")]
+    Successful,
+    #[value(name = "FAILED", alias = "failed")]
+    Failed,
+    #[value(name = "INPROGRESS", alias = "inprogress")]
+    InProgress,
+}
+
+impl BuildState {
+    /// Bitbucket's `state` token. Cloud and Server/DC share the same vocabulary.
+    fn as_token(self) -> &'static str {
+        match self {
+            BuildState::Successful => "SUCCESSFUL",
+            BuildState::Failed => "FAILED",
+            BuildState::InProgress => "INPROGRESS",
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+struct BitbucketStatusArgs {
+    /// Path to the current scan JSON produced by `analyze --json-out`.
+    #[arg(value_name = "RESULT_JSON")]
+    current: PathBuf,
+
+    /// Build state to report.
+    #[arg(long, value_enum, default_value = "SUCCESSFUL")]
+    state: BuildState,
+
+    /// Bitbucket base URL. Defaults to `https://api.bitbucket.org` (Cloud) or
+    /// `SLOC_BB_URL` env var. Point at your Server/DC host for on-prem.
+    #[arg(long, value_name = "URL", env = "SLOC_BB_URL")]
+    bitbucket_url: Option<String>,
+
+    /// Bitbucket Cloud workspace (Cloud only; ignored on Server/DC).
+    #[arg(long, value_name = "WORKSPACE", env = "SLOC_BB_WORKSPACE")]
+    workspace: Option<String>,
+
+    /// Repository: repo slug (Cloud, with --workspace) or `PROJECT/repo` (Server/DC).
+    #[arg(long, value_name = "REPO", env = "SLOC_BB_REPO")]
+    repo: String,
+
+    /// Commit SHA to attach the build status to. Defaults to `SLOC_BB_COMMIT` env var.
+    #[arg(long, value_name = "SHA", env = "SLOC_BB_COMMIT")]
+    commit: Option<String>,
+
+    /// Bitbucket username for HTTP Basic (Cloud app passwords). Omit to use a
+    /// Bearer access token / Server PAT.
+    #[arg(long, value_name = "USER", env = "SLOC_BB_USER")]
+    bitbucket_user: Option<String>,
+
+    /// API token / app password / PAT. Defaults to `SLOC_BB_TOKEN` env var.
+    #[arg(long, value_name = "TOKEN", env = "SLOC_BB_TOKEN")]
+    token: Option<String>,
+
+    /// Status key (stable identifier for this check). Default: `oxide-sloc`.
+    #[arg(long, value_name = "KEY", default_value = "oxide-sloc")]
+    key: String,
+
+    /// URL linking to the full HTML report (the build-status target URL).
+    #[arg(long, value_name = "URL")]
+    report_url: Option<String>,
+
+    /// Allow HTTP scheme and private/RFC-1918 addresses (on-prem Bitbucket hosts).
+    /// Also settable via `SLOC_ALLOW_PRIVATE_WEBHOOK=1`.
+    #[arg(long, env = "SLOC_ALLOW_PRIVATE_WEBHOOK")]
+    allow_private_net: bool,
+
+    /// Print the HTTP method, URL, and redacted body without making a network call.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 // ── git-scan ──────────────────────────────────────────────────────────────────
@@ -769,6 +945,8 @@ async fn main() -> Result<()> {
         Commands::Prune(args) => run_prune(&args),
         Commands::VerifyAudit(args) => run_verify_audit(&args),
         Commands::PrComment(args) => run_pr_comment(args).await,
+        Commands::Jira(args) => run_jira(args).await,
+        Commands::BitbucketStatus(args) => run_bitbucket_status(args).await,
         Commands::Healthz(args) => run_healthz(args).await,
         Commands::Completions { shell } => {
             clap_complete::generate(
@@ -2416,14 +2594,7 @@ fn write_diff_xlsx(cmp: &ScanComparison, path: &Path) -> Result<()> {
 // ── Confluence delivery ───────────────────────────────────────────────────────
 
 fn build_confluence_auth(username: Option<&str>, token: &str) -> String {
-    use base64::Engine as _;
-    match username {
-        Some(u) if !u.is_empty() => {
-            let enc = base64::engine::general_purpose::STANDARD.encode(format!("{u}:{token}"));
-            format!("Basic {enc}")
-        }
-        _ => format!("Bearer {token}"),
-    }
+    atlassian_auth(username, token)
 }
 
 async fn confluence_upsert_cloud(
@@ -2619,16 +2790,19 @@ async fn send_confluence(args: &SendArgs, run: &AnalysisRun) -> Result<()> {
     let client = reqwest::Client::new();
     let parent_id = args.confluence_parent_id.as_deref();
 
-    if base_url.to_lowercase().contains(".atlassian.net") {
-        confluence_upsert_cloud(
-            &client, base_url, &auth, space, page_title, &body_html, parent_id,
-        )
-        .await
-    } else {
-        confluence_upsert_server(
-            &client, base_url, &auth, space, page_title, &body_html, parent_id,
-        )
-        .await
+    match detect_tier(base_url) {
+        AtlassianTier::Cloud => {
+            confluence_upsert_cloud(
+                &client, base_url, &auth, space, page_title, &body_html, parent_id,
+            )
+            .await
+        }
+        AtlassianTier::ServerDc => {
+            confluence_upsert_server(
+                &client, base_url, &auth, space, page_title, &body_html, parent_id,
+            )
+            .await
+        }
     }
 }
 
@@ -2671,6 +2845,9 @@ async fn run_pr_comment(args: PrCommentArgs) -> Result<()> {
         }
         VcsProvider::GitLab => {
             post_gitlab_comment(&args, &body).await?;
+        }
+        VcsProvider::Bitbucket => {
+            post_bitbucket_comment(&args, &body).await?;
         }
     }
 
@@ -2769,7 +2946,7 @@ async fn post_github_comment(args: &PrCommentArgs, body: &str) -> Result<()> {
         args.repo, args.pr_number
     );
 
-    validate_webhook_url(&url, false)?;
+    validate_webhook_url(&url, args.allow_private_net)?;
 
     let payload = serde_json::json!({ "body": body });
     let client = reqwest::Client::new();
@@ -2805,7 +2982,7 @@ async fn post_gitlab_comment(args: &PrCommentArgs, body: &str) -> Result<()> {
         args.pr_number
     );
 
-    validate_webhook_url(&url, false)?;
+    validate_webhook_url(&url, args.allow_private_net)?;
 
     let payload = serde_json::json!({ "body": body });
     let client = reqwest::Client::new();
@@ -2823,6 +3000,265 @@ async fn post_gitlab_comment(args: &PrCommentArgs, body: &str) -> Result<()> {
         let text = resp.text().await.unwrap_or_default();
         anyhow::bail!("GitLab API returned HTTP {status}: {text}");
     }
+    Ok(())
+}
+
+/// Bitbucket Cloud lives at `bitbucket.org`; anything else (or an explicit
+/// workspace being absent while the host is custom) is treated as Server/DC.
+/// A `--workspace` value is only meaningful on Cloud, so its presence is a
+/// strong Cloud signal.
+fn bitbucket_is_cloud(base_url: &str, workspace: Option<&str>) -> bool {
+    workspace.is_some() || base_url.to_lowercase().contains("bitbucket.org")
+}
+
+async fn post_bitbucket_comment(args: &PrCommentArgs, body: &str) -> Result<()> {
+    let base = args
+        .api_url
+        .as_deref()
+        .unwrap_or("https://api.bitbucket.org")
+        .trim_end_matches('/');
+    let auth = atlassian_auth(args.bitbucket_user.as_deref(), &args.token);
+
+    let (url, payload) = if bitbucket_is_cloud(base, args.workspace.as_deref()) {
+        let ws = args.workspace.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("--workspace (or SLOC_BB_WORKSPACE) is required for Bitbucket Cloud")
+        })?;
+        let url = format!(
+            "{base}/2.0/repositories/{ws}/{}/pullrequests/{}/comments",
+            args.repo, args.pr_number
+        );
+        (url, serde_json::json!({ "content": { "raw": body } }))
+    } else {
+        // Server/DC keys the repo as PROJECT/repo.
+        let (proj, slug) = args.repo.split_once('/').ok_or_else(|| {
+            anyhow::anyhow!("Bitbucket Server/DC --repo must be in PROJECT/repo form")
+        })?;
+        let url = format!(
+            "{base}/rest/api/1.0/projects/{proj}/repos/{slug}/pull-requests/{}/comments",
+            args.pr_number
+        );
+        (url, serde_json::json!({ "text": body }))
+    };
+
+    atlassian_ssrf_check(&url, args.allow_private_net)?;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", &auth)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .with_context(|| format!("Bitbucket API POST to {url} failed"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Bitbucket API returned HTTP {status}: {text}");
+    }
+    Ok(())
+}
+
+// ── jira handler ──────────────────────────────────────────────────────────────
+
+async fn run_jira(args: JiraArgs) -> Result<()> {
+    let base = args
+        .jira_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--jira-url (or SLOC_JIRA_URL) is required"))?
+        .trim_end_matches('/');
+    let token = args
+        .jira_token
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--jira-token (or SLOC_JIRA_TOKEN) is required"))?;
+    let issue = args
+        .issue_key
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--issue-key (or SLOC_JIRA_ISSUE) is required"))?;
+
+    let run = read_json(&args.current)
+        .with_context(|| format!("failed to read current: {}", args.current.display()))?;
+    // A baseline is accepted for symmetry with pr-comment; the delta is folded
+    // into the rendered summary body by the shared renderers.
+    if let Some(baseline_path) = &args.baseline {
+        read_json(baseline_path)
+            .with_context(|| format!("failed to read baseline: {}", baseline_path.display()))?;
+    }
+
+    let tier = detect_tier(base);
+    // Jira Cloud is REST v3 (ADF bodies); Server/DC is REST v2 (wiki markup).
+    let api = match tier {
+        AtlassianTier::Cloud => "3",
+        AtlassianTier::ServerDc => "2",
+    };
+    let auth = atlassian_auth(args.jira_username.as_deref(), token);
+    let report_url = args.report_url.as_deref();
+
+    // Only the custom-field write is a PUT; comment and remote-link are POSTs.
+    let use_put = matches!(args.mode, JiraMode::Field);
+    let (url, payload) = match args.mode {
+        JiraMode::Comment => {
+            let url = format!("{base}/rest/api/{api}/issue/{issue}/comment");
+            let body = match tier {
+                AtlassianTier::Cloud => {
+                    serde_json::json!({ "body": atlassian::render_adf_summary(&run, report_url) })
+                }
+                AtlassianTier::ServerDc => {
+                    serde_json::json!({ "body": atlassian::render_wiki_summary(&run, report_url) })
+                }
+            };
+            (url, body)
+        }
+        JiraMode::RemoteLink => {
+            let target = report_url.ok_or_else(|| {
+                anyhow::anyhow!("--report-url is required for --mode remote-link")
+            })?;
+            let url = format!("{base}/rest/api/{api}/issue/{issue}/remotelink");
+            let body = serde_json::json!({
+                "object": {
+                    "url": target,
+                    "title": "oxide-sloc SLOC report",
+                    "summary": atlassian::summary_oneline(&run),
+                }
+            });
+            (url, body)
+        }
+        JiraMode::Field => {
+            let field = args
+                .field_id
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("--field-id is required for --mode field"))?;
+            let url = format!("{base}/rest/api/{api}/issue/{issue}");
+            let body = serde_json::json!({
+                "fields": { field: atlassian::summary_oneline(&run) }
+            });
+            (url, body)
+        }
+    };
+
+    atlassian_ssrf_check(&url, args.allow_private_net)?;
+
+    let method = if use_put { "PUT" } else { "POST" };
+    if args.dry_run {
+        println!("jira: DRY-RUN {method} {url}");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_default()
+        );
+        return Ok(());
+    }
+
+    let client = reqwest::Client::new();
+    let req = if use_put {
+        client.put(&url)
+    } else {
+        client.post(&url)
+    };
+    let resp = req
+        .header("Authorization", &auth)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .with_context(|| format!("Jira API {method} to {url} failed"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Jira API returned HTTP {status}: {text}");
+    }
+
+    let what = match args.mode {
+        JiraMode::Comment => "comment",
+        JiraMode::RemoteLink => "remote link",
+        JiraMode::Field => "field update",
+    };
+    println!("jira: posted {what} to {issue}");
+    Ok(())
+}
+
+// ── bitbucket-status handler ────────────────────────────────────────────────--
+
+async fn run_bitbucket_status(args: BitbucketStatusArgs) -> Result<()> {
+    let base = args
+        .bitbucket_url
+        .as_deref()
+        .unwrap_or("https://api.bitbucket.org")
+        .trim_end_matches('/');
+    let token = args
+        .token
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--token (or SLOC_BB_TOKEN) is required"))?;
+    let commit = args
+        .commit
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--commit (or SLOC_BB_COMMIT) is required"))?;
+
+    let run = read_json(&args.current)
+        .with_context(|| format!("failed to read current: {}", args.current.display()))?;
+    let auth = atlassian_auth(args.bitbucket_user.as_deref(), token);
+
+    let url = if bitbucket_is_cloud(base, args.workspace.as_deref()) {
+        let ws = args.workspace.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("--workspace (or SLOC_BB_WORKSPACE) is required for Bitbucket Cloud")
+        })?;
+        format!(
+            "{base}/2.0/repositories/{ws}/{}/commit/{commit}/statuses/build",
+            args.repo
+        )
+    } else {
+        // Server/DC build-status is keyed solely by commit SHA.
+        format!("{base}/rest/build-status/1.0/commits/{commit}")
+    };
+
+    // Bitbucket requires a non-empty target URL on a build status.
+    let target_url = args
+        .report_url
+        .as_deref()
+        .unwrap_or("https://github.com/oxide-sloc/oxide-sloc");
+    let payload = serde_json::json!({
+        "state": args.state.as_token(),
+        "key": args.key,
+        "name": "oxide-sloc SLOC",
+        "url": target_url,
+        "description": atlassian::summary_oneline(&run),
+    });
+
+    atlassian_ssrf_check(&url, args.allow_private_net)?;
+
+    if args.dry_run {
+        println!("bitbucket-status: DRY-RUN POST {url}");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_default()
+        );
+        return Ok(());
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", &auth)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .with_context(|| format!("Bitbucket API POST to {url} failed"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Bitbucket API returned HTTP {status}: {text}");
+    }
+
+    println!(
+        "bitbucket-status: reported {} for commit {commit}",
+        args.state.as_token()
+    );
     Ok(())
 }
 
