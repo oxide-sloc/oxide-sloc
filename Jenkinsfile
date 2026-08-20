@@ -223,6 +223,11 @@ pipeline {
                           'on large repos and AV-scanned agents. Turn on for release verification of ' +
                           'the scanner itself.'
         )
+        booleanParam(
+            name:         'RUN_ATTRIBUTION',
+            defaultValue: true,
+            description:  'Compute per-author code-ownership metrics via git blame. Requires full git history.'
+        )
         // ── CI config preset ───────────────────────────────────────────────────
         choice(
             name:    'CI_PRESET',
@@ -402,6 +407,24 @@ pipeline {
             defaultValue: '',
             description:  'Comma-separated email addresses to receive the scan report (empty = skip). ' +
                           'Requires Jenkins Secret Text credentials: SLOC_SMTP_HOST, SLOC_SMTP_USER, SLOC_SMTP_PASS.'
+        )
+        string(
+            name:         'POOL_INGEST_URL',
+            defaultValue: '',
+            description:  'Base URL of a central oxide-sloc "serve" instance to POST this report to, ' +
+                          'so it pools with reports from other environments/agents on one dashboard ' +
+                          '(e.g. https://sloc.corp.internal:4317). The report is sent to <URL>/api/ingest ' +
+                          'via the `send` subcommand. Blank = disabled. This push is best-effort: a ' +
+                          'failed pool push logs a warning and never fails the build. Private/RFC-1918 ' +
+                          'targets are permitted (--allow-private-net).'
+        )
+        string(
+            name:         'POOL_INGEST_TOKEN_CREDENTIAL',
+            defaultValue: '',
+            description:  '(optional) Jenkins Secret Text credential ID holding the API key for the ' +
+                          'POOL_INGEST_URL server. When set, it is bound to SLOC_WEBHOOK_TOKEN in the ' +
+                          'environment for the pool push (never passed on the command line, so it stays ' +
+                          'out of argv and logs). Blank = push unauthenticated (only for an open pool server).'
         )
 
         // ── Artifact repository ────────────────────────────────────────────────
@@ -663,8 +686,14 @@ pipeline {
                         def branch = params.TOOL_REPO_BRANCH?.trim() ?: env.TOOL_REPO_BRANCH?.trim() ?:
                                      env.REPO_BRANCH?.trim() ?: '*/main'
                         echo "Checkout: tooling repo from TOOL_REPO_URL=${repoUrl} (branch: ${branch})"
+                        // Full (non-shallow) history: git blame (--attribution) and the
+                        // 90-day Git Hotspots pass both walk history, which a shallow clone
+                        // truncates. depth:0 + noTags:false keep the whole graph + tags.
                         scmVars = checkout([$class: 'GitSCM',
                                             branches: [[name: branch]],
+                                            extensions: [[$class: 'CloneOption',
+                                                          shallow: false, honorRefspec: true,
+                                                          noTags: false, depth: 0]],
                                             userRemoteConfigs: [[url: repoUrl]]])
                     } else {
                         // No explicit URL: reuse whatever SCM this job was configured
@@ -757,8 +786,14 @@ pipeline {
                             remoteCfg['credentialsId'] = effCredId
                         }
                         dir('_target') {
+                            // Full (non-shallow) history so git blame (--attribution) and
+                            // the 90-day Git Hotspots pass have the complete commit graph;
+                            // a shallow clone would truncate blame and hotspot ranking.
                             def tgtVars = checkout([$class: 'GitSCM',
                                                     branches: branchList,
+                                                    extensions: [[$class: 'CloneOption',
+                                                                  shallow: false, honorRefspec: true,
+                                                                  noTags: false, depth: 0]],
                                                     userRemoteConfigs: [remoteCfg]])
                             // When scanning an external project, the Bitbucket
                             // build-status must attach to the SCANNED commit (the one

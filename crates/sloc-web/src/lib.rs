@@ -689,6 +689,531 @@ pub(crate) struct RunArtifacts {
     result_context: RunResultContext,
 }
 
+/// Canonical categorical chart palette (see the Design section of CLAUDE.md). Used to colour
+/// per-author bars on the Code Ownership page so they match every other visualization.
+const OWNERSHIP_PALETTE: &[&str] = &[
+    "#C45C10", "#2A6846", "#4472C4", "#805099", "#D4A017", "#B23030", "#2E75B6", "#70AD47",
+    "#FF9900", "#9E480E", "#636363", "#156082", "#D0743C", "#5BA8A0",
+];
+
+/// One author's computed display row for the Code Ownership page.
+struct OwnershipRow {
+    name: String,
+    email: String,
+    code: u64,
+    comment: u64,
+    blank: u64,
+    total: u64,
+    code_pct: f64,
+    files_owned: u64,
+    aliases: usize,
+    color: &'static str,
+}
+
+/// Static CSS for the Code Ownership page. Mirrors the canonical tokens/components from
+/// `/test-metrics` (single-brace; interpolated as an opaque value, never through `format!`).
+fn ownership_page_css() -> &'static str {
+    r#":root{--radius:18px;--bg:#f5efe8;--surface:rgba(255,255,255,0.82);--surface-2:#fbf7f2;--line:#e6d0bf;--line-strong:#d8bfad;--text:#43342d;--muted:#7b675b;--muted-2:#a08878;--nav:#283790;--nav-2:#013e6b;--accent:#6f9bff;--oxide:#d37a4c;--oxide-2:#b85d33;--shadow:0 18px 42px rgba(77,44,20,0.12);}
+body.dark-theme{--bg:#1b1511;--surface:#261c17;--surface-2:#2d221d;--line:#524238;--line-strong:#6b5548;--text:#f5ece6;--muted:#c7b7aa;--muted-2:#9c877a;}
+*{box-sizing:border-box;} html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);} body{display:flex;flex-direction:column;}
+.background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+.background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
+.code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+@keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
+.top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
+.top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
+.brand{display:flex;align-items:center;gap:14px;text-decoration:none;flex-shrink:0;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
+.brand-copy{display:flex;flex-direction:column;justify-content:center;flex-shrink:0;}
+.brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;line-height:1.1;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;line-height:1.2;white-space:nowrap;}
+.nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
+@media (max-width:1150px){.brand-subtitle{display:none;}}
+.nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;white-space:nowrap;text-decoration:none;transition:background .15s ease,transform .15s ease;}
+.nav-pill:hover{background:rgba(255,255,255,0.18);transform:translateY(-1px);}
+.theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;} .theme-toggle:hover{transform:translateY(-1px);background:rgba(255,255,255,0.16);}
+.theme-toggle svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;}
+.theme-toggle .icon-sun{display:none;} body.dark-theme .theme-toggle .icon-sun{display:block;} body.dark-theme .theme-toggle .icon-moon{display:none;}
+.status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
+.server-status-wrap{position:relative;display:inline-flex;} .server-online-pill{cursor:default;} .server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);} .server-status-wrap:hover .server-status-tip{display:block;}
+.nav-dropdown{position:relative;display:inline-flex;} .nav-dropdown-btn{cursor:pointer;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;border-radius:999px;padding:0 14px;min-height:38px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;text-decoration:none;} .nav-dropdown-btn:hover,.nav-dropdown:focus-within .nav-dropdown-btn{background:rgba(255,255,255,0.18);} .nav-dropdown-menu{opacity:0;visibility:hidden;position:absolute;top:calc(100% + 8px);right:0;background:linear-gradient(180deg,var(--nav),var(--nav-2));border:1px solid rgba(255,255,255,0.15);border-radius:12px;min-width:175px;overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,0.28);z-index:100;transition:opacity 0.13s ease,visibility 0s ease 0.13s;} .nav-dropdown:hover .nav-dropdown-menu,.nav-dropdown:focus-within .nav-dropdown-menu{opacity:1;visibility:visible;transition:opacity 0.13s ease,visibility 0s ease 0s;} .nav-dropdown-menu a{display:flex;align-items:center;gap:9px;padding:11px 16px;color:rgba(255,255,255,0.92);text-decoration:none;font-size:12px;font-weight:700;border-bottom:1px solid rgba(255,255,255,0.10);} .nav-dropdown-menu a:last-child{border-bottom:none;} .nav-dropdown-menu a:hover{background:rgba(255,255,255,0.14);color:#fff;} .nav-dropdown-menu a svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;flex:0 0 auto;}
+.settings-modal{position:fixed;z-index:9999;background:var(--surface-2);border:1px solid var(--line-strong);border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,0.22);min-width:240px;max-width:300px;opacity:0;pointer-events:none;transform:translateY(-8px) scale(0.97);transition:opacity 0.18s ease,transform 0.18s ease;overflow:hidden;}
+.settings-modal.open{opacity:1;pointer-events:auto;transform:translateY(0) scale(1);}
+.settings-modal-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px;border-bottom:1px solid var(--line);font-size:13px;font-weight:800;color:var(--text);}
+.settings-close{background:none;border:none;cursor:pointer;width:24px;height:24px;display:flex;align-items:center;justify-content:center;color:var(--muted);border-radius:6px;padding:0;} .settings-close svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2.5;}
+.settings-modal-body{padding:14px 16px 16px;} .settings-modal-label{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted-2);margin-bottom:10px;}
+.scheme-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;}
+.scheme-swatch{display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:1.5px solid var(--line);border-radius:10px;cursor:pointer;padding:7px 4px 6px;transition:border-color 0.15s ease,transform 0.12s ease;}
+.scheme-swatch:hover{border-color:var(--line-strong);transform:translateY(-1px);} .scheme-swatch.active{border-color:#6f9bff;box-shadow:0 0 0 2px rgba(111,155,255,0.25);}
+.scheme-preview{width:28px;height:28px;border-radius:7px;flex-shrink:0;} .scheme-label{font-size:9px;font-weight:700;color:var(--muted-2);white-space:nowrap;}
+.page{width:100%;max-width:1720px;margin:0 auto;padding:18px 24px 36px;position:relative;z-index:1;}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;margin-bottom:18px;}
+h1{margin:0 0 4px;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
+.muted{color:var(--muted);font-size:13px;line-height:1.6;margin:0 0 16px;} code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:var(--surface-2);padding:1px 5px;border-radius:5px;}
+.summary-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
+@media(max-width:800px){.summary-strip{grid-template-columns:repeat(2,1fr);}}
+.stat-chip{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;position:relative;cursor:default;transition:transform .27s cubic-bezier(.16,1,.3,1),box-shadow .27s cubic-bezier(.16,1,.3,1);}
+.stat-chip:hover{transform:translateY(-4px);box-shadow:0 12px 32px rgba(77,44,20,0.2);z-index:10;}
+.stat-chip-val{font-size:20px;font-weight:900;color:var(--oxide);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.stat-chip-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-top:4px;}
+.section-header{font-size:13px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin:22px 0 10px;padding-top:16px;border-top:1px solid var(--line);}
+.chart-box{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:18px;}
+.own-chart-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
+.chart-box-title{font-size:12px;font-weight:800;color:var(--muted-2);text-transform:uppercase;letter-spacing:.06em;}
+.own-controls{display:inline-flex;gap:6px;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:3px;}
+.own-filter{border:none;background:none;color:var(--muted);font-size:12px;font-weight:700;padding:5px 12px;border-radius:999px;cursor:pointer;transition:background .15s ease,color .15s ease;}
+.own-filter:hover{color:var(--text);} .own-filter.active{background:var(--oxide);color:#fff;}
+.own-bar-row{display:grid;grid-template-columns:180px 1fr 78px;align-items:center;gap:12px;padding:5px 0;}
+.own-bar-name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.own-bar-track{height:14px;border-radius:7px;background:var(--surface-2);overflow:hidden;}
+.own-bar-fill{height:100%;border-radius:7px;transition:width .35s ease;min-width:2px;}
+.own-bar-val{font-size:12px;font-weight:700;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);}
+@media(max-width:700px){.own-bar-row{grid-template-columns:120px 1fr 60px;}}
+.data-table{width:100%;border-collapse:collapse;font-size:13px;}
+.data-table th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted-2);padding:10px 12px;border-bottom:2px solid var(--line);white-space:nowrap;}
+.data-table td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:middle;}
+.data-table tr:last-child td{border-bottom:none;}
+.data-table tbody tr:hover td{background:var(--surface-2);}
+.num{text-align:right!important;font-variant-numeric:tabular-nums;}
+.own-email{color:var(--muted);font-size:12px;}
+.own-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle;}
+.own-empty{display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;color:var(--muted-2);padding:40px 20px;}
+.own-empty svg{opacity:0.4;} .own-empty-title{font-size:16px;font-weight:800;color:var(--text);}
+.own-code{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;color:var(--oxide-2);}
+.site-footer{text-align:center;padding:12px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;} .site-footer a{color:var(--oxide-2);text-decoration:none;} .site-footer a:hover{text-decoration:underline;}"#
+}
+
+/// Static nav bar for the Code Ownership page (Git Browser dropdown active, since ownership
+/// lives under it). Copied from the canonical nav so the page matches every other surface.
+fn ownership_page_nav() -> &'static str {
+    r#"<div class="top-nav"><div class="top-nav-inner">
+    <a class="brand" href="/"><img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo"><div class="brand-copy"><div class="brand-title">OxideSLOC</div><div class="brand-subtitle">Code Ownership</div></div></a>
+    <div class="nav-right">
+      <a class="nav-pill" href="/">Home</a>
+      <div class="nav-dropdown">
+        <a href="/view-reports" class="nav-dropdown-btn">View Reports <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
+        <div class="nav-dropdown-menu"><a href="/trend-reports"><svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>Trend Reports</a></div>
+      </div>
+      <a class="nav-pill" href="/compare-scans">Compare Scans</a>
+      <a class="nav-pill" href="/test-metrics">Test Metrics</a>
+      <div class="nav-dropdown">
+        <a href="/git-browser" class="nav-dropdown-btn" style="background:rgba(255,255,255,0.22);">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
+        <div class="nav-dropdown-menu">
+          <a href="/code-ownership" style="background:rgba(255,255,255,0.14);"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
+          <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
+        </div>
+      </div>
+      <div class="server-status-wrap" id="server-status-wrap">
+        <div class="nav-pill server-online-pill" id="server-status-pill"><span class="status-dot" id="status-dot"></span><span id="server-status-label">Server</span><span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span></div>
+        <div class="server-status-tip">OxideSLOC is running &mdash; accessible on your network.<span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span></div>
+      </div>
+      <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></button>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme"><svg class="icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg><svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg></button>
+    </div>
+  </div></div>"#
+}
+
+/// Static client scripts for the Code Ownership page: theme toggle, watermark/particle spawn,
+/// settings modal, server-status ping, and the bar-chart category filter.
+fn ownership_page_scripts() -> &'static str {
+    r#"(function(){
+  var b=document.body;
+  try{if(localStorage.getItem('oxide-theme')==='dark')b.classList.add('dark-theme');}catch(e){}
+  var tgl=document.getElementById('theme-toggle');
+  if(tgl)tgl.addEventListener('click',function(){var d=b.classList.toggle('dark-theme');try{localStorage.setItem('oxide-theme',d?'dark':'light');}catch(e){}});
+})();
+(function(){
+  var wms=Array.prototype.slice.call(document.querySelectorAll('.background-watermarks img'));
+  if(!wms.length)return;var placed=[];
+  function tooClose(t,l){for(var i=0;i<placed.length;i++){if(Math.abs(placed[i][0]-t)<16&&Math.abs(placed[i][1]-l)<12)return true;}return false;}
+  function pick(lb){for(var a=0;a<50;a++){var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;if(!tooClose(t,l)){placed.push([t,l]);return[t,l];}}var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;placed.push([t,l]);return[t,l];}
+  var half=Math.floor(wms.length/2);
+  wms.forEach(function(img,i){var pos=pick(i<half),sz=Math.floor(Math.random()*80+110),rot=(Math.random()*360).toFixed(1),op=(Math.random()*0.07+0.10).toFixed(2);img.style.width=sz+'px';img.style.top=pos[0].toFixed(1)+'%';img.style.left=pos[1].toFixed(1)+'%';img.style.transform='rotate('+rot+'deg)';img.style.opacity=op;});
+})();
+(function(){
+  var container=document.getElementById('code-particles');if(!container)return;
+  var snippets=['blame','git log','code_lines','author','.mailmap','ownership','fn analyze()','commits','// comment','let owner','Vec<Author>','physical','blank lines','contributor'];
+  for(var i=0;i<32;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snippets[idx%snippets.length];var left=Math.random()*94+2,top=Math.random()*88+6,dur=(Math.random()*10+9).toFixed(1),delay=(Math.random()*18).toFixed(1),rot=(Math.random()*26-13).toFixed(1),op=(Math.random()*0.09+0.06).toFixed(3);el.style.cssText='left:'+left.toFixed(1)+'%;top:'+top.toFixed(1)+'%;--rot:'+rot+'deg;--op:'+op+';animation-duration:'+dur+'s;animation-delay:-'+delay+'s;';container.appendChild(el);})(i);}
+})();
+(function(){
+  var S=[{n:'Classic',a:'#b85d33',b:'#7a371b'},{n:'Navy',a:'#283790',b:'#1e1e24'},{n:'Ember',a:'#ce5d3d',b:'#1e1e24'},{n:'Ocean',a:'#1f439b',b:'#1e1e24'},{n:'Royal',a:'#003184',b:'#1e1e24'}];
+  function ap(s){document.documentElement.style.setProperty('--nav',s.a);document.documentElement.style.setProperty('--nav-2',s.b);try{localStorage.setItem('sloc-ns',JSON.stringify(s));}catch(e){}document.querySelectorAll('.scheme-swatch').forEach(function(x){x.classList.toggle('active',x.dataset.n===s.n);});}
+  try{var sv=JSON.parse(localStorage.getItem('sloc-ns'));if(sv&&sv.a){ap(sv);}else{ap(S[0]);}}catch(e){ap(S[0]);}
+  var btn=document.getElementById('settings-btn');if(!btn)return;
+  var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
+  m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div></div>';
+  document.body.appendChild(m);
+  var g=document.getElementById('scheme-grid');
+  if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
+  var cl=document.getElementById('settings-close');
+  btn.addEventListener('click',function(e){e.stopPropagation();var r=btn.getBoundingClientRect();m.style.top=(r.bottom+6)+'px';m.style.right=(window.innerWidth-r.right)+'px';m.classList.toggle('open');});
+  if(cl)cl.addEventListener('click',function(){m.classList.remove('open');});
+  document.addEventListener('click',function(e){if(!m.contains(e.target)&&e.target!==btn)m.classList.remove('open');});
+})();
+(function(){
+  var dot=document.getElementById('status-dot'),pingEl=document.getElementById('server-ping-ms'),tipEl=document.getElementById('server-tip-ping');
+  if(location.protocol==='file:')return;
+  function setDot(ms){if(!dot)return;if(ms<100){dot.style.background='#26d768';}else if(ms<300){dot.style.background='#f5a623';}else{dot.style.background='#e05c5c';}}
+  function ping(){var t0=performance.now();fetch('/healthz',{cache:'no-store'}).then(function(){var ms=Math.round(performance.now()-t0);if(pingEl)pingEl.textContent=ms+'ms';if(tipEl)tipEl.textContent='Server latency: '+ms+' ms';setDot(ms);}).catch(function(){if(pingEl)pingEl.textContent='';});}
+  ping();setInterval(ping,5000);
+})();
+(function(){
+  var el=document.getElementById('own-data');if(!el)return;
+  var data;try{data=JSON.parse(el.textContent);}catch(e){return;}
+  var wrap=document.getElementById('own-bars');if(!wrap)return;
+  var btns=document.querySelectorAll('.own-filter');
+  function fmt(n){var v=Number(n),a=Math.abs(v);if(a>=1e6)return(v/1e6).toFixed(1).replace(/\.0$/,'')+'M';if(a>=1e4)return(v/1e3).toFixed(1).replace(/\.0$/,'')+'K';return v.toLocaleString();}
+  function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+  function render(metric){
+    var max=1;data.forEach(function(d){if(d[metric]>max)max=d[metric];});
+    var rows=data.slice().sort(function(x,y){return y[metric]-x[metric];});
+    var html='';
+    rows.forEach(function(d){var pct=Math.round(d[metric]/max*100);html+='<div class="own-bar-row"><div class="own-bar-name" title="'+esc(d.email)+'">'+esc(d.name)+'</div><div class="own-bar-track"><div class="own-bar-fill" style="width:'+pct+'%;background:'+d.color+';"></div></div><div class="own-bar-val">'+fmt(d[metric])+'</div></div>';});
+    wrap.innerHTML=html;
+  }
+  btns.forEach(function(bn){bn.addEventListener('click',function(){btns.forEach(function(x){x.classList.remove('active');});bn.classList.add('active');render(bn.getAttribute('data-metric'));});});
+  render('code');
+})();"#
+}
+
+/// GET `/code-ownership` — per-author blame-based code ownership for the latest scan.
+async fn code_ownership_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
+) -> Response {
+    let latest_run: Option<AnalysisRun> = {
+        let json_path = {
+            let reg = state.registry.lock().await;
+            reg.entries.first().and_then(|e| e.json_path.clone())
+        };
+        if let Some(p) = json_path {
+            tokio::fs::read_to_string(&p)
+                .await
+                .ok()
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+        } else {
+            None
+        }
+    };
+
+    let project_label = latest_run
+        .as_ref()
+        .and_then(|r| r.input_roots.first())
+        .map(|p| {
+            p.rsplit(['/', '\\'])
+                .find(|s| !s.is_empty())
+                .unwrap_or(p.as_str())
+                .to_string()
+        })
+        .unwrap_or_else(|| "workspace".to_string());
+
+    let html = render_code_ownership_html(&csp_nonce, latest_run.as_ref(), &project_label);
+    Html(html).into_response()
+}
+
+/// Build the full Code Ownership HTML page. Kept self-contained: brace-heavy CSS and JS live in
+/// raw-string values that are interpolated into the skeleton as opaque values (so their `{`/`}`
+/// are never parsed as `format!` placeholders), while only the small dynamic content string is
+/// built with `format!`.
+#[allow(clippy::too_many_lines)]
+fn render_code_ownership_html(
+    nonce: &str,
+    run: Option<&AnalysisRun>,
+    project_label: &str,
+) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+
+    // ── Compute display data ──────────────────────────────────────────────────
+    let authors = run.map(|r| r.authors.as_slice()).unwrap_or(&[]);
+    let has_data = !authors.is_empty();
+
+    let total_code: u64 = authors.iter().map(|a| a.counts.code_lines).sum();
+
+    // Files where each author is the single largest owner (ownership is pre-sorted desc).
+    let mut files_owned: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+    if let Some(r) = run {
+        for rec in &r.per_file_records {
+            if let Some(top) = rec.ownership.as_ref().and_then(|o| o.first()) {
+                *files_owned.entry(top.author_id).or_default() += 1;
+            }
+        }
+    }
+
+    let rows: Vec<OwnershipRow> = authors
+        .iter()
+        .enumerate()
+        .map(|(i, a)| OwnershipRow {
+            name: a.canonical_name.clone(),
+            email: a.canonical_email.clone(),
+            code: a.counts.code_lines,
+            comment: a.counts.comment_lines,
+            blank: a.counts.blank_lines,
+            total: a.counts.total_lines,
+            code_pct: if total_code > 0 {
+                a.counts.code_lines as f64 / total_code as f64 * 100.0
+            } else {
+                0.0
+            },
+            files_owned: files_owned.get(&a.id).copied().unwrap_or(0),
+            aliases: a.aliases.len(),
+            color: OWNERSHIP_PALETTE[i % OWNERSHIP_PALETTE.len()],
+        })
+        .collect();
+
+    // Bus factor: fewest top contributors whose combined code covers >= 50% of the codebase.
+    let bus_factor = {
+        let mut acc = 0u64;
+        let mut n = 0usize;
+        for a in authors {
+            acc += a.counts.code_lines;
+            n += 1;
+            if total_code > 0 && acc * 2 >= total_code {
+                break;
+            }
+        }
+        n
+    };
+
+    let top_owner = rows.first();
+
+    // Per-language ownership: language -> author_id -> code lines.
+    let mut lang_map: std::collections::HashMap<String, std::collections::HashMap<u32, u64>> =
+        std::collections::HashMap::new();
+    if let Some(r) = run {
+        for rec in &r.per_file_records {
+            let (Some(lang), Some(ownership)) = (rec.language, rec.ownership.as_ref()) else {
+                continue;
+            };
+            let entry = lang_map.entry(lang.display_name().to_string()).or_default();
+            for own in ownership {
+                *entry.entry(own.author_id).or_default() += own.counts.code_lines;
+            }
+        }
+    }
+    let author_name = |id: u32| -> String {
+        rows.get(id as usize)
+            .map(|r| r.name.clone())
+            .unwrap_or_default()
+    };
+    let mut lang_rows: Vec<(String, u64, String, f64)> = lang_map
+        .into_iter()
+        .map(|(lang, by_author)| {
+            let lang_total: u64 = by_author.values().sum();
+            let (top_id, top_code) = by_author
+                .iter()
+                .max_by_key(|(_, c)| **c)
+                .map(|(id, c)| (*id, *c))
+                .unwrap_or((0, 0));
+            let pct = if lang_total > 0 {
+                top_code as f64 / lang_total as f64 * 100.0
+            } else {
+                0.0
+            };
+            (lang, lang_total, author_name(top_id), pct)
+        })
+        .collect();
+    lang_rows.sort_by_key(|r| std::cmp::Reverse(r.1));
+    lang_rows.truncate(15);
+
+    // ── Data island for the client-side bar re-render on filter change ────────
+    let data_json = serde_json::to_string(
+        &rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "name": r.name,
+                    "email": r.email,
+                    "code": r.code,
+                    "comment": r.comment,
+                    "blank": r.blank,
+                    "total": r.total,
+                    "color": r.color,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string());
+
+    // ── Main content ──────────────────────────────────────────────────────────
+    let content = if !has_data {
+        format!(
+            r#"<div class="panel own-empty">
+  <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+  <div class="own-empty-title">No ownership data for the latest scan</div>
+  <p class="muted" style="max-width:560px;text-align:center;">
+    Code ownership is computed from <strong>git blame</strong> and is opt-in because it adds a
+    blame pass per file. Re-run the analysis with attribution enabled to populate this page:
+  </p>
+  <pre class="own-code">oxide-sloc analyze {project} --attribution</pre>
+  <p class="muted" style="max-width:560px;text-align:center;">
+    The scan root must be a git repository. Same-email identities are merged automatically;
+    cross-account merges are a later step.
+  </p>
+</div>"#,
+            project = esc(project_label),
+        )
+    } else {
+        let top_name = top_owner.map(|r| esc(&r.name)).unwrap_or_default();
+        let top_pct = top_owner.map(|r| r.code_pct).unwrap_or(0.0);
+
+        // Server-rendered bars (metric = code); JS re-renders on filter change.
+        let max_code = rows.iter().map(|r| r.code).max().unwrap_or(1).max(1);
+        let mut bars = String::new();
+        for r in &rows {
+            use std::fmt::Write as _;
+            let pct = (r.code as f64 / max_code as f64 * 100.0).round() as u64;
+            let _ = write!(
+                bars,
+                r#"<div class="own-bar-row"><div class="own-bar-name" title="{email}">{name}</div><div class="own-bar-track"><div class="own-bar-fill" style="width:{pct}%;background:{color};"></div></div><div class="own-bar-val">{val}</div></div>"#,
+                email = esc(&r.email),
+                name = esc(&r.name),
+                pct = pct,
+                color = r.color,
+                val = fmt_num(r.code as i64),
+            );
+        }
+
+        let mut author_table = String::new();
+        for r in &rows {
+            use std::fmt::Write as _;
+            let _ = write!(
+                author_table,
+                r#"<tr><td><span class="own-dot" style="background:{color};"></span>{name}</td><td class="own-email">{email}</td><td class="num">{code}</td><td class="num">{comment}</td><td class="num">{blank}</td><td class="num">{total}</td><td class="num">{pct:.1}%</td><td class="num">{files}</td><td class="num">{aliases}</td></tr>"#,
+                color = r.color,
+                name = esc(&r.name),
+                email = esc(&r.email),
+                code = fmt_num(r.code as i64),
+                comment = fmt_num(r.comment as i64),
+                blank = fmt_num(r.blank as i64),
+                total = fmt_num(r.total as i64),
+                pct = r.code_pct,
+                files = r.files_owned,
+                aliases = r.aliases,
+            );
+        }
+
+        let mut lang_table = String::new();
+        for (lang, code, owner, pct) in &lang_rows {
+            use std::fmt::Write as _;
+            let _ = write!(
+                lang_table,
+                r#"<tr><td>{lang}</td><td class="num">{code}</td><td>{owner}</td><td class="num">{pct:.1}%</td></tr>"#,
+                lang = esc(lang),
+                code = fmt_num(*code as i64),
+                owner = esc(owner),
+                pct = pct,
+            );
+        }
+
+        format!(
+            r#"<div class="summary-strip">
+  <div class="stat-chip"><div class="stat-chip-val">{contributors}</div><div class="stat-chip-label">Contributors</div></div>
+  <div class="stat-chip"><div class="stat-chip-val">{top_name}</div><div class="stat-chip-label">Top Owner &middot; {top_pct:.0}% of code</div></div>
+  <div class="stat-chip"><div class="stat-chip-val">{bus_factor}</div><div class="stat-chip-label">Bus Factor (owners of 50% code)</div></div>
+  <div class="stat-chip"><div class="stat-chip-val">{total_code}</div><div class="stat-chip-label">Total Code Lines</div></div>
+</div>
+
+<div class="chart-box">
+  <div class="own-chart-head">
+    <div class="chart-box-title">Lines owned per contributor</div>
+    <div class="own-controls">
+      <button type="button" class="own-filter active" data-metric="code">Code</button>
+      <button type="button" class="own-filter" data-metric="comment">Comment</button>
+      <button type="button" class="own-filter" data-metric="blank">Blank</button>
+      <button type="button" class="own-filter" data-metric="total">Total</button>
+    </div>
+  </div>
+  <div id="own-bars">{bars}</div>
+</div>
+
+<div class="section-header">Contributors</div>
+<div class="panel" style="padding:0;overflow:auto;">
+  <table class="data-table">
+    <thead><tr><th>Author</th><th>Email</th><th class="num">Code</th><th class="num">Comment</th><th class="num">Blank</th><th class="num">Total</th><th class="num">Code %</th><th class="num">Files Owned</th><th class="num">Aliases</th></tr></thead>
+    <tbody>{author_table}</tbody>
+  </table>
+</div>
+
+<div class="section-header">Ownership by language</div>
+<div class="panel" style="padding:0;overflow:auto;">
+  <table class="data-table">
+    <thead><tr><th>Language</th><th class="num">Code Lines</th><th>Top Owner</th><th class="num">Owner %</th></tr></thead>
+    <tbody>{lang_table}</tbody>
+  </table>
+</div>
+
+<p class="muted" style="margin-top:14px;">Ownership reflects the author who last touched each physical line (<code>git blame -w -M -C</code>, <code>.mailmap</code> honoured). Counts are physical lines and sum to the file's line total; they can differ slightly from the policy-adjusted SLOC totals elsewhere. Same-email identities are auto-merged &mdash; cross-account merging arrives in a later release.</p>
+
+<script id="own-data" type="application/json" nonce="{nonce}">{data_json}</script>"#,
+            contributors = rows.len(),
+            top_name = top_name,
+            top_pct = top_pct,
+            bus_factor = bus_factor,
+            total_code = fmt_num(total_code as i64),
+            bars = bars,
+            author_table = author_table,
+            lang_table = lang_table,
+            nonce = nonce,
+            data_json = data_json,
+        )
+    };
+
+    let css = ownership_page_css();
+    let nav = ownership_page_nav();
+    let scripts = ownership_page_scripts();
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OxideSLOC | Code Ownership</title>
+  <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <style nonce="{nonce}">{css}</style>
+</head>
+<body>
+<div class="background-watermarks" aria-hidden="true">
+  <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+  <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+  <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+  <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+  <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+  <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+</div>
+<div class="code-particles" id="code-particles" aria-hidden="true"></div>
+{nav}
+<div class="page">
+  <h1>Code Ownership</h1>
+  <p class="muted">Per-author line ownership for <strong>{project}</strong>, derived from git blame. Filter the chart by line category; the table breaks down code, comments, and blanks per contributor.</p>
+  {content}
+</div>
+<footer class="site-footer">
+  oxide-sloc v{version} &mdash; local code metrics workbench &nbsp;&middot;&nbsp;
+  Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
+  &nbsp;&middot;&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+  &nbsp;&middot;&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
+  &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+</footer>
+<script nonce="{nonce}">{scripts}</script>
+</body>
+</html>"#,
+        nonce = nonce,
+        css = css,
+        nav = nav,
+        project = esc(project_label),
+        content = content,
+        version = version,
+        scripts = scripts,
+    )
+}
+
 #[allow(clippy::too_many_lines)] // route registration table; splitting would obscure router structure
 fn build_router(state: AppState) -> Router {
     let protected = Router::new()
@@ -740,6 +1265,7 @@ fn build_router(state: AppState) -> Router {
         .route("/api/project-history", get(project_history_handler))
         .route("/trend-reports", get(trend_report_handler))
         .route("/test-metrics", get(test_metrics_handler))
+        .route("/code-ownership", get(code_ownership_handler))
         .route("/api/runs/{wait_id}/status", get(async_run_status_handler))
         .route("/api/runs/{wait_id}/cancel", post(cancel_run_handler))
         .route("/api/runs/{run_id}/pdf-status", get(pdf_status_handler))
@@ -3710,6 +4236,7 @@ fn registry_entry_from_run(
         || "Unknown Project".to_string(),
         |r| sanitize_project_label(r),
     );
+    let (scan_os, scan_host, scan_user, scan_ci) = scan_env_fields(run);
     RegistryEntry {
         run_id: run.tool.run_id.clone(),
         timestamp_utc: run.tool.timestamp_utc,
@@ -3728,6 +4255,10 @@ fn registry_entry_from_run(
         git_tags: None,
         git_nearest_tag: None,
         git_commit_date: None,
+        scan_os,
+        scan_host,
+        scan_user,
+        scan_ci,
     }
 }
 
@@ -4491,6 +5022,7 @@ fn build_registry_entry_from_json(json_path: PathBuf) -> Option<RegistryEntry> {
         || "Unknown Project".to_string(),
         |r| sanitize_project_label(r),
     );
+    let (scan_os, scan_host, scan_user, scan_ci) = scan_env_fields(&run);
     Some(RegistryEntry {
         run_id: run.tool.run_id.clone(),
         timestamp_utc: run.tool.timestamp_utc,
@@ -4508,7 +5040,11 @@ fn build_registry_entry_from_json(json_path: PathBuf) -> Option<RegistryEntry> {
         git_author: run.git_commit_author.clone(),
         git_tags: run.git_tags.clone(),
         git_nearest_tag: run.git_nearest_tag.clone(),
-        git_commit_date: run.git_commit_date,
+        git_commit_date: run.git_commit_date.clone(),
+        scan_os,
+        scan_host,
+        scan_user,
+        scan_ci,
     })
 }
 
@@ -5124,12 +5660,33 @@ const fn summary_snapshot_from_run(run: &AnalysisRun) -> ScanSummarySnapshot {
 }
 
 /// Build the `RegistryEntry` for the just-completed scan run.
+/// Extract the (os, host, user, ci) attribution tuple from a run's environment metadata,
+/// normalising empty strings to `None`. Populated onto every `RegistryEntry` so pooled
+/// reports from different environments/users can be told apart in the list/compare/trend views.
+fn scan_env_fields(
+    run: &AnalysisRun,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    let non_empty = |s: &str| (!s.is_empty()).then(|| s.to_owned());
+    (
+        non_empty(&run.environment.operating_system),
+        non_empty(&run.environment.initiator_hostname),
+        non_empty(&run.environment.initiator_username),
+        run.environment.ci_name.clone().filter(|s| !s.is_empty()),
+    )
+}
+
 pub(crate) fn build_run_registry_entry(
     run: &AnalysisRun,
     run_id: &str,
     project_label: &str,
     artifacts: &RunArtifacts,
 ) -> RegistryEntry {
+    let (scan_os, scan_host, scan_user, scan_ci) = scan_env_fields(run);
     RegistryEntry {
         run_id: run_id.to_owned(),
         timestamp_utc: run.tool.timestamp_utc,
@@ -5148,6 +5705,10 @@ pub(crate) fn build_run_registry_entry(
         git_tags: run.git_tags.clone(),
         git_nearest_tag: run.git_nearest_tag.clone(),
         git_commit_date: run.git_commit_date.clone(),
+        scan_os,
+        scan_host,
+        scan_user,
+        scan_ci,
     }
 }
 
@@ -8049,6 +8610,12 @@ struct HistoryEntryRow {
     git_commit: String,
     /// Full-length commit SHA shown as a hover tooltip (falls back to short when absent).
     git_commit_long: String,
+    /// Who/what produced this report: CI system name, or `user / host` (see
+    /// `RegistryEntry::performed_by`). Lets pooled reports from different environments be
+    /// told apart in the list.
+    performed_by: String,
+    /// Operating system the scan ran on (shown as a tooltip on the environment cell).
+    scan_os: String,
     has_html: bool,
     has_json: bool,
     has_pdf: bool,
@@ -8255,6 +8822,8 @@ fn make_history_rows(reg: &ScanRegistry) -> Vec<HistoryEntryRow> {
                         })
                         .unwrap_or(short)
                 },
+                performed_by: e.performed_by(),
+                scan_os: e.scan_os.clone().unwrap_or_default(),
                 has_html: e.html_path.as_ref().is_some_and(|p| p.exists()),
                 has_json: e.json_path.as_ref().is_some_and(|p| p.exists()),
                 has_pdf: e.pdf_path.as_ref().is_some_and(|p| p.exists()),
@@ -8863,6 +9432,8 @@ async fn compare_handler(
         current_git_author: current_entry.git_author.clone(),
         baseline_git_branch: baseline_entry.git_branch.clone().unwrap_or_default(),
         current_git_branch: current_entry.git_branch.clone().unwrap_or_default(),
+        baseline_performed_by: baseline_entry.performed_by(),
+        current_performed_by: current_entry.performed_by(),
         baseline_git_tags: baseline_entry.git_tags.clone(),
         current_git_tags: current_entry.git_tags.clone(),
         baseline_git_commit_date: baseline_entry
@@ -10731,6 +11302,7 @@ fn multi_compare_page(
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -12232,6 +12804,7 @@ async fn trend_report_handler(
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -14358,6 +14931,7 @@ async fn test_metrics_handler(
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -18992,6 +19566,7 @@ struct SubmoduleRow {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -22489,6 +23064,7 @@ struct IndexTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -23160,6 +23736,7 @@ struct SplashTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -23851,6 +24428,7 @@ struct ScanSetupTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -26163,6 +26741,7 @@ struct ResultTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -26514,6 +27093,7 @@ struct ScanWaitTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -26924,6 +27504,7 @@ struct ErrorTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -27285,6 +27866,7 @@ struct LocateFileTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -27632,6 +28214,7 @@ struct RelocateScanTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -27765,7 +28348,7 @@ struct RelocateScanTemplate {
       <div class="table-wrap">
         <table id="history-table">
           <colgroup>
-            <col><col><col><col><col><col><col><col><col><col>
+            <col><col><col><col><col><col><col><col><col><col><col>
           </colgroup>
           <thead>
             <tr id="history-thead">
@@ -27778,6 +28361,7 @@ struct RelocateScanTemplate {
               <th class="sortable" data-sort-col="blank" data-sort-type="num">Blank<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
               <th class="sortable" data-sort-col="branch" data-sort-type="str">Branch<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
               <th class="sortable" data-sort-col="commit" data-sort-type="str">Commit<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="environment" data-sort-type="str">Environment<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
               <th>Report<div class="col-resize-handle"></div></th>
             </tr>
           </thead>
@@ -27798,6 +28382,7 @@ struct RelocateScanTemplate {
                 data-tests="{{ entry.test_count }}"
                 data-branch="{{ entry.git_branch }}"
                 data-commit="{{ entry.git_commit }}"
+                data-environment="{{ entry.performed_by }}"
                 data-has-json="{{ entry.has_json }}"
                 data-html-url="/runs/html/{{ entry.run_id }}">
               <td><span class="ts-local" data-utc-ms="{{ entry.timestamp_utc_ms }}">{{ entry.timestamp }}</span></td>
@@ -27809,6 +28394,7 @@ struct RelocateScanTemplate {
               <td><span class="metric-num">{{ entry.blank_lines }}</span></td>
               <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}</td>
               <td>{% if !entry.git_commit.is_empty() %}<span class="git-chip git-commit-chip" data-full-commit="{{ entry.git_commit_long }}">{{ entry.git_commit }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}</td>
+              <td>{% if !entry.performed_by.is_empty() %}<span class="git-chip"{% if !entry.scan_os.is_empty() %} title="OS: {{ entry.scan_os }}"{% endif %}>{{ entry.performed_by }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}</td>
               <td class="report-cell">
                 <div class="actions-cell">
                   {% if entry.has_json %}<a class="btn primary rpt-btn" href="/runs/result/{{ entry.run_id }}" target="_blank" rel="noopener" title="Open full interactive result report">View</a>{% else %}<a class="btn primary rpt-btn" href="/runs/html/{{ entry.run_id }}" target="_blank" rel="noopener" title="View HTML report">View</a>{% endif %}
@@ -28281,7 +28867,7 @@ struct RelocateScanTemplate {
       var LANG_NAMES={'c':'C','cpp':'C++','c_sharp':'C#','go':'Go','java':'Java','java_script':'JavaScript','python':'Python','rust':'Rust','shell':'Shell','power_shell':'PowerShell','type_script':'TypeScript','assembly':'Assembly','clojure':'Clojure','css':'CSS','dart':'Dart','dockerfile':'Dockerfile','elixir':'Elixir','erlang':'Erlang','f_sharp':'F#','groovy':'Groovy','haskell':'Haskell','html':'HTML','julia':'Julia','kotlin':'Kotlin','lua':'Lua','makefile':'Makefile','nim':'Nim','objective_c':'Objective-C','ocaml':'OCaml','perl':'Perl','php':'PHP','r':'R','ruby':'Ruby','scala':'Scala','scss':'SCSS','sql':'SQL','svelte':'Svelte','swift':'Swift','vue':'Vue','xml':'XML','zig':'Zig','solidity':'Solidity','protobuf':'Protocol Buffers','hcl':'HCL/Terraform','graph_ql':'GraphQL','ada':'Ada','vhdl':'VHDL','verilog':'Verilog/SystemVerilog','tcl':'Tcl','pascal':'Pascal/Delphi','visual_basic':'Visual Basic','lisp':'Lisp/Scheme','fortran':'Fortran','nix':'Nix','crystal':'Crystal','d':'D','glsl':'GLSL/HLSL','cmake':'CMake','elm':'Elm','awk':'Awk'};
       function langName(k){return LANG_NAMES[k]||String(k||'').replace(/_/g,' ')||'(unknown)';}
 
-      var _hh = ['Timestamp','Project','Run ID','Physical Lines','Code Lines','Comments','Blank Lines','Files Analyzed','Files Skipped','Functions','Classes','Variables','Imports','Tests','Code Density','Branch','Commit'];
+      var _hh = ['Timestamp','Project','Run ID','Physical Lines','Code Lines','Comments','Blank Lines','Files Analyzed','Files Skipped','Functions','Classes','Variables','Imports','Tests','Code Density','Branch','Commit','Environment'];
       function getHistoryRows(){
         var r=[];
         document.querySelectorAll('#history-tbody .history-row').forEach(function(tr){
@@ -28305,7 +28891,8 @@ struct RelocateScanTemplate {
             tr.getAttribute('data-tests')||'',
             dens,
             tr.getAttribute('data-branch')||'',
-            tr.getAttribute('data-commit')||''
+            tr.getAttribute('data-commit')||'',
+            tr.getAttribute('data-environment')||''
           ]);
         });
         return r;
@@ -28314,8 +28901,8 @@ struct RelocateScanTemplate {
       window.exportHistoryXls = function(){
         var histRows=getHistoryRows();
         function toN(v){var n=Number(v);return isNaN(n)||v===''?0:n;}
-        var xlsxRows=histRows.map(function(r){return[r[0],r[1],r[2],toN(r[3]),toN(r[4]),toN(r[5]),toN(r[6]),toN(r[7]),toN(r[8]),toN(r[9]),toN(r[10]),toN(r[11]),toN(r[12]),toN(r[13]),{v:r[14],s:6},r[15],r[16]];});
-        var histSheet={name:'Scan History',hdrs:_hh,rows:xlsxRows,colWidths:[18,14,22,14,12,12,12,12,12,11,10,10,10,8,13,10,12]};
+        var xlsxRows=histRows.map(function(r){return[r[0],r[1],r[2],toN(r[3]),toN(r[4]),toN(r[5]),toN(r[6]),toN(r[7]),toN(r[8]),toN(r[9]),toN(r[10]),toN(r[11]),toN(r[12]),toN(r[13]),{v:r[14],s:6},r[15],r[16],r[17]];});
+        var histSheet={name:'Scan History',hdrs:_hh,rows:xlsxRows,colWidths:[18,14,22,14,12,12,12,12,12,11,10,10,10,8,13,10,12,20]};
         var jsonRow=document.querySelector('#history-tbody .history-row[data-has-json="true"]');
         if(!jsonRow){slocXlsxMulti('scan-history.xlsx',[histSheet]);return;}
         var runId=jsonRow.getAttribute('data-run')||'';
@@ -28705,6 +29292,7 @@ struct HistoryTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -29741,6 +30329,7 @@ struct CompareSelectTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -29842,6 +30431,7 @@ struct CompareSelectTemplate {
             <div class="meta-card-row"><span class="meta-label">Last commit on:</span>{% if let Some(date) = baseline_git_commit_date %}<span class="meta-value">{{ date }}</span>{% else %}<span class="meta-value">—</span>{% endif %}</div>
             <div class="meta-card-row"><span class="meta-label">Last commit by:</span>{% if let Some(author) = baseline_git_author %}<span class="meta-value"><span class="cmp-author-val">{{ author }}</span><span class="cmp-author-handle"></span></span>{% else %}<span class="meta-value">—</span>{% endif %}</div>
             <div class="meta-card-row"><span class="meta-label">Scanned on:</span><span class="meta-value ts-local" data-utc-ms="{{ baseline_timestamp_utc_ms }}">{{ baseline_timestamp }}</span></div>
+            <div class="meta-card-row"><span class="meta-label">Scanned by:</span>{% if !baseline_performed_by.is_empty() %}<span class="git-chip">{{ baseline_performed_by }}</span>{% else %}<span class="meta-value">—</span>{% endif %}</div>
             {% if let Some(tags) = baseline_git_tags %}
             <div class="meta-card-row"><span class="meta-label">Tags:</span><span class="meta-value">{{ tags }}</span></div>
             {% endif %}
@@ -29873,6 +30463,7 @@ struct CompareSelectTemplate {
             <div class="meta-card-row"><span class="meta-label">Last commit on:</span>{% if let Some(date) = current_git_commit_date %}<span class="meta-value">{{ date }}</span>{% else %}<span class="meta-value">—</span>{% endif %}</div>
             <div class="meta-card-row"><span class="meta-label">Last commit by:</span>{% if let Some(author) = current_git_author %}<span class="meta-value"><span class="cmp-author-val">{{ author }}</span><span class="cmp-author-handle"></span></span>{% else %}<span class="meta-value">—</span>{% endif %}</div>
             <div class="meta-card-row"><span class="meta-label">Scanned on:</span><span class="meta-value ts-local" data-utc-ms="{{ current_timestamp_utc_ms }}">{{ current_timestamp }}</span></div>
+            <div class="meta-card-row"><span class="meta-label">Scanned by:</span>{% if !current_performed_by.is_empty() %}<span class="git-chip">{{ current_performed_by }}</span>{% else %}<span class="meta-value">—</span>{% endif %}</div>
             {% if let Some(tags) = current_git_tags %}
             <div class="meta-card-row"><span class="meta-label">Tags:</span><span class="meta-value">{{ tags }}</span></div>
             {% endif %}
@@ -31311,6 +31902,8 @@ struct CompareTemplate {
     current_git_author: Option<String>,
     baseline_git_branch: String,
     current_git_branch: String,
+    baseline_performed_by: String,
+    current_performed_by: String,
     baseline_git_tags: Option<String>,
     current_git_tags: Option<String>,
     baseline_git_commit_date: Option<String>,
@@ -31663,6 +32256,7 @@ pub(crate) struct LoginTemplate {
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
         </div>
@@ -35202,6 +35796,52 @@ mod tests_private {
         // Desktop / local mode is open by design regardless of key presence.
         assert!(!refuse_unauthenticated_server(false, false));
         assert!(!refuse_unauthenticated_server(false, true));
+    }
+
+    // ── Code Ownership page ────────────────────────────────────────────────────
+
+    #[test]
+    fn code_ownership_empty_state_renders_guidance() {
+        let html = render_code_ownership_html("nonce123", None, "myrepo");
+        assert!(html.contains("No ownership data"));
+        assert!(html.contains("--attribution"));
+        assert!(html.contains("myrepo"));
+        assert!(html.contains("site-footer"));
+        assert!(html.contains("id=\"theme-toggle\""));
+        assert!(html.contains("Code Ownership"));
+    }
+
+    #[test]
+    fn code_ownership_populated_renders_authors_and_bus_factor() {
+        let json = serde_json::json!({
+            "tool": {"name":"oxide-sloc","version":"0.0.0","run_id":"t","timestamp_utc":"2026-01-01T00:00:00Z"},
+            "environment": {"operating_system":"x","architecture":"x86_64","runtime_mode":"cli","initiator_username":"u","initiator_hostname":"h"},
+            "effective_configuration": {},
+            "input_roots": ["/tmp/myrepo"],
+            "summary_totals": {"files_considered":1,"files_analyzed":1,"files_skipped":0,"total_physical_lines":260,"code_lines":200,"comment_lines":40,"blank_lines":20,"mixed_lines_separate":0},
+            "totals_by_language": [],
+            "per_file_records": [],
+            "skipped_file_records": [],
+            "warnings": [],
+            "authors": [
+                {"id":0,"canonical_name":"Nima Shafie","canonical_email":"nimzshafie@gmail.com",
+                 "aliases":[{"name":"Nima Shafie","email":"nimzshafie@gmail.com"},{"name":"nshafie","email":"nimzshafie@gmail.com"}],
+                 "counts":{"code_lines":150,"comment_lines":30,"blank_lines":15,"total_lines":195}},
+                {"id":1,"canonical_name":"Other Dev","canonical_email":"other@example.com",
+                 "aliases":[{"name":"Other Dev","email":"other@example.com"}],
+                 "counts":{"code_lines":50,"comment_lines":10,"blank_lines":5,"total_lines":65}}
+            ]
+        });
+        let run: AnalysisRun = serde_json::from_value(json).expect("run deserializes");
+        let html = render_code_ownership_html("nonce123", Some(&run), "myrepo");
+        assert!(html.contains("Nima Shafie"));
+        assert!(html.contains("Other Dev"));
+        assert!(html.contains("own-data"));
+        assert!(html.contains("Contributors"));
+        assert!(html.contains("own-bar-fill"));
+        assert!(!html.contains("No ownership data"));
+        // Nima owns 150 of 200 code lines (75% >= 50%), so the bus factor is 1.
+        assert!(html.contains(">1</div><div class=\"stat-chip-label\">Bus Factor"));
     }
 
     #[test]

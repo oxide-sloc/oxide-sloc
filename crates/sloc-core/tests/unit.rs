@@ -532,6 +532,10 @@ fn make_registry_entry(run_id: &str) -> RegistryEntry {
         git_tags: None,
         git_nearest_tag: None,
         git_commit_date: None,
+        scan_os: None,
+        scan_host: None,
+        scan_user: None,
+        scan_ci: None,
     }
 }
 

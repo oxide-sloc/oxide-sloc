@@ -105,6 +105,41 @@ pub struct RegistryEntry {
     /// ISO 8601 author-date of the last git commit at scan time.
     #[serde(default)]
     pub git_commit_date: Option<String>,
+    /// Operating system the scan ran on (e.g. "windows", "linux"). Lets pooled reports
+    /// from different environments be told apart in the list/compare/trend views.
+    #[serde(default)]
+    pub scan_os: Option<String>,
+    /// Hostname (or CI node name) the scan ran on.
+    #[serde(default)]
+    pub scan_host: Option<String>,
+    /// User who initiated the scan.
+    #[serde(default)]
+    pub scan_user: Option<String>,
+    /// Detected CI system name (e.g. "Jenkins", "GitHub Actions"), if the scan ran in CI.
+    #[serde(default)]
+    pub scan_ci: Option<String>,
+}
+
+impl RegistryEntry {
+    /// Human-readable label for who/what produced this report. Mirrors the single-report
+    /// page's "Scan by" chip so pooled reports from different environments/users are
+    /// distinguishable in the list, compare, and trend views: the CI system name when the
+    /// scan ran in CI, otherwise `user / host`, otherwise "unknown".
+    #[must_use]
+    pub fn performed_by(&self) -> String {
+        if let Some(ci) = self.scan_ci.as_deref().filter(|s| !s.is_empty()) {
+            return ci.to_string();
+        }
+        match (
+            self.scan_user.as_deref().filter(|s| !s.is_empty()),
+            self.scan_host.as_deref().filter(|s| !s.is_empty()),
+        ) {
+            (Some(u), Some(h)) => format!("{u} / {h}"),
+            (Some(u), None) => u.to_string(),
+            (None, Some(h)) => h.to_string(),
+            (None, None) => "unknown".to_string(),
+        }
+    }
 }
 
 /// Persistent list of directories the user has chosen to watch for new reports.
@@ -306,6 +341,10 @@ mod tests {
             git_tags: None,
             git_nearest_tag: None,
             git_commit_date: None,
+            scan_os: None,
+            scan_host: None,
+            scan_user: None,
+            scan_ci: None,
         }
     }
 

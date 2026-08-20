@@ -1079,6 +1079,10 @@ def runAnalyze() {
         branchName = stripRef(selfRaw)
     }
     def branchArg = (branchName && branchName != 'HEAD') ? "--git-branch '${branchName}'" : ''
+    // Per-author code-ownership metrics (git blame). Opt-in on the CLI; ON by default
+    // here. Blame walks full history, so the scanned checkout must NOT be shallow —
+    // the Jenkinsfile Checkout stage pins CloneOption(shallow:false, depth:0) for this.
+    def attributionArg = params.RUN_ATTRIBUTION ? '--attribution' : ''
     // Export the resolved branch + the commit for the persistent trend CSV (Change 4).
     env.SLOC_TREND_BRANCH = branchName
     env.SLOC_TREND_COMMIT = env.GIT_COMMIT?.trim() ?: shortSha
@@ -1097,7 +1101,7 @@ def runAnalyze() {
                 --report-title "${REPORT_TITLE}" \
                 --mixed-line-policy "${MIXED_LINE_POLICY}" \
                 ''' + "${configArg} ${docArg} ${symlinkArg} ${noIgnoreArg} ${submodArg} ${styleColArg} ${activityArg}" + ''' \
-                ''' + "${langArgs} ${includeArgs} ${excludeArgs} ${branchArg}" + ''' \
+                ''' + "${langArgs} ${includeArgs} ${excludeArgs} ${branchArg} ${attributionArg}" + ''' \
                 ''' + "${jsonArg} ${csvArg} ${xlsxArg} ${htmlArg} ${pdfArg}" + ''' \
                 ''' + "${scanConfigArg} ${subHtmlArg}" + '''
         '''
@@ -1107,6 +1111,42 @@ def runAnalyze() {
     shx "test -s '${outDir}/report_${projectSlug}.csv'"
     shx "test -s '${outDir}/report_${projectSlug}.xlsx'"
     if (params.REPORT_HTML) { shx "test -s '${outDir}/report_${projectSlug}.html'" }
+
+    // b2. Central-pool ingest push — cross-environment report pooling. When
+    // POOL_INGEST_URL is set, POST the verified JSON to <URL>/api/ingest on a shared
+    // oxide-sloc `serve` instance so this run's report pools with reports from other
+    // environments/agents. Best-effort: a failed push logs a warning and never fails
+    // the build. The API key (when a credential is configured) is bound to
+    // SLOC_WEBHOOK_TOKEN in the environment and read there by `send` — it is never
+    // placed on the command line, so it stays out of argv and the console log. The
+    // trailing slash of the base URL is trimmed in-shell (${POOL_INGEST_URL%/}), and
+    // --allow-private-net permits an RFC-1918/intranet pool server.
+    if (params.POOL_INGEST_URL?.trim()) {
+        def resultJson = "${outDir}/result_${projectSlug}.json"
+        def doPush = { ->
+            try {
+                withEnv(["POOL_INGEST_URL=${params.POOL_INGEST_URL.trim()}"]) {
+                    shx '''
+                        "${BINARY}" send "''' + resultJson + '''" \
+                            --webhook-url "${POOL_INGEST_URL%/}/api/ingest" \
+                            --allow-private-net
+                    '''
+                }
+            } catch (err) {
+                echo "WARNING: central-pool ingest push to ${params.POOL_INGEST_URL.trim()} " +
+                     "failed (non-fatal, scan artifacts preserved): ${err.message}"
+            }
+        }
+        def credId = params.POOL_INGEST_TOKEN_CREDENTIAL?.trim()
+        if (credId) {
+            // Optional Secret Text credential → SLOC_WEBHOOK_TOKEN (masked, env-only).
+            withCredentials([string(credentialsId: credId, variable: 'SLOC_WEBHOOK_TOKEN')]) {
+                doPush()
+            }
+        } else {
+            doPush()
+        }
+    }
 
     // c. Per-file breakdown — a self-test pass (console only, no artifact). Gated
     // behind RUN_ANALYZE_SELFTEST: it re-walks the whole repo just to exercise the

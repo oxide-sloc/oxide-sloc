@@ -520,8 +520,11 @@ The first build runs with no parameters — Jenkins uses it to discover the `par
 | `RUN_QUALITY_GATES` | false | **Off by default** — a standard scan skips the fmt / clippy / unit-test stage entirely. Check it to run the quality gates; this also implies a source build (`BUILD_MODE=source`, since the toolchain is needed to compile and lint). |
 | `RUN_WEB_HEALTHCHECK` | false | **Off by default** — the web UI health-check stage is skipped. Check it to run the check. Enable only on agents with loopback access where port 4317 is available. |
 | `RUN_ANALYZE_SELFTEST` | false | **Off by default** — skips the extra analyzer self-test passes (per-file breakdown + the four mixed-line policies) that re-scan the whole repo without producing artifacts. Leave off for normal metrics scans; check it to smoke-test every analyzer mode when release-verifying the scanner itself. |
+| `RUN_ATTRIBUTION` | true | **On by default** — compute per-author code-ownership metrics via `git blame` (`--attribution`) so the git-user metrics render in the report. Blame walks full history, so the pipeline pins a non-shallow clone (`CloneOption shallow:false, depth:0`). Uncheck to skip the extra blame pass on very large repos. |
 | `NOTIFY_WEBHOOK_URL` | _(skip)_ | POST JSON result here after scan. Add `SLOC_WEBHOOK_TOKEN` Secret Text credential for Bearer auth. |
 | `NOTIFY_EMAIL` | _(skip)_ | Comma-separated recipients. Requires `SLOC_SMTP_HOST`, `SLOC_SMTP_USER`, `SLOC_SMTP_PASS` credentials. |
+| `POOL_INGEST_URL` | _(disabled)_ | Base URL of a central oxide-sloc `serve` instance (e.g. `https://sloc.corp.internal:4317`). When set, the verified `result.json` is POSTed to `<URL>/api/ingest` so this run's report pools with reports from every other environment (local, other CI agents) and shows up in that server's View Reports / Compare / Trend. Best-effort — a failed push logs a warning and never fails the build. Blank = disabled. |
+| `POOL_INGEST_TOKEN_CREDENTIAL` | _(empty)_ | Jenkins Secret Text credential ID holding the pool server's API key (`SLOC_API_KEY`). Bound to `SLOC_WEBHOOK_TOKEN` in the environment only — never placed on the command line. Leave empty for an unauthenticated pool server. |
 | `ARTIFACT_REPO_TYPE` | `none` | Artifact repository backend: `none` / `artifactory` / `nexus` / `nexus2` / `s3` / `minio` / `azure-blob` / `generic-http`. |
 | `ARTIFACT_REPO_URL` | _(empty)_ | Base URL of the artifact repository (see [Artifact Repository Integration](#artifact-repository-integration)). |
 | `ARTIFACT_REPO_PATH` | `oxide-sloc/${JOB_NAME}/${BUILD_NUMBER}` | Path prefix for uploaded artifacts. Tokens `${JOB_NAME}` and `${BUILD_NUMBER}` are substituted at runtime. |
@@ -531,6 +534,17 @@ The first build runs with no parameters — Jenkins uses it to discover the `par
 | `ARTIFACT_PUSH_PDF` | false | Include `report.pdf` in the push (only when `REPORT_PDF` is checked). |
 
 > **JSON is always generated** regardless of parameters — it is required for build-over-build trend plots, the build description summary, and the `send` delivery subcommand.
+
+> **Cross-environment report pooling.** Reports produced anywhere — a local Windows run, a
+> Linux `serve` instance, or this Jenkins job — carry their own environment attribution (OS,
+> host/CI, user) inside `result.json`, and pool into one place through either transport:
+> **(1) central push** — set `POOL_INGEST_URL` here so each build POSTs to a shared `serve`
+> instance's `/api/ingest`; or **(2) shared folder** — point the app's "watched directories"
+> at a common/synced folder that every environment writes its `result.json` into. Either way
+> the pooled reports appear side-by-side in **View Reports**, **Compare Scans**, and **Trend
+> Reports**, with an **Environment** column / "Scanned by" chip showing which environment and
+> user produced each one. The push path is the robust choice when machines do not share a
+> filesystem (Windows can't read the Linux Jenkins agent's local disk).
 
 #### Optional — registering Secret Text credentials
 
