@@ -185,6 +185,14 @@ pub struct AnalysisConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub activity_window_days: Option<u32>,
+    /// Per-author code-ownership attribution. **Off by default** (opt-in): it adds a
+    /// `git blame` pass over every analyzed file, which is markedly slower than the single
+    /// `git log` activity pass. When enabled on a git repo, oxide-sloc attributes each
+    /// physical line to the author who last touched it (blame honours the repo `.mailmap`),
+    /// buckets it as code / comment / blank, and rolls the results up per contributor.
+    /// No effect on non-git paths.
+    #[serde(default)]
+    pub attribution: bool,
 }
 
 const fn default_true() -> bool {
@@ -303,6 +311,7 @@ impl Default for AnalysisConfig {
             style_score_threshold: 0,
             style_lang_scope: "all".into(),
             activity_window_days: Some(90),
+            attribution: false,
         }
     }
 }

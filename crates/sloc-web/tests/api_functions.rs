@@ -197,6 +197,7 @@ fn make_parent_run_with_submodule() -> (AnalysisRun, SubmoduleSummary) {
                 lsloc: None,
                 commit_count: None,
                 last_commit_date: None,
+                ownership: None,
                 content_hash: 12345,
             },
             FileRecord {
@@ -231,6 +232,7 @@ fn make_parent_run_with_submodule() -> (AnalysisRun, SubmoduleSummary) {
                 lsloc: None,
                 commit_count: None,
                 last_commit_date: None,
+                ownership: None,
                 content_hash: 67890,
             },
         ],
@@ -251,6 +253,7 @@ fn make_parent_run_with_submodule() -> (AnalysisRun, SubmoduleSummary) {
         dryness_pct: None,
         duplicate_groups: vec![],
         duplicates_excluded: 0,
+        authors: Vec::new(),
     };
 
     let sub = SubmoduleSummary {

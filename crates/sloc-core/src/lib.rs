@@ -42,8 +42,8 @@ use sloc_config::{
 };
 use sloc_languages::style::IndentStyle;
 use sloc_languages::{
-    AnalysisOptions, Language, ParseMode, RawLineCounts, StyleAnalysis, StyleLangScope,
-    analyze_text, detect_language, supported_languages,
+    AnalysisOptions, Language, LineCategory, ParseMode, RawLineCounts, StyleAnalysis,
+    StyleLangScope, analyze_text, classify_physical_lines, detect_language, supported_languages,
 };
 
 // ── Detection sample sizes and thresholds ────────────────────────────────────
@@ -290,6 +290,11 @@ pub struct FileRecord {
     /// ISO-8601 date of the most recent commit touching this file within the window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_commit_date: Option<String>,
+    /// Per-author line ownership for this file (blame-based), sorted by total lines owned
+    /// descending. `None` unless `analysis.attribution` is enabled and the root is a git repo.
+    /// `author_id` indexes into `AnalysisRun::authors`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<Vec<FileOwnership>>,
     /// SHA-256 (first 8 bytes as u64) of raw file bytes — used for duplicate detection.
     /// Not serialized; consumed in-process during `assemble_run`.
     #[serde(skip)]
@@ -369,6 +374,65 @@ pub struct SubmoduleSummary {
     pub git_remote_url: Option<String>,
 }
 
+/// A raw `(name, email)` pair exactly as recorded in git history (post-`.mailmap`). Multiple
+/// raw identities can be folded into one [`Author`] when they share a normalized email.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct RawIdentity {
+    pub name: String,
+    pub email: String,
+}
+
+/// Line tallies bucketed the same three ways as [`LineCategory`]. `total_lines` is the sum of
+/// the three category counts (i.e. physical lines owned).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthorLineCounts {
+    pub code_lines: u64,
+    pub comment_lines: u64,
+    pub blank_lines: u64,
+    pub total_lines: u64,
+}
+
+impl AuthorLineCounts {
+    fn add_category(&mut self, cat: LineCategory) {
+        match cat {
+            LineCategory::Code => self.code_lines += 1,
+            LineCategory::Comment => self.comment_lines += 1,
+            LineCategory::Blank => self.blank_lines += 1,
+        }
+        self.total_lines += 1;
+    }
+
+    fn add(&mut self, other: &AuthorLineCounts) {
+        self.code_lines += other.code_lines;
+        self.comment_lines += other.comment_lines;
+        self.blank_lines += other.blank_lines;
+        self.total_lines += other.total_lines;
+    }
+}
+
+/// One author's ownership of a single file. `author_id` indexes into [`AnalysisRun::authors`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileOwnership {
+    pub author_id: u32,
+    pub counts: AuthorLineCounts,
+}
+
+/// A resolved contributor: one human, possibly spanning several raw git identities that were
+/// auto-merged because they share a normalized email. Cross-email merges (corporate login vs.
+/// full name vs. last name) are a follow-up interactive step; Phase 1 only auto-merges the
+/// high-confidence same-email case, which is always safe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Author {
+    /// Stable index into [`AnalysisRun::authors`]; authors are ordered by code lines owned.
+    pub id: u32,
+    pub canonical_name: String,
+    pub canonical_email: String,
+    /// Every raw `(name, email)` pair folded into this author.
+    pub aliases: Vec<RawIdentity>,
+    /// Repo-wide roll-up across all files.
+    pub counts: AuthorLineCounts,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisRun {
     pub tool: ToolMetadata,
@@ -425,6 +489,11 @@ pub struct AnalysisRun {
     /// Number of duplicate files excluded from SLOC totals (when `exclude_duplicates` is set).
     #[serde(default)]
     pub duplicates_excluded: usize,
+    /// Per-author code-ownership roll-up, ordered by code lines owned (descending). Non-empty
+    /// only when `analysis.attribution` is enabled and the scan root is a git repo. Author
+    /// indices are referenced by `FileRecord::ownership`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authors: Vec<Author>,
 }
 
 #[derive(Default)]
@@ -727,6 +796,181 @@ fn parse_activity_log(out: &str) -> HashMap<String, (u32, Option<String>)> {
         }
     }
     map
+}
+
+/// Blame every analyzed file under `root`, attribute each physical line to its last author,
+/// bucket it as code / comment / blank, and roll the tallies up per resolved contributor.
+///
+/// Mutates each `FileRecord` in place (populating `ownership`) and returns the repo-wide author
+/// list ordered by code lines owned (descending). Best-effort: files that fail to blame or read
+/// are silently skipped, so a partial result is always safe. Runs one `git blame` per file — the
+/// reason this whole pass is opt-in behind `analysis.attribution`.
+fn attribute_ownership(root: &Path, records: &mut [FileRecord]) -> Vec<Author> {
+    let mut resolver = AuthorResolver::default();
+
+    for rec in records.iter_mut() {
+        let Some(language) = rec.language else {
+            continue;
+        };
+        // Blame reports the working-tree file; classify the same bytes so line numbers align.
+        let Ok(bytes) = std::fs::read(&rec.path) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let categories = classify_physical_lines(language, &text);
+        let blame = blame_line_identities(root, &rec.relative_path);
+        if blame.is_empty() {
+            continue;
+        }
+
+        // Zip by the shorter of the two — trailing-newline / CRLF quirks can differ by one line.
+        let mut per_file: HashMap<u32, AuthorLineCounts> = HashMap::new();
+        for (category, ident) in categories.iter().zip(blame.iter()) {
+            let id = resolver.resolve(ident);
+            per_file.entry(id).or_default().add_category(*category);
+        }
+
+        let mut ownership: Vec<FileOwnership> = per_file
+            .into_iter()
+            .map(|(author_id, counts)| {
+                resolver.authors[author_id as usize].counts.add(&counts);
+                FileOwnership { author_id, counts }
+            })
+            .collect();
+        ownership.sort_by_key(|entry| std::cmp::Reverse(entry.counts.total_lines));
+        rec.ownership = Some(ownership);
+    }
+
+    resolver.finish(records)
+}
+
+/// Accumulates raw git identities into deduplicated [`Author`]s keyed by normalized email.
+#[derive(Default)]
+struct AuthorResolver {
+    authors: Vec<Author>,
+    /// Normalized-email key → author index.
+    key_to_id: HashMap<String, u32>,
+    /// Parallel to `authors`: the set of raw identities already recorded, to avoid dup aliases.
+    seen_aliases: Vec<HashSet<RawIdentity>>,
+}
+
+impl AuthorResolver {
+    fn resolve(&mut self, ident: &RawIdentity) -> u32 {
+        let key = normalize_email_key(ident);
+        if let Some(&id) = self.key_to_id.get(&key) {
+            if self.seen_aliases[id as usize].insert(ident.clone()) {
+                self.authors[id as usize].aliases.push(ident.clone());
+            }
+            return id;
+        }
+        let id = self.authors.len() as u32;
+        let canonical_name = if ident.name.trim().is_empty() {
+            ident.email.clone()
+        } else {
+            ident.name.clone()
+        };
+        self.authors.push(Author {
+            id,
+            canonical_name,
+            canonical_email: ident.email.clone(),
+            aliases: vec![ident.clone()],
+            counts: AuthorLineCounts::default(),
+        });
+        self.seen_aliases.push(HashSet::from([ident.clone()]));
+        self.key_to_id.insert(key, id);
+        id
+    }
+
+    /// Sort authors by code lines owned (descending), reassign stable ids, and remap the
+    /// `author_id`s already stored on each `FileRecord::ownership` to match.
+    fn finish(self, records: &mut [FileRecord]) -> Vec<Author> {
+        let mut order: Vec<usize> = (0..self.authors.len()).collect();
+        order.sort_by(|&a, &b| {
+            self.authors[b]
+                .counts
+                .code_lines
+                .cmp(&self.authors[a].counts.code_lines)
+                .then_with(|| {
+                    self.authors[a]
+                        .canonical_name
+                        .cmp(&self.authors[b].canonical_name)
+                })
+        });
+        let mut remap = vec![0u32; self.authors.len()];
+        for (new_id, &old) in order.iter().enumerate() {
+            remap[old] = new_id as u32;
+        }
+        for rec in records.iter_mut() {
+            if let Some(ownership) = rec.ownership.as_mut() {
+                for entry in ownership.iter_mut() {
+                    entry.author_id = remap[entry.author_id as usize];
+                }
+            }
+        }
+        let mut sorted: Vec<Author> = order.iter().map(|&old| self.authors[old].clone()).collect();
+        for (new_id, author) in sorted.iter_mut().enumerate() {
+            author.id = new_id as u32;
+        }
+        sorted
+    }
+}
+
+/// The stable identity key used for the safe, high-confidence auto-merge: normalized email.
+/// Same-email identities (differing only in display-name spelling/capitalization) collapse into
+/// one author. Cross-email merges are deferred to the Phase-2 interactive step. When no usable
+/// email is present the display name is used so unrelated anonymous commits don't all merge.
+fn normalize_email_key(ident: &RawIdentity) -> String {
+    let email = ident.email.trim().to_lowercase();
+    if email.is_empty() || email == "not.committed.yet" || !email.contains('@') {
+        return format!("name:{}", ident.name.trim().to_lowercase());
+    }
+    // Strip a `+tag` suffix from the local part (e.g. `user+work@host` → `user@host`).
+    match email.split_once('@') {
+        Some((local, domain)) => {
+            let core = local.split('+').next().unwrap_or(local);
+            format!("{core}@{domain}")
+        }
+        None => email,
+    }
+}
+
+/// Run `git blame` on `rel` (relative to `root`) and return one raw identity per physical line,
+/// in file order. `-w` ignores whitespace-only reblame, `-M`/`-C` follow moved/copied code so a
+/// refactor doesn't misattribute ownership; the repo `.mailmap` is honoured by git. Returns an
+/// empty vec on any failure (non-git path, shallow clone, unreadable file).
+fn blame_line_identities(root: &Path, rel: &str) -> Vec<RawIdentity> {
+    run_git_cmd(
+        root,
+        &["blame", "--line-porcelain", "-w", "-M", "-C", "--", rel],
+    )
+    .map(|out| parse_blame_porcelain(&out))
+    .unwrap_or_default()
+}
+
+/// Parse `git blame --line-porcelain` output into one [`RawIdentity`] per source line. In
+/// line-porcelain mode the `author` / `author-mail` headers repeat for every line and each
+/// block terminates with a TAB-prefixed content line.
+fn parse_blame_porcelain(out: &str) -> Vec<RawIdentity> {
+    let mut identities = Vec::new();
+    let mut name = String::new();
+    let mut email = String::new();
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix("author ") {
+            name = rest.trim().to_owned();
+        } else if let Some(rest) = line.strip_prefix("author-mail ") {
+            email = rest
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_owned();
+        } else if line.starts_with('\t') {
+            identities.push(RawIdentity {
+                name: std::mem::take(&mut name),
+                email: std::mem::take(&mut email),
+            });
+        }
+    }
+    identities
 }
 
 /// Return the name of the CI system if the process is running inside one.
@@ -1168,6 +1412,17 @@ fn assemble_run(
         }
     }
 
+    // Per-author code-ownership attribution (opt-in: one `git blame` per file). Best-effort —
+    // a non-git path or blame failure yields an empty author list and leaves records untouched.
+    let authors = if config.analysis.attribution {
+        first_root
+            .as_deref()
+            .map(|root| attribute_ownership(root, &mut analyzed))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     let now = Utc::now();
     let run_id = {
         let uuid_suffix = Uuid::new_v4().simple().to_string();
@@ -1220,6 +1475,7 @@ fn assemble_run(
         dryness_pct,
         duplicate_groups,
         duplicates_excluded: 0,
+        authors,
     }
 }
 
@@ -1775,6 +2031,7 @@ fn analyze_candidate_file(
         lsloc,
         commit_count: None,
         last_commit_date: None,
+        ownership: None,
         content_hash,
     }))
 }
@@ -1971,6 +2228,7 @@ fn skipped_record(
         lsloc: None,
         commit_count: None,
         last_commit_date: None,
+        ownership: None,
         content_hash: 0,
     }
 }
@@ -2960,6 +3218,110 @@ mod tests {
         assert!(parse_activity_log("").is_empty());
     }
 
+    // ── Code-ownership attribution ────────────────────────────────────────────
+
+    #[test]
+    fn parse_blame_porcelain_extracts_one_identity_per_line() {
+        let out = "\
+abc123 1 1 2
+author Nima Shafie
+author-mail <nimzshafie@gmail.com>
+author-time 1700000000
+summary first
+filename src/a.rs
+\tfirst line of code
+abc123 2 2
+author Nima Shafie
+author-mail <nimzshafie@gmail.com>
+\tsecond line
+def456 3 3
+author Other Dev
+author-mail <other@example.com>
+\tthird line
+";
+        let ids = parse_blame_porcelain(out);
+        assert_eq!(ids.len(), 3, "one identity per TAB-prefixed content line");
+        assert_eq!(ids[0].name, "Nima Shafie");
+        assert_eq!(ids[0].email, "nimzshafie@gmail.com");
+        assert_eq!(ids[2].name, "Other Dev");
+        assert_eq!(ids[2].email, "other@example.com");
+    }
+
+    #[test]
+    fn parse_blame_porcelain_empty_is_empty() {
+        assert!(parse_blame_porcelain("").is_empty());
+    }
+
+    #[test]
+    fn normalize_email_key_merges_case_and_plus_tag() {
+        let a = RawIdentity {
+            name: "Nima Shafie".into(),
+            email: "Nima@Example.COM".into(),
+        };
+        let b = RawIdentity {
+            name: "nshafie".into(),
+            email: "nima+work@example.com".into(),
+        };
+        assert_eq!(normalize_email_key(&a), normalize_email_key(&b));
+    }
+
+    #[test]
+    fn normalize_email_key_distinct_emails_do_not_merge() {
+        let a = RawIdentity {
+            name: "Nima Shafie".into(),
+            email: "nima@corp.example".into(),
+        };
+        let b = RawIdentity {
+            name: "Nima Shafie".into(),
+            email: "nima@personal.example".into(),
+        };
+        // Cross-email merges are a later interactive step, not an auto-merge.
+        assert_ne!(normalize_email_key(&a), normalize_email_key(&b));
+    }
+
+    #[test]
+    fn normalize_email_key_missing_email_falls_back_to_name() {
+        let a = RawIdentity {
+            name: "Anon Dev".into(),
+            email: String::new(),
+        };
+        let b = RawIdentity {
+            name: "anon dev".into(),
+            email: "not.committed.yet".into(),
+        };
+        assert_eq!(normalize_email_key(&a), "name:anon dev");
+        assert_eq!(normalize_email_key(&a), normalize_email_key(&b));
+    }
+
+    #[test]
+    fn author_resolver_folds_same_email_and_orders_by_code() {
+        let mut r = AuthorResolver::default();
+        let id_a1 = r.resolve(&RawIdentity {
+            name: "Nima Shafie".into(),
+            email: "nima@example.com".into(),
+        });
+        let id_a2 = r.resolve(&RawIdentity {
+            name: "nshafie".into(),
+            email: "NIMA@example.com".into(),
+        });
+        let id_b = r.resolve(&RawIdentity {
+            name: "Other".into(),
+            email: "other@example.com".into(),
+        });
+        assert_eq!(id_a1, id_a2, "same email folds into one author");
+        assert_ne!(id_a1, id_b);
+
+        // Give author B more code so it should sort first after finish().
+        r.authors[id_a1 as usize].counts.code_lines = 10;
+        r.authors[id_b as usize].counts.code_lines = 50;
+        let mut records: Vec<FileRecord> = Vec::new();
+        let authors = r.finish(&mut records);
+        assert_eq!(authors.len(), 2);
+        assert_eq!(authors[0].canonical_email, "other@example.com");
+        assert_eq!(authors[0].id, 0);
+        assert_eq!(authors[1].aliases.len(), 2, "two spellings recorded");
+    }
+
     // ── Path / git helpers ────────────────────────────────────────────────────
 
     #[test]
@@ -3069,6 +3431,7 @@ mod tests {
             lsloc: None,
             commit_count: None,
             last_commit_date: None,
+            ownership: None,
             content_hash: hash,
         };
         let analyzed = vec![make_rec(111, "a.rs"), make_rec(222, "b.rs")];
@@ -3100,6 +3463,7 @@ mod tests {
             lsloc: None,
             commit_count: None,
             last_commit_date: None,
+            ownership: None,
             content_hash: hash,
         };
         let analyzed = vec![
@@ -3136,6 +3500,7 @@ mod tests {
             lsloc: None,
             commit_count: None,
             last_commit_date: None,
+            ownership: None,
             content_hash: hash,
         };
         // hash=0 means "not computed" — must be excluded from duplicate detection
@@ -3224,6 +3589,7 @@ mod tests {
                 lsloc: None,
                 commit_count: None,
                 last_commit_date: None,
+                ownership: None,
                 content_hash: 0,
             }],
             skipped_file_records: vec![],
@@ -3243,6 +3609,7 @@ mod tests {
             dryness_pct: None,
             duplicate_groups: vec![],
             duplicates_excluded: 0,
+            authors: Vec::new(),
         };
         let json_path = dir.path().join("test.json");
         write_json(&run, &json_path).unwrap();

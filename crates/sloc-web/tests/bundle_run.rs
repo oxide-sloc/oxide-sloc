@@ -52,6 +52,7 @@ fn fixture_run(run_id: &str) -> AnalysisRun {
         dryness_pct: None,
         duplicate_groups: vec![],
         duplicates_excluded: 0,
+        authors: Vec::new(),
     }
 }
 

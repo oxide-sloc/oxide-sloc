@@ -17278,6 +17278,7 @@ pub fn build_sub_run(
         dryness_pct: None,
         duplicate_groups: vec![],
         duplicates_excluded: 0,
+        authors: Vec::new(),
     }
 }
 

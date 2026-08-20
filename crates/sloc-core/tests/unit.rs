@@ -141,6 +141,7 @@ fn make_file_record(path: &str, code: u64) -> FileRecord {
         lsloc: None,
         commit_count: None,
         last_commit_date: None,
+        ownership: None,
         content_hash: 0,
     }
 }
@@ -225,6 +226,7 @@ fn make_run_with_files(files: Vec<(&str, u64)>) -> AnalysisRun {
         dryness_pct: None,
         duplicate_groups: vec![],
         duplicates_excluded: 0,
+        authors: Vec::new(),
     }
 }
 

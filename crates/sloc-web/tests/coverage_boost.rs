@@ -179,6 +179,7 @@ fn base_run(id: &str) -> AnalysisRun {
         dryness_pct: None,
         duplicate_groups: vec![],
         duplicates_excluded: 0,
+        authors: Vec::new(),
     }
 }
 
@@ -215,6 +216,7 @@ fn file_record(path: &str, lang: Language, code: u64) -> FileRecord {
         lsloc: None,
         commit_count: None,
         last_commit_date: None,
+        ownership: None,
         content_hash: 0,
     }
 }

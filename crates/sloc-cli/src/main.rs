@@ -306,6 +306,12 @@ struct AnalyzeArgs {
     #[arg(long, value_name = "DAYS")]
     activity_window: Option<u32>,
 
+    /// Attribute per-author code ownership via `git blame` (code/comment/blank per contributor,
+    /// same-email identities auto-merged, `.mailmap` honoured). Opt-in — adds one blame pass per
+    /// file, so it is slower than the activity pass. Needs a git repo; ignored on non-git paths.
+    #[arg(long)]
+    attribution: bool,
+
     /// Write scan configuration JSON to this path (records the effective settings used
     /// for this run — identical to the scan-config_*.json produced by the web UI).
     #[arg(long, value_name = "PATH")]
@@ -2061,6 +2067,9 @@ fn apply_analysis_cli_args(config: &mut AppConfig, args: &AnalyzeArgs) {
     if let Some(window) = args.activity_window {
         config.analysis.activity_window_days = Some(window);
     }
+    if args.attribution {
+        config.analysis.attribution = true;
+    }
 }
 
 // ── terminal output ───────────────────────────────────────────────────────────
@@ -2132,6 +2141,21 @@ fn print_plain_summary(run: &AnalysisRun) {
         println!("style_col_threshold={}", ss.col_threshold);
         println!("style_col_compliant_pct={}", ss.line_col_compliant_pct);
         println!("style_language_groups={}", ss.by_language.len());
+    }
+    if !run.authors.is_empty() {
+        println!("authors={}", run.authors.len());
+        for a in &run.authors {
+            println!(
+                "author={}\t{}\tcode={}\tcomment={}\tblank={}\ttotal={}\taliases={}",
+                a.canonical_name,
+                a.canonical_email,
+                a.counts.code_lines,
+                a.counts.comment_lines,
+                a.counts.blank_lines,
+                a.counts.total_lines,
+                a.aliases.len()
+            );
+        }
     }
     println!("warning_count={}", run.warnings.len());
     for warning in &run.warnings {
@@ -2465,6 +2489,7 @@ fn print_summary(run: &AnalysisRun, per_file: bool, plain: bool) {
     }
     print_submodule_table(run, col);
     print_style_summary(run, col);
+    print_ownership_table(run, col);
 
     if !run.warnings.is_empty() {
         println!();
@@ -2477,6 +2502,41 @@ fn print_summary(run: &AnalysisRun, per_file: bool, plain: bool) {
             println!("    {} {warning}", paint!(col, "33", "-"));
         }
     }
+}
+
+/// Render the per-author code-ownership table (blame-based). No-op when attribution was not
+/// requested or the scan root was not a git repo (`run.authors` empty).
+fn print_ownership_table(run: &AnalysisRun, col: bool) {
+    if run.authors.is_empty() {
+        return;
+    }
+    let total_code: u64 = run.authors.iter().map(|a| a.counts.code_lines).sum();
+    println!();
+    println!("  {}", paint!(col, "1", "Code Ownership (git blame)"));
+    println!(
+        "    {:<28} {:>10} {:>10} {:>8} {:>7}",
+        "Author", "Code", "Comment", "Blank", "Code %"
+    );
+    for a in &run.authors {
+        let pct = if total_code > 0 {
+            a.counts.code_lines as f64 / total_code as f64 * 100.0
+        } else {
+            0.0
+        };
+        let mut name = a.canonical_name.clone();
+        if name.chars().count() > 28 {
+            name = format!("{}…", name.chars().take(27).collect::<String>());
+        }
+        println!(
+            "    {:<28} {:>10} {:>10} {:>8} {:>6.1}%",
+            name, a.counts.code_lines, a.counts.comment_lines, a.counts.blank_lines, pct
+        );
+    }
+    println!(
+        "    {} contributor(s); same-email identities auto-merged. Cross-account merges are a \
+         later step.",
+        run.authors.len()
+    );
 }
 
 fn fmt_delta(col: bool, v: i64) -> String {

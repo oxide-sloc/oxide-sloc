@@ -3524,6 +3524,87 @@ fn analyze_generic(text: &str, config: ScanConfig, ieee: IeeeFlags) -> RawFileAn
     }
 }
 
+/// Coarse per-physical-line classification used by the code-ownership attribution pass in
+/// `sloc-core`. Deliberately three-way (blame is physical-line based, and the ownership view
+/// only needs code / comment / blank) so that per-author tallies sum exactly to a file's
+/// physical line count. This is *not* the IEEE policy classifier — it does not collapse
+/// continuation lines or split the fine-grained mixed/docstring buckets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineCategory {
+    Code,
+    Comment,
+    Blank,
+}
+
+/// Classify every physical line of `text` (for `language`) into exactly one [`LineCategory`],
+/// returning one entry per physical line in source order. Reuses the same lexical scanner as
+/// [`analyze_text`] so block-comment / string state is tracked identically, but assigns a
+/// category to each physical line without continuation collapsing — keeping the result aligned
+/// one-to-one with `git blame`'s per-line output. Blank lines inside a block comment are
+/// reported as `Comment`, matching the IEEE default.
+pub fn classify_physical_lines(language: Language, text: &str) -> Vec<LineCategory> {
+    #[cfg(feature = "tree-sitter")]
+    let _ = (); // classification always uses the lexical scanner for stable line alignment.
+
+    let (mut config, _has_preprocessor) = language_scan_config(language);
+    if language == Language::Python {
+        config.skip_lines = detect_python_docstring_lines(text);
+    }
+
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.split_terminator('\n').collect();
+
+    let mut out = Vec::with_capacity(lines.len());
+    let mut in_block_comment = false;
+    let mut string_state: Option<StringState> = None;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if config.skip_lines.contains(&idx) {
+            out.push(LineCategory::Comment); // pre-detected docstring line
+            continue;
+        }
+
+        let trimmed = line.trim();
+        let mut facts = LineFacts::default();
+        let opened_in_block = in_block_comment;
+        if in_block_comment {
+            facts.has_multi_comment = true;
+        }
+
+        let chars: Vec<char> = line.chars().collect();
+        let mut code_mask: Vec<u8> = Vec::with_capacity(chars.len());
+        scan_line(
+            &chars,
+            &config,
+            &mut facts,
+            &mut in_block_comment,
+            &mut string_state,
+            &mut code_mask,
+        );
+
+        let category = if facts.has_code {
+            LineCategory::Code
+        } else if facts.has_single_comment || facts.has_multi_comment || facts.has_docstring {
+            LineCategory::Comment
+        } else if trimmed.is_empty() {
+            // A blank line spanned by an open block comment counts as a comment line.
+            if opened_in_block {
+                LineCategory::Comment
+            } else {
+                LineCategory::Blank
+            }
+        } else {
+            // Non-empty, non-comment, non-code (rare "skipped/unknown") — attribute as code so
+            // ownership totals never silently drop physical lines.
+            LineCategory::Code
+        };
+        out.push(category);
+    }
+
+    out
+}
+
 const fn classify_line(raw: &mut RawLineCounts, facts: &LineFacts, trimmed: &str) {
     if facts.has_docstring {
         raw.docstring_comment_lines += 1;
