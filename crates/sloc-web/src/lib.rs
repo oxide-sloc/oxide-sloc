@@ -3045,6 +3045,7 @@ async fn index(
                 .as_deref()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(90),
+            attribution: query.attribution.as_deref() == Some("enabled"),
         };
         serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string())
     } else {
@@ -3378,6 +3379,8 @@ struct AnalyzeForm {
     exclude_duplicates: Option<String>,
     /// Git activity window in days for the hotspots view. Empty/0 = disabled.
     activity_window: Option<String>,
+    /// Per-author code ownership via git blame. "enabled" turns it on (off by default).
+    attribution: Option<String>,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -3423,6 +3426,9 @@ struct ScanConfig {
     /// Git hotspots activity window in days (on by default; 0 = disabled).
     #[serde(default = "default_activity_window")]
     activity_window: u32,
+    /// Per-author code ownership via git blame (off by default).
+    #[serde(default)]
+    attribution: bool,
 }
 
 const fn default_activity_window() -> u32 {
@@ -3479,6 +3485,7 @@ struct IndexQuery {
     complexity_alert: Option<String>,
     exclude_duplicates: Option<String>,
     activity_window: Option<String>,
+    attribution: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -5740,6 +5747,7 @@ fn apply_form_to_config(config: &mut sloc_config::AppConfig, form: &AnalyzeForm)
     }
     config.analysis.count_compiler_directives =
         form.count_compiler_directives.as_deref() != Some("disabled");
+    config.analysis.attribution = form.attribution.as_deref() == Some("enabled");
     apply_style_threshold(config, form);
     apply_coverage_path(config, form);
 }
@@ -6479,6 +6487,7 @@ fn save_scan_config_json(
             .analysis
             .activity_window_days
             .unwrap_or(0),
+        attribution: run.effective_configuration.analysis.attribution,
     };
     if let Ok(json) = serde_json::to_string_pretty(&scan_cfg) {
         let _ = std::fs::write(cfg_path, json);
@@ -20296,6 +20305,23 @@ int main() { … }   ← code
                 </div>
                 <div class="preset-inline-row">
                   <div class="toggle-card" style="margin:0;">
+                    <div class="field-help-title">Code ownership</div>
+                    <h4 style="margin:6px 0 12px;font-size:16px;">Per-author attribution (git blame)</h4>
+                    <select name="attribution" id="attribution">
+                      <option value="disabled" selected>Off (default)</option>
+                      <option value="enabled">On — attribute lines per author</option>
+                    </select>
+                  </div>
+                  <div class="explainer-card prominent" style="margin:0;">
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> When on, oxide-sloc runs <code>git blame</code> on every analyzed file and attributes each physical line to the author who last touched it, split into <strong>code / comment / blank</strong> per contributor. Results appear on the <a href="/code-ownership">Code Ownership</a> page.<br /><strong>Requires</strong> the scanned path to be a git repository. <strong>Off by default</strong> because it adds a blame pass per file (slower than the git-hotspots pass). Same-email identities are merged automatically and the repo <code>.mailmap</code> is honoured.</div>
+                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># Off = no ownership data (default)
+# On  = per-author code/comment/blank ownership
+# CLI equivalent: analyze --attribution
+# View results at /code-ownership</div>
+                  </div>
+                </div>
+                <div class="preset-inline-row">
+                  <div class="toggle-card" style="margin:0;">
                     <div class="field-help-title">Duplicate handling</div>
                     <h4 style="margin:6px 0 12px;font-size:16px;">Duplicate file detection</h4>
                     <select name="exclude_duplicates" id="exclude_duplicates">
@@ -22696,6 +22722,7 @@ int main() { … }   ← code
       if (raw.complexity_alert) setVal('complexity_alert', String(raw.complexity_alert));
       if (raw.activity_window !== undefined && raw.activity_window !== null) setVal('activity_window', String(raw.activity_window));
       setSelect('exclude_duplicates', raw.exclude_duplicates ? 'enabled' : 'disabled');
+      setSelect('attribution', raw.attribution ? 'enabled' : 'disabled');
       // Trigger dynamic UI updates after pre-fill.
       setTimeout(function () {
         var pathEl = document.getElementById('path');
@@ -23943,6 +23970,7 @@ struct SplashTemplate {
         if (cfg.complexity_alert) p.set('complexity_alert', String(cfg.complexity_alert));
         if (cfg.activity_window !== undefined && cfg.activity_window !== null) p.set('activity_window', String(cfg.activity_window));
         if (cfg.exclude_duplicates) p.set('exclude_duplicates', 'enabled');
+        if (cfg.attribution) p.set('attribution', 'enabled');
         return p;
       }
 
@@ -33668,6 +33696,7 @@ mod form_config_tests {
             complexity_alert: None,
             exclude_duplicates: None,
             activity_window: None,
+            attribution: None,
         }
     }
 
@@ -33675,6 +33704,21 @@ mod form_config_tests {
         let mut cfg = sloc_config::AppConfig::default();
         apply_form_to_config(&mut cfg, form);
         cfg
+    }
+
+    // ── attribution (per-author code ownership — off by default) ──
+
+    #[test]
+    fn attribution_off_by_default_and_toggle_enables() {
+        let mut form = blank_form();
+        assert!(!apply(&form).analysis.attribution, "off unless requested");
+        form.attribution = Some("enabled".to_string());
+        assert!(apply(&form).analysis.attribution, "'enabled' turns it on");
+        form.attribution = Some("disabled".to_string());
+        assert!(
+            !apply(&form).analysis.attribution,
+            "anything else stays off"
+        );
     }
 
     // ── activity_window (git hotspots — on by default) ──
