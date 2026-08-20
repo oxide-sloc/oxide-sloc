@@ -7,10 +7,10 @@
 use chrono::Utc;
 use sloc_config::AppConfig;
 use sloc_core::{
-    AnalysisRun, CocomoEstimate, CocomoMode, EffectiveCounts, EnvironmentMetadata,
-    FileChangeStatus, FileCoverage, FileDelta, FileRecord, FileStatus, LanguageStyleGroup,
-    LanguageSummary, ScanComparison, StyleSummary, SubmoduleSummary, SummaryDelta, SummaryTotals,
-    ToolMetadata,
+    AnalysisRun, Author, AuthorLineCounts, CocomoEstimate, CocomoMode, EffectiveCounts,
+    EnvironmentMetadata, FileChangeStatus, FileCoverage, FileDelta, FileOwnership, FileRecord,
+    FileStatus, LanguageStyleGroup, LanguageSummary, ScanComparison, StyleSummary,
+    SubmoduleSummary, SummaryDelta, SummaryTotals, ToolMetadata,
 };
 use sloc_languages::{Language, ParseMode, RawLineCounts};
 use sloc_report::{
@@ -152,6 +152,96 @@ fn make_run() -> AnalysisRun {
         duplicates_excluded: 0,
         authors: Vec::new(),
     }
+}
+
+/// A run with per-author ownership: two contributors, one file owned mostly by the first.
+fn make_run_with_ownership() -> AnalysisRun {
+    let mut run = make_run();
+    run.authors = vec![
+        Author {
+            id: 0,
+            canonical_name: "Nima Shafie".into(),
+            canonical_email: "nimzshafie@gmail.com".into(),
+            aliases: vec![],
+            counts: AuthorLineCounts {
+                code_lines: 120,
+                comment_lines: 20,
+                blank_lines: 10,
+                total_lines: 150,
+            },
+        },
+        Author {
+            id: 1,
+            canonical_name: "Other Dev".into(),
+            canonical_email: "other@example.com".into(),
+            aliases: vec![],
+            counts: AuthorLineCounts {
+                code_lines: 30,
+                comment_lines: 5,
+                blank_lines: 3,
+                total_lines: 38,
+            },
+        },
+    ];
+    run.per_file_records[0].ownership = Some(vec![
+        FileOwnership {
+            author_id: 0,
+            counts: AuthorLineCounts {
+                code_lines: 120,
+                comment_lines: 20,
+                blank_lines: 10,
+                total_lines: 150,
+            },
+        },
+        FileOwnership {
+            author_id: 1,
+            counts: AuthorLineCounts {
+                code_lines: 30,
+                comment_lines: 5,
+                blank_lines: 3,
+                total_lines: 38,
+            },
+        },
+    ]);
+    run
+}
+
+#[test]
+fn html_report_includes_ownership_section() {
+    let run = make_run_with_ownership();
+    let html = render_html(&run).expect("render html");
+    assert!(html.contains("Code Ownership"));
+    assert!(html.contains("ownership-section"));
+    assert!(html.contains("Nima Shafie"));
+    assert!(html.contains("Other Dev"));
+}
+
+#[test]
+fn html_report_omits_ownership_when_no_authors() {
+    let run = make_run(); // authors empty
+    let html = render_html(&run).expect("render html");
+    assert!(!html.contains("ownership-section"));
+}
+
+#[test]
+fn csv_report_includes_ownership_section() {
+    let run = make_run_with_ownership();
+    let path = std::env::temp_dir().join(format!("sloc-own-{}.csv", std::process::id()));
+    write_csv(&run, &path).expect("write csv");
+    let body = std::fs::read_to_string(&path).expect("read csv");
+    assert!(body.contains("# Code Ownership"));
+    // author 0: 120/(120+30) = 80.0% code, single file owned.
+    assert!(body.contains("Nima Shafie,nimzshafie@gmail.com,120,20,10,150,80.0,1"));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn pdf_report_with_ownership_succeeds() {
+    let run = make_run_with_ownership();
+    let path = std::env::temp_dir().join(format!("sloc-own-pdf-{}.pdf", std::process::id()));
+    write_pdf_from_run(&run, &path).expect("pure-Rust PDF with ownership page");
+    assert!(std::fs::metadata(&path).expect("pdf written").len() > 0);
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

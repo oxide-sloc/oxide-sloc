@@ -461,6 +461,7 @@ fn render_html_inner(
     // The HTML report paginates client-side, so surface a deeper ranking (up to 200 files)
     // than the 15-row PDF page.
     let hotspot_rows = build_hotspot_rows(run, 200);
+    let author_rows = build_author_rows(run);
 
     let template = ReportTemplate {
         // Empty nonce for disk-saved reports; patch_html_nonce replaces it
@@ -685,6 +686,8 @@ fn render_html_inner(
         duplicate_group_count: run.duplicate_groups.len(),
         has_hotspots: !hotspot_rows.is_empty(),
         hotspot_rows,
+        has_ownership: !author_rows.is_empty(),
+        ownership_rows: author_rows,
     };
 
     template.render().context("failed to render HTML report")
@@ -730,6 +733,55 @@ fn build_hotspot_rows(run: &AnalysisRun, limit: usize) -> Vec<HotspotRow> {
     });
     rows.truncate(limit);
     rows
+}
+
+/// One row of the Code Ownership table: a contributor's blame-based line tallies.
+struct AuthorReportRow {
+    name: String,
+    email: String,
+    code: u64,
+    comment: u64,
+    blank: u64,
+    total: u64,
+    /// Share of total code lines owned, pre-formatted to one decimal (e.g. "42.7").
+    code_pct_str: String,
+    /// Files where this author is the single largest owner.
+    files_owned: u64,
+}
+
+/// Build the per-author ownership rows from `run.authors` (populated when an attribution scan
+/// ran on a git repo), already ordered by code lines owned. Empty when attribution did not run.
+fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
+    if run.authors.is_empty() {
+        return Vec::new();
+    }
+    let total_code: u64 = run.authors.iter().map(|a| a.counts.code_lines).sum();
+    let mut files_owned: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+    for rec in &run.per_file_records {
+        if let Some(top) = rec.ownership.as_ref().and_then(|o| o.first()) {
+            *files_owned.entry(top.author_id).or_default() += 1;
+        }
+    }
+    run.authors
+        .iter()
+        .map(|a| {
+            let pct = if total_code > 0 {
+                a.counts.code_lines as f64 / total_code as f64 * 100.0
+            } else {
+                0.0
+            };
+            AuthorReportRow {
+                name: a.canonical_name.clone(),
+                email: a.canonical_email.clone(),
+                code: a.counts.code_lines,
+                comment: a.counts.comment_lines,
+                blank: a.counts.blank_lines,
+                total: a.counts.total_lines,
+                code_pct_str: format!("{pct:.1}"),
+                files_owned: files_owned.get(&a.id).copied().unwrap_or(0),
+            }
+        })
+        .collect()
 }
 
 /// Render an HTML report and write it to `output_path`.
@@ -3183,6 +3235,23 @@ fn pdf_fit_path(path: &str, budget_mm: f32, pt: f32) -> String {
     "...".to_string()
 }
 
+/// Fit free text (e.g. an author name) to `budget_mm`, truncating from the END with an ellipsis.
+/// Unlike `pdf_fit_path` (which keeps the tail of a path), this keeps the leading characters.
+fn pdf_fit_text(text: &str, budget_mm: f32, pt: f32) -> String {
+    if helvetica_width_mm(text, pt, false) <= budget_mm {
+        return text.to_string();
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while !chars.is_empty() {
+        chars.pop();
+        let candidate: String = format!("{}...", chars.iter().collect::<String>());
+        if helvetica_width_mm(&candidate, pt, false) <= budget_mm {
+            return candidate;
+        }
+    }
+    "...".to_string()
+}
+
 /// Render the Git Hotspots table (files ranked by code lines x recent commits) starting at
 /// `section_top`. Returns the Y coordinate below the rendered content. Mirrors the COCOMO
 /// section's dark header bar and the per-file table's right-aligned numeric columns.
@@ -3340,6 +3409,179 @@ fn pdf_render_hotspots_page(
     pdf_page_footer_band(&ctx, footer_h, version);
 
     (page, layer_idx, bottom - 3.0)
+}
+
+/// Render the Code Ownership table (per-author blame tallies) starting at `section_top`.
+/// Columns: Author (left, truncated) then right-aligned Code / Comment / Blank / Total /
+/// Code % / Files. Returns the Y just below the last row.
+fn pdf_render_ownership_section(
+    ctx: &PdfCtx<'_>,
+    rows: &[AuthorReportRow],
+    section_top: f32,
+) -> f32 {
+    use crate::pdf_compat::{Color, Mm, Rgb};
+    const HDR_H: f32 = 5.5;
+    const COLHDR_H: f32 = 5.0;
+    const ROW_H: f32 = 5.2;
+    const NOTE_GAP: f32 = 4.0;
+
+    let usable_w = 2.0_f32.mul_add(-ctx.margin, ctx.w);
+
+    pdf_section_header_bar(
+        ctx,
+        usable_w,
+        section_top,
+        HDR_H,
+        "CODE OWNERSHIP (LINES PER CONTRIBUTOR, GIT BLAME)",
+    );
+
+    // Right edges for the numeric columns; Author fills the remaining left space.
+    let col_files_r = ctx.w - ctx.margin;
+    let col_pct_r = col_files_r - 22.0;
+    let col_total_r = col_pct_r - 28.0;
+    let col_blank_r = col_total_r - 26.0;
+    let col_comment_r = col_blank_r - 28.0;
+    let col_code_r = col_comment_r - 26.0;
+    let name_x = ctx.margin + 2.0;
+    let name_budget = (col_code_r - 26.0) - name_x;
+
+    let chdr_y = section_top - HDR_H - COLHDR_H;
+    pdf_fill_rect(
+        ctx.layer,
+        ctx.margin,
+        chdr_y,
+        usable_w,
+        COLHDR_H,
+        Rgb::new(0.90, 0.88, 0.84, None),
+    );
+    ctx.layer
+        .set_fill_color(Color::Rgb(Rgb::new(0.30, 0.30, 0.30, None)));
+    ctx.layer
+        .use_text("Author", 6.0, Mm(name_x), Mm(chdr_y + 1.4), ctx.font_bold);
+    pdf_text_right(ctx, "Code", 6.0, col_code_r, chdr_y + 1.4, true);
+    pdf_text_right(ctx, "Comment", 6.0, col_comment_r, chdr_y + 1.4, true);
+    pdf_text_right(ctx, "Blank", 6.0, col_blank_r, chdr_y + 1.4, true);
+    pdf_text_right(ctx, "Total", 6.0, col_total_r, chdr_y + 1.4, true);
+    pdf_text_right(ctx, "Code %", 6.0, col_pct_r, chdr_y + 1.4, true);
+    pdf_text_right(ctx, "Files", 6.0, col_files_r, chdr_y + 1.4, true);
+
+    let mut y = chdr_y;
+    for (ri, a) in rows.iter().enumerate() {
+        y -= ROW_H;
+        let bg = if ri.is_multiple_of(2) {
+            Rgb::new(0.975, 0.965, 0.95, None)
+        } else {
+            Rgb::new(1.0, 1.0, 1.0, None)
+        };
+        pdf_fill_rect(ctx.layer, ctx.margin, y, usable_w, ROW_H, bg);
+        ctx.layer
+            .set_fill_color(Color::Rgb(Rgb::new(0.12, 0.12, 0.12, None)));
+        let name = pdf_fit_text(&pdf_safe_str(&a.name), name_budget, 6.0);
+        ctx.layer
+            .use_text(name, 6.0, Mm(name_x), Mm(y + 1.4), ctx.font_reg);
+        pdf_text_right(
+            ctx,
+            &group_thousands(&a.code.to_string()),
+            6.0,
+            col_code_r,
+            y + 1.4,
+            false,
+        );
+        pdf_text_right(
+            ctx,
+            &group_thousands(&a.comment.to_string()),
+            6.0,
+            col_comment_r,
+            y + 1.4,
+            false,
+        );
+        pdf_text_right(
+            ctx,
+            &group_thousands(&a.blank.to_string()),
+            6.0,
+            col_blank_r,
+            y + 1.4,
+            false,
+        );
+        pdf_text_right(
+            ctx,
+            &group_thousands(&a.total.to_string()),
+            6.0,
+            col_total_r,
+            y + 1.4,
+            false,
+        );
+        ctx.layer
+            .set_fill_color(Color::Rgb(Rgb::new(0.7, 0.33, 0.16, None)));
+        pdf_text_right(
+            ctx,
+            &format!("{}%", a.code_pct_str),
+            6.0,
+            col_pct_r,
+            y + 1.4,
+            true,
+        );
+        ctx.layer
+            .set_fill_color(Color::Rgb(Rgb::new(0.12, 0.12, 0.12, None)));
+        pdf_text_right(
+            ctx,
+            &a.files_owned.to_string(),
+            6.0,
+            col_files_r,
+            y + 1.4,
+            false,
+        );
+    }
+
+    let note_y = y - NOTE_GAP;
+    ctx.layer
+        .set_fill_color(Color::Rgb(Rgb::new(0.45, 0.45, 0.45, None)));
+    ctx.layer.use_text(
+        "Physical lines attributed by git blame (-w -M -C, .mailmap honoured). Same-email \
+         identities are merged; cross-account merging is a later step.",
+        5.5,
+        Mm(ctx.margin),
+        Mm(note_y + 1.0),
+        ctx.font_reg,
+    );
+
+    note_y
+}
+
+/// Render a dedicated terminal "Code Ownership" page. Appended after the per-file pages so it
+/// never participates in the per-file continuation threading. Caps rows to a single page.
+#[allow(clippy::too_many_arguments)]
+fn pdf_render_ownership_page(
+    doc: &crate::pdf_compat::PdfDocumentReference,
+    font_reg: crate::pdf_compat::IndirectFontRef,
+    font_bold: crate::pdf_compat::IndirectFontRef,
+    run: &AnalysisRun,
+    rows: &[AuthorReportRow],
+    w: f32,
+    h: f32,
+    margin: f32,
+    footer_h: f32,
+    title: &str,
+    version: &str,
+) {
+    use crate::pdf_compat::Mm;
+    const HDR_H: f32 = 8.0;
+
+    let (page, layer_idx) = doc.add_page(Mm(w), Mm(h), "Code Ownership");
+    let layer = doc.get_page(page).get_layer(layer_idx);
+    let ctx = PdfCtx {
+        layer: &layer,
+        font_reg,
+        font_bold,
+        w,
+        margin,
+        row_h: 5.2,
+        tbl_hdr_h: 5.0,
+    };
+
+    pdf_page_mini_header(&ctx, h, HDR_H, title, run);
+    pdf_render_ownership_section(&ctx, rows, h - HDR_H - 4.0);
+    pdf_page_footer_band(&ctx, footer_h, version);
 }
 
 /// Measure how tall the COCOMO + Tests & Coverage page needs to be, so a terminal
@@ -3670,6 +3912,16 @@ pub fn write_pdf_from_run(run: &AnalysisRun, pdf_path: &Path) -> Result<()> {
             version,
             banner,
             per_file_start,
+        );
+    }
+
+    // Code Ownership — a dedicated terminal page when an attribution scan populated authors.
+    // Capped to a single page's worth of the top contributors (by code lines owned).
+    let author_rows = build_author_rows(run);
+    if !author_rows.is_empty() {
+        let capped: Vec<AuthorReportRow> = author_rows.into_iter().take(40).collect();
+        pdf_render_ownership_page(
+            &doc, font_reg, font_bold, run, &capped, W, H, MARGIN, FOOTER_H, &title, version,
         );
     }
 
@@ -6168,6 +6420,42 @@ struct WarningOpportunityRow {
           <span id="hs-page-info" class="pager-info"></span>
           <button id="hs-next" class="pager-btn">Next &#8594;</button>
           <button id="hs-last" class="pager-btn pager-edge" title="Last page">Last &#8677;</button>
+        </div>
+      </section>
+      {% endif %}
+
+      {% if has_ownership %}
+      <section class="panel stack" id="ownership-section">
+        <div class="toolbar"><div class="toolbar-left"><h2>Code Ownership</h2><input id="ownership-search" class="search" type="search" placeholder="Filter authors..." /></div></div>
+        <p style="font-size:13px;color:var(--muted);padding:4px 4px 10px;line-height:1.6;">Per-author line ownership from <strong>git blame</strong> &mdash; each physical line is attributed to the author who last touched it (<code>-w -M -C</code>, <code>.mailmap</code> honoured), split into <strong>code / comment / blank</strong>. Same-email identities are merged automatically; cross-account merging is a later step. <span class="hs-hint">Click a column header to sort; drag its right edge to resize.</span></p>
+        <div class="table-shell">
+          <table id="ownership-table" data-sort-table class="table-resizable">
+            <colgroup><col><col><col><col><col><col><col><col></colgroup>
+            <thead><tr>
+              <th data-sort-type="text">Author<div class="col-resize-handle"></div></th>
+              <th data-sort-type="text">Email<div class="col-resize-handle"></div></th>
+              <th data-sort-type="number" class="num-col">Code<div class="col-resize-handle"></div></th>
+              <th data-sort-type="number" class="num-col">Comment<div class="col-resize-handle"></div></th>
+              <th data-sort-type="number" class="num-col">Blank<div class="col-resize-handle"></div></th>
+              <th data-sort-type="number" class="num-col">Total<div class="col-resize-handle"></div></th>
+              <th data-sort-type="number" class="num-col">Code %<div class="col-resize-handle"></div></th>
+              <th data-sort-type="number" class="num-col">Files owned<div class="col-resize-handle"></div></th>
+            </tr></thead>
+            <tbody>
+            {% for a in ownership_rows %}
+              <tr>
+                <td>{{ a.name }}</td>
+                <td class="mono" style="color:var(--muted);">{{ a.email }}</td>
+                <td class="num-col">{{ a.code|commas }}</td>
+                <td class="num-col">{{ a.comment|commas }}</td>
+                <td class="num-col">{{ a.blank|commas }}</td>
+                <td class="num-col">{{ a.total|commas }}</td>
+                <td class="num-col" style="font-weight:700;color:var(--oxide);">{{ a.code_pct_str }}%</td>
+                <td class="num-col">{{ a.files_owned }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
         </div>
       </section>
       {% endif %}
@@ -9862,6 +10150,10 @@ struct ReportTemplate<'a> {
     has_hotspots: bool,
     /// Top-N files by `code_lines × recent commits` (empty unless activity was collected).
     hotspot_rows: Vec<HotspotRow>,
+    /// True when an attribution scan populated per-author ownership.
+    has_ownership: bool,
+    /// Per-contributor ownership rows (empty unless attribution ran on a git repo).
+    ownership_rows: Vec<AuthorReportRow>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -9953,7 +10245,37 @@ pub fn write_csv(run: &AnalysisRun, path: &Path) -> Result<()> {
     // ── Section 3: Per-file detail (if present) ─────────────────────────────
     write_csv_per_file_section(&mut out, run);
 
+    // ── Section 4: Code ownership (if an attribution scan populated it) ──────
+    write_csv_ownership_section(&mut out, run);
+
     fs::write(path, out).with_context(|| format!("failed to write CSV to {}", path.display()))
+}
+
+/// Append the code-ownership section to a CSV buffer. No-op unless an attribution scan
+/// populated `run.authors`. Rows are ordered by code lines owned (as produced by the engine).
+fn write_csv_ownership_section(out: &mut String, run: &AnalysisRun) {
+    let rows = build_author_rows(run);
+    if rows.is_empty() {
+        return;
+    }
+    out.push_str("\r\n# Code Ownership\r\n");
+    out.push_str(
+        "Author,Email,Code Lines,Comment Lines,Blank Lines,Total Lines,Code %,Files Owned\r\n",
+    );
+    for a in &rows {
+        let _ = write!(
+            out,
+            "{},{},{},{},{},{},{},{}\r\n",
+            csv_escape(&a.name),
+            csv_escape(&a.email),
+            a.code,
+            a.comment,
+            a.blank,
+            a.total,
+            a.code_pct_str,
+            a.files_owned,
+        );
+    }
 }
 
 /// Append the per-file detail section to a CSV buffer. No-op when there are no per-file records.

@@ -307,10 +307,15 @@ struct AnalyzeArgs {
     activity_window: Option<u32>,
 
     /// Attribute per-author code ownership via `git blame` (code/comment/blank per contributor,
-    /// same-email identities auto-merged, `.mailmap` honoured). Opt-in — adds one blame pass per
-    /// file, so it is slower than the activity pass. Needs a git repo; ignored on non-git paths.
+    /// same-email identities auto-merged, `.mailmap` honoured). **On by default**; adds one blame
+    /// pass per file. Needs a git repo; ignored on non-git paths.
     #[arg(long)]
     attribution: bool,
+
+    /// Disable per-author code-ownership attribution (it is on by default). Skips the `git blame`
+    /// pass entirely — use on very large repositories where the blame pass is too slow.
+    #[arg(long)]
+    no_attribution: bool,
 
     /// Write scan configuration JSON to this path (records the effective settings used
     /// for this run — identical to the scan-config_*.json produced by the web UI).
@@ -2067,7 +2072,10 @@ fn apply_analysis_cli_args(config: &mut AppConfig, args: &AnalyzeArgs) {
     if let Some(window) = args.activity_window {
         config.analysis.activity_window_days = Some(window);
     }
-    if args.attribution {
+    // Attribution is on by default (config default). `--no-attribution` wins over `--attribution`.
+    if args.no_attribution {
+        config.analysis.attribution = false;
+    } else if args.attribution {
         config.analysis.attribution = true;
     }
 }

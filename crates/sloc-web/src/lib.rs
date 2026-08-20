@@ -1047,10 +1047,11 @@ fn render_code_ownership_html(
   <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
   <div class="own-empty-title">No ownership data for the latest scan</div>
   <p class="muted" style="max-width:560px;text-align:center;">
-    Code ownership is computed from <strong>git blame</strong> and is opt-in because it adds a
-    blame pass per file. Re-run the analysis with attribution enabled to populate this page:
+    Code ownership is computed from <strong>git blame</strong> and is <strong>on by default</strong>.
+    This scan has none &mdash; the scanned path is likely not a git repository, or attribution was
+    turned off for this run. Re-scan a git repo with attribution on to populate this page:
   </p>
-  <pre class="own-code">oxide-sloc analyze {project} --attribution</pre>
+  <pre class="own-code">oxide-sloc analyze {project}</pre>
   <p class="muted" style="max-width:560px;text-align:center;">
     The scan root must be a git repository. Same-email identities are merged automatically;
     cross-account merges are a later step.
@@ -3045,7 +3046,7 @@ async fn index(
                 .as_deref()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(90),
-            attribution: query.attribution.as_deref() == Some("enabled"),
+            attribution: query.attribution.as_deref() != Some("disabled"),
         };
         serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string())
     } else {
@@ -3426,8 +3427,8 @@ struct ScanConfig {
     /// Git hotspots activity window in days (on by default; 0 = disabled).
     #[serde(default = "default_activity_window")]
     activity_window: u32,
-    /// Per-author code ownership via git blame (off by default).
-    #[serde(default)]
+    /// Per-author code ownership via git blame (on by default).
+    #[serde(default = "default_true_bool")]
     attribution: bool,
 }
 
@@ -5747,7 +5748,7 @@ fn apply_form_to_config(config: &mut sloc_config::AppConfig, form: &AnalyzeForm)
     }
     config.analysis.count_compiler_directives =
         form.count_compiler_directives.as_deref() != Some("disabled");
-    config.analysis.attribution = form.attribution.as_deref() == Some("enabled");
+    config.analysis.attribution = form.attribution.as_deref() != Some("disabled");
     apply_style_threshold(config, form);
     apply_coverage_path(config, form);
 }
@@ -20308,15 +20309,15 @@ int main() { … }   ← code
                     <div class="field-help-title">Code ownership</div>
                     <h4 style="margin:6px 0 12px;font-size:16px;">Per-author attribution (git blame)</h4>
                     <select name="attribution" id="attribution">
-                      <option value="disabled" selected>Off (default)</option>
-                      <option value="enabled">On — attribute lines per author</option>
+                      <option value="enabled" selected>On — attribute lines per author (default)</option>
+                      <option value="disabled">Off — skip the blame pass</option>
                     </select>
                   </div>
                   <div class="explainer-card prominent" style="margin:0;">
-                    <div class="advanced-rule-description"><strong>Purpose:</strong> When on, oxide-sloc runs <code>git blame</code> on every analyzed file and attributes each physical line to the author who last touched it, split into <strong>code / comment / blank</strong> per contributor. Results appear on the <a href="/code-ownership">Code Ownership</a> page.<br /><strong>Requires</strong> the scanned path to be a git repository. <strong>Off by default</strong> because it adds a blame pass per file (slower than the git-hotspots pass). Same-email identities are merged automatically and the repo <code>.mailmap</code> is honoured.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># Off = no ownership data (default)
-# On  = per-author code/comment/blank ownership
-# CLI equivalent: analyze --attribution
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> When on, oxide-sloc runs <code>git blame</code> on every analyzed file and attributes each physical line to the author who last touched it, split into <strong>code / comment / blank</strong> per contributor. Results appear on the <a href="/code-ownership">Code Ownership</a> page and in the HTML/PDF/CSV reports.<br /><strong>Requires</strong> the scanned path to be a git repository. <strong>On by default</strong>; turn it off on very large repositories where the per-file blame pass is too slow. Same-email identities are merged automatically and the repo <code>.mailmap</code> is honoured.</div>
+                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># On  = per-author code/comment/blank ownership (default)
+# Off = skip blame, no ownership data
+# CLI equivalent: analyze --no-attribution to disable
 # View results at /code-ownership</div>
                   </div>
                 </div>
@@ -33706,18 +33707,18 @@ mod form_config_tests {
         cfg
     }
 
-    // ── attribution (per-author code ownership — off by default) ──
+    // ── attribution (per-author code ownership — on by default) ──
 
     #[test]
-    fn attribution_off_by_default_and_toggle_enables() {
+    fn attribution_on_by_default_and_toggle_disables() {
         let mut form = blank_form();
-        assert!(!apply(&form).analysis.attribution, "off unless requested");
+        assert!(apply(&form).analysis.attribution, "on unless disabled");
         form.attribution = Some("enabled".to_string());
-        assert!(apply(&form).analysis.attribution, "'enabled' turns it on");
+        assert!(apply(&form).analysis.attribution, "'enabled' keeps it on");
         form.attribution = Some("disabled".to_string());
         assert!(
             !apply(&form).analysis.attribution,
-            "anything else stays off"
+            "'disabled' turns it off"
         );
     }
 
@@ -35848,7 +35849,7 @@ mod tests_private {
     fn code_ownership_empty_state_renders_guidance() {
         let html = render_code_ownership_html("nonce123", None, "myrepo");
         assert!(html.contains("No ownership data"));
-        assert!(html.contains("--attribution"));
+        assert!(html.contains("oxide-sloc analyze"));
         assert!(html.contains("myrepo"));
         assert!(html.contains("site-footer"));
         assert!(html.contains("id=\"theme-toggle\""));
