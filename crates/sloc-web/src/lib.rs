@@ -70,9 +70,10 @@ static CHART_JS: &[u8] = include_bytes!("../static/chart.umd.min.js");
 static REPORT_CHART_JS: &[u8] = include_bytes!("../static/chart.min.js");
 
 use sloc_core::{
-    AnalysisRun, CleanupPolicy, CleanupPolicyStore, FileChangeStatus, MultiScanComparison,
-    RegistryEntry, ScanRegistry, ScanSummarySnapshot, SummaryTotals, WatchedDirsStore, analyze,
-    compute_delta, compute_multi_delta, read_json,
+    AnalysisRun, AuthorMergeGroup, CleanupPolicy, CleanupPolicyStore, FileChangeStatus,
+    IdentityMap, MultiScanComparison, RegistryEntry, ScanRegistry, ScanSummarySnapshot,
+    SummaryTotals, WatchedDirsStore, analyze, apply_identity_map, compute_delta,
+    compute_multi_delta, read_json,
 };
 use sloc_report::{
     ReportDeltaContext, render_html, render_html_with_delta, render_sub_report_html,
@@ -719,7 +720,7 @@ body.dark-theme{--bg:#1b1511;--surface:#261c17;--surface-2:#2d221d;--line:#52423
 .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
 .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
 .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
-.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
 @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
 .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
 .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
@@ -779,7 +780,28 @@ h1{margin:0 0 4px;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
 .own-empty{display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;color:var(--muted-2);padding:40px 20px;}
 .own-empty svg{opacity:0.4;} .own-empty-title{font-size:16px;font-weight:800;color:var(--text);}
 .own-code{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;color:var(--oxide-2);}
-.site-footer{text-align:center;padding:12px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;} .site-footer a{color:var(--oxide-2);text-decoration:none;} .site-footer a:hover{text-decoration:underline;}"#
+.site-footer{text-align:center;padding:12px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;} .site-footer a{color:var(--oxide-2);text-decoration:none;} .site-footer a:hover{text-decoration:underline;}
+.merge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px;margin-bottom:14px;}
+.merge-opt{display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);cursor:pointer;transition:border-color .15s ease,background .15s ease;}
+.merge-opt:hover{border-color:var(--line-strong);}
+.merge-opt input{accent-color:var(--oxide);width:15px;height:15px;flex:0 0 auto;cursor:pointer;}
+.merge-opt-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}
+.merge-opt-name{font-size:13px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.merge-opt-email{font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;}
+.merge-controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;}
+.merge-name-input{flex:1 1 240px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);color:var(--text);font-size:13px;outline:none;}
+.merge-name-input:focus{border-color:var(--oxide);}
+.merge-btn{padding:9px 18px;border:none;border-radius:10px;background:var(--oxide);color:#fff;font-size:13px;font-weight:800;cursor:pointer;transition:background .15s ease,transform .15s ease;}
+.merge-btn:hover{background:var(--oxide-2);transform:translateY(-1px);}
+.merge-mailmap-link{font-size:12px;font-weight:700;color:var(--oxide-2);text-decoration:none;}
+.merge-mailmap-link:hover{text-decoration:underline;}
+.merge-existing{margin-top:16px;border-top:1px solid var(--line);padding-top:12px;}
+.merge-existing-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px;}
+.merge-chip{display:flex;align-items:center;gap:12px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);margin-bottom:6px;}
+.merge-chip-text{font-size:12px;color:var(--muted);flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.merge-chip-text strong{color:var(--text);font-size:13px;}
+.merge-unmerge{padding:5px 12px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;}
+.merge-unmerge:hover{background:var(--surface-2);border-color:var(--oxide);color:var(--oxide-2);}"#
 }
 
 /// Static nav bar for the Code Ownership page (Git Browser dropdown active, since ownership
@@ -831,8 +853,8 @@ fn ownership_page_scripts() -> &'static str {
 })();
 (function(){
   var container=document.getElementById('code-particles');if(!container)return;
-  var snippets=['blame','git log','code_lines','author','.mailmap','ownership','fn analyze()','commits','// comment','let owner','Vec<Author>','physical','blank lines','contributor'];
-  for(var i=0;i<32;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snippets[idx%snippets.length];var left=Math.random()*94+2,top=Math.random()*88+6,dur=(Math.random()*10+9).toFixed(1),delay=(Math.random()*18).toFixed(1),rot=(Math.random()*26-13).toFixed(1),op=(Math.random()*0.09+0.06).toFixed(3);el.style.cssText='left:'+left.toFixed(1)+'%;top:'+top.toFixed(1)+'%;--rot:'+rot+'deg;--op:'+op+';animation-duration:'+dur+'s;animation-delay:-'+delay+'s;';container.appendChild(el);})(i);}
+  var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+  for(var i=0;i<38;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snippets[idx%snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));var left=Math.random()*94+2,top=Math.random()*88+6,dur=(Math.random()*10+9).toFixed(1),delay=(Math.random()*18).toFixed(1),rot=(Math.random()*26-13).toFixed(1),op=(Math.random() * 0.108 + 0.072).toFixed(3);el.style.cssText='left:'+left.toFixed(1)+'%;top:'+top.toFixed(1)+'%;--rot:'+rot+'deg;--op:'+op+';animation-duration:'+dur+'s;animation-delay:-'+delay+'s;';container.appendChild(el);})(i);}
 })();
 (function(){
   var S=[{n:'Classic',a:'#b85d33',b:'#7a371b'},{n:'Navy',a:'#283790',b:'#1e1e24'},{n:'Ember',a:'#ce5d3d',b:'#1e1e24'},{n:'Ocean',a:'#1f439b',b:'#1e1e24'},{n:'Royal',a:'#003184',b:'#1e1e24'}];
@@ -876,11 +898,19 @@ fn ownership_page_scripts() -> &'static str {
 }
 
 /// GET `/code-ownership` — per-author blame-based code ownership for the latest scan.
+/// Path to the operator-defined author identity-merge map, alongside the scan registry.
+fn identities_path(state: &AppState) -> PathBuf {
+    state.registry_path.parent().map_or_else(
+        || PathBuf::from("identities.json"),
+        |p| p.join("identities.json"),
+    )
+}
+
 async fn code_ownership_handler(
     State(state): State<AppState>,
     axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
 ) -> Response {
-    let latest_run: Option<AnalysisRun> = {
+    let mut latest_run: Option<AnalysisRun> = {
         let json_path = {
             let reg = state.registry.lock().await;
             reg.entries.first().and_then(|e| e.json_path.clone())
@@ -896,6 +926,13 @@ async fn code_ownership_handler(
         }
     };
 
+    // Apply any operator-defined identity merges on top of the scan's authors (post-hoc, no
+    // re-scan): contributors whose emails were combined fold into one.
+    let map = IdentityMap::load(&identities_path(&state));
+    if let Some(run) = latest_run.as_mut() {
+        apply_identity_map(run, &map);
+    }
+
     let project_label = latest_run
         .as_ref()
         .and_then(|r| r.input_roots.first())
@@ -907,8 +944,104 @@ async fn code_ownership_handler(
         })
         .unwrap_or_else(|| "workspace".to_string());
 
-    let html = render_code_ownership_html(&csp_nonce, latest_run.as_ref(), &project_label);
+    let html =
+        render_code_ownership_html(&csp_nonce, latest_run.as_ref(), &project_label, &map.groups);
     Html(html).into_response()
+}
+
+/// Parse an `application/x-www-form-urlencoded` body into ordered key/value pairs, preserving
+/// repeated keys (which `serde_urlencoded`/`axum::Form` cannot deserialize into a `Vec`). Used
+/// by the merge endpoint, whose checkbox group submits `email=` several times.
+fn parse_form_pairs(body: &str) -> Vec<(String, String)> {
+    body.split('&')
+        .filter(|s| !s.is_empty())
+        .map(|pair| {
+            let mut it = pair.splitn(2, '=');
+            let k = urldecode(it.next().unwrap_or(""));
+            let v = urldecode(it.next().unwrap_or(""));
+            (k, v)
+        })
+        .collect()
+}
+
+/// Minimal `application/x-www-form-urlencoded` value decoder (`+` → space, `%XX` → byte).
+fn urldecode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 3 <= b.len() => {
+                match u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""), 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// POST `/api/ownership/merge` — combine the selected contributor emails into one identity.
+/// The checkbox group submits `email=` repeatedly, so the body is parsed manually.
+async fn ownership_merge_handler(State(state): State<AppState>, body: String) -> Response {
+    let pairs = parse_form_pairs(&body);
+    let emails: Vec<String> = pairs
+        .iter()
+        .filter(|(k, _)| k == "email")
+        .map(|(_, v)| v.clone())
+        .collect();
+    let name = pairs
+        .iter()
+        .find(|(k, _)| k == "canonical_name")
+        .map(|(_, v)| v.as_str());
+    let path = identities_path(&state);
+    let mut map = IdentityMap::load(&path);
+    map.merge(&emails, name);
+    let _ = map.save(&path);
+    axum::response::Redirect::to("/code-ownership").into_response()
+}
+
+/// POST `/api/ownership/unmerge` — split a previously merged identity back apart.
+async fn ownership_unmerge_handler(State(state): State<AppState>, body: String) -> Response {
+    let pairs = parse_form_pairs(&body);
+    if let Some((_, email)) = pairs.iter().find(|(k, _)| k == "canonical_email") {
+        let path = identities_path(&state);
+        let mut map = IdentityMap::load(&path);
+        map.unmerge(email);
+        let _ = map.save(&path);
+    }
+    axum::response::Redirect::to("/code-ownership").into_response()
+}
+
+/// GET `/code-ownership/mailmap` — download the current merges as a git `.mailmap` file.
+async fn ownership_mailmap_handler(State(state): State<AppState>) -> Response {
+    let map = IdentityMap::load(&identities_path(&state));
+    (
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\".mailmap\"",
+            ),
+        ],
+        map.to_mailmap(),
+    )
+        .into_response()
 }
 
 /// Build the full Code Ownership HTML page. Kept self-contained: brace-heavy CSS and JS live in
@@ -920,6 +1053,7 @@ fn render_code_ownership_html(
     nonce: &str,
     run: Option<&AnalysisRun>,
     project_label: &str,
+    merge_groups: &[AuthorMergeGroup],
 ) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let esc = |s: &str| {
@@ -1112,6 +1246,60 @@ fn render_code_ownership_html(
             );
         }
 
+        // ── Combine-contributors panel: checkboxes for each author + active merges list ──
+        let mut merge_checks = String::new();
+        for r in &rows {
+            use std::fmt::Write as _;
+            let _ = write!(
+                merge_checks,
+                r#"<label class="merge-opt"><input type="checkbox" name="email" value="{email}"><span class="merge-opt-dot" style="background:{color};"></span><span class="merge-opt-name">{name}</span><span class="merge-opt-email">{email}</span></label>"#,
+                email = esc(&r.email),
+                color = r.color,
+                name = esc(&r.name),
+            );
+        }
+        let mut merge_existing = String::new();
+        if !merge_groups.is_empty() {
+            use std::fmt::Write as _;
+            merge_existing.push_str(r#"<div class="merge-existing"><div class="merge-existing-title">Active merges</div>"#);
+            for g in merge_groups {
+                let members = g
+                    .members
+                    .iter()
+                    .map(|m| esc(m))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = write!(
+                    merge_existing,
+                    r#"<div class="merge-chip"><span class="merge-chip-text"><strong>{name}</strong> &nbsp;{count} emails &middot; {members}</span><form method="POST" action="/api/ownership/unmerge" style="display:inline;margin:0;"><input type="hidden" name="canonical_email" value="{cemail}"><button type="submit" class="merge-unmerge">Unmerge</button></form></div>"#,
+                    name = esc(&g.canonical_name),
+                    count = g.members.len(),
+                    members = members,
+                    cemail = esc(&g.canonical_email),
+                );
+            }
+            merge_existing.push_str("</div>");
+        }
+        let merge_panel = format!(
+            r#"<div class="section-header">Combine contributors</div>
+<div class="panel">
+  <p class="muted" style="margin-bottom:14px;">Same person committing under different names or emails? Select two or more contributors and merge them into a single identity. This is applied on top of the scan &mdash; <strong>no re-scan needed</strong> &mdash; and can be exported as a git <code>.mailmap</code> so the merge carries into git itself and future scans.</p>
+  <form method="POST" action="/api/ownership/merge">
+    <div class="merge-grid">{merge_checks}</div>
+    <div class="merge-controls">
+      <input type="text" name="canonical_name" class="merge-name-input" placeholder="Canonical display name (optional)">
+      <button type="submit" class="merge-btn">Merge selected</button>
+      <a href="/code-ownership/mailmap" class="merge-mailmap-link">&#8681; Download .mailmap</a>
+    </div>
+  </form>
+  {merge_existing}
+</div>
+
+"#,
+            merge_checks = merge_checks,
+            merge_existing = merge_existing,
+        );
+
         format!(
             r#"<div class="summary-strip">
   <div class="stat-chip"><div class="stat-chip-val">{contributors}</div><div class="stat-chip-label">Contributors</div></div>
@@ -1149,7 +1337,8 @@ fn render_code_ownership_html(
   </table>
 </div>
 
-<p class="muted" style="margin-top:14px;">Ownership reflects the author who last touched each physical line (<code>git blame -w -M -C</code>, <code>.mailmap</code> honoured). Counts are physical lines and sum to the file's line total; they can differ slightly from the policy-adjusted SLOC totals elsewhere. Same-email identities are auto-merged &mdash; cross-account merging arrives in a later release.</p>
+{merge_panel}
+<p class="muted" style="margin-top:14px;">Ownership reflects the author who last touched each physical line (<code>git blame -w -M -C</code>, <code>.mailmap</code> honoured). Counts are physical lines and sum to the file's line total; they can differ slightly from the policy-adjusted SLOC totals elsewhere. Same-email identities are auto-merged; use <strong>Combine contributors</strong> above to merge across different emails.</p>
 
 <script id="own-data" type="application/json" nonce="{nonce}">{data_json}</script>"#,
             contributors = rows.len(),
@@ -1160,6 +1349,7 @@ fn render_code_ownership_html(
             bars = bars,
             author_table = author_table,
             lang_table = lang_table,
+            merge_panel = merge_panel,
             nonce = nonce,
             data_json = data_json,
         )
@@ -1267,6 +1457,9 @@ fn build_router(state: AppState) -> Router {
         .route("/trend-reports", get(trend_report_handler))
         .route("/test-metrics", get(test_metrics_handler))
         .route("/code-ownership", get(code_ownership_handler))
+        .route("/code-ownership/mailmap", get(ownership_mailmap_handler))
+        .route("/api/ownership/merge", post(ownership_merge_handler))
+        .route("/api/ownership/unmerge", post(ownership_unmerge_handler))
         .route("/api/runs/{wait_id}/status", get(async_run_status_handler))
         .route("/api/runs/{wait_id}/cancel", post(cancel_run_handler))
         .route("/api/runs/{run_id}/pdf-status", get(pdf_status_handler))
@@ -11061,7 +11254,7 @@ fn multi_compare_page(
     .background-watermarks{{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}}
     .background-watermarks img{{position:absolute;opacity:0.15;filter:blur(0.3px);user-select:none;max-width:none;}}
     .code-particles{{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}}
-    .code-particle{{position:absolute;font-family:ui-monospace,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}}
+    .code-particle{{position:absolute;font-family:ui-monospace,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}}
     @keyframes floatCode{{0%{{opacity:0;transform:translateY(0) rotate(var(--rot));}}10%{{opacity:var(--op);}}85%{{opacity:var(--op);}}100%{{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}}}
     .top-nav{{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}}
     .top-nav-inner{{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;flex-wrap:nowrap;}}
@@ -11505,15 +11698,15 @@ fn multi_compare_page(
     // ── Code particles ───────────────────────────────────────────────────────
     var container=document.getElementById('code-particles');
     if(container){{
-      var snips=['multi-scan','timeline','code_lines','fn delta()','+230 loc','-15 files','v1.0','git main','scan 3','commits','trend','coverage','tests: 145','sloc_core','analyze()'];
-      for(var i=0;i<28;i++){{
+      var snips = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+      for(var i=0;i<34;i++){{
         (function(idx){{
           var el=document.createElement('span');el.className='code-particle';
-          el.textContent=snips[idx%snips.length];
+          el.textContent=snips[idx%snips.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
           el.style.left=(Math.random()*94+2).toFixed(1)+'%';
           el.style.top=(Math.random()*88+6).toFixed(1)+'%';
           el.style.setProperty('--rot',(Math.random()*26-13).toFixed(1)+'deg');
-          el.style.setProperty('--op',(Math.random()*0.08+0.05).toFixed(3));
+          el.style.setProperty('--op',(Math.random() * 0.096 + 0.06).toFixed(3));
           el.style.animationDuration=(Math.random()*10+9).toFixed(1)+'s';
           el.style.animationDelay='-'+(Math.random()*18).toFixed(1)+'s';
           container.appendChild(el);
@@ -12620,7 +12813,7 @@ async fn trend_report_handler(
     *{{box-sizing:border-box;}} html,body{{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}} body{{display:flex;flex-direction:column;}}
     .background-watermarks{{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}}
     .background-watermarks img{{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}}
-    .code-particles{{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}}.code-particle{{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}}
+    .code-particles{{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}}.code-particle{{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}}
     @keyframes floatCode{{0%{{opacity:0;transform:translateY(0) rotate(var(--rot));}}10%{{opacity:var(--op);}}85%{{opacity:var(--op);}}100%{{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}}}
     .top-nav{{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}}
     .top-nav-inner{{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}}
@@ -12962,15 +13155,15 @@ async fn trend_report_handler(
       (function() {{
         var container = document.getElementById('code-particles');
         if (!container) return;
-        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main()','.rs .go .py','sloc_core','render_html','2,163 code'];
-        for (var i = 0; i < 38; i++) {{
+        var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+        for (var i = 0; i < 44; i++) {{
           (function(idx) {{
             var el = document.createElement('span');
             el.className = 'code-particle';
-            el.textContent = snippets[idx % snippets.length];
+            el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
             var left = Math.random() * 94 + 2, top = Math.random() * 88 + 6;
             var dur = (Math.random() * 10 + 9).toFixed(1), delay = (Math.random() * 18).toFixed(1);
-            var rot = (Math.random() * 26 - 13).toFixed(1), op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            var rot = (Math.random() * 26 - 13).toFixed(1), op = (Math.random() * 0.108 + 0.072).toFixed(3);
             el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
             container.appendChild(el);
           }})(i);
@@ -14162,25 +14355,19 @@ async fn trend_report_handler(
     (function spawnCodeParticles() {{
       var container = document.getElementById('code-particles');
       if (!container) return;
-      var snippets = [
-        '1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312',
-        '// comment','pub fn run','use std::fs','Result<()>','let mut n = 0',
-        'git main','#[derive]','impl Scan','3,841 physical','files: 60',
-        '450 comments','cargo build','Ok(run)','Vec<String>','match lang',
-        'fn main() {{','.rs .go .py','sloc_core','render_html','2,163 code'
-      ];
-      var count = 38;
+      var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+      var count = 44;
       for (var i = 0; i < count; i++) {{
         (function(idx) {{
           var el = document.createElement('span');
           el.className = 'code-particle';
-          el.textContent = snippets[idx % snippets.length];
+          el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
           var left = Math.random() * 94 + 2;
           var top = Math.random() * 88 + 6;
           var dur = (Math.random() * 10 + 9).toFixed(1);
           var delay = (Math.random() * 18).toFixed(1);
           var rot = (Math.random() * 26 - 13).toFixed(1);
-          var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+          var op = (Math.random() * 0.108 + 0.072).toFixed(3);
           el.style.cssText = 'left:'+left.toFixed(1)+'%;top:'+top.toFixed(1)+'%;--rot:'+rot+'deg;--op:'+op+';animation-duration:'+dur+'s;animation-delay:-'+delay+'s;';
           container.appendChild(el);
         }})(i);
@@ -14774,7 +14961,7 @@ async fn test_metrics_handler(
     *{{box-sizing:border-box;}} html,body{{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}} body{{display:flex;flex-direction:column;}}
     .background-watermarks{{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}}
     .background-watermarks img{{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}}
-    .code-particles{{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}}.code-particle{{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}}
+    .code-particles{{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}}.code-particle{{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}}
     @keyframes floatCode{{0%{{opacity:0;transform:translateY(0) rotate(var(--rot));}}10%{{opacity:var(--op);}}85%{{opacity:var(--op);}}100%{{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}}}
     .top-nav{{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}}
     .top-nav-inner{{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}}
@@ -15244,15 +15431,15 @@ async fn test_metrics_handler(
     (function() {{
       var container = document.getElementById('code-particles');
       if (!container) return;
-      var snippets = ['#[test]','def test_','@Test','it(\'should','func Test','describe(','TEST(','test_that(','expect(','assert_eq!','@Fact','it \"passes\"','test {{','Describe'];
-      for (var i = 0; i < 36; i++) {{
+      var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+      for (var i = 0; i < 42; i++) {{
         (function(idx) {{
           var el = document.createElement('span');
           el.className = 'code-particle';
-          el.textContent = snippets[idx % snippets.length];
+          el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
           var left = Math.random() * 94 + 2, top = Math.random() * 88 + 6;
           var dur = (Math.random() * 10 + 9).toFixed(1), delay = (Math.random() * 18).toFixed(1);
-          var rot = (Math.random() * 26 - 13).toFixed(1), op = (Math.random() * 0.09 + 0.06).toFixed(3);
+          var rot = (Math.random() * 26 - 13).toFixed(1), op = (Math.random() * 0.108 + 0.072).toFixed(3);
           el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
           container.appendChild(el);
         }})(i);
@@ -19477,7 +19664,7 @@ struct SubmoduleRow {
     .site-footer a{color:var(--muted);}
     @media (max-width: 1280px) { .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 980px) { .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .side-stack { width: auto; max-width: none; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-top-grid, .preset-inline-row { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } .path-row-grid { grid-template-columns: 1fr; } .ws-left { flex-wrap: wrap; } .scan-pills-row { flex-wrap: wrap; } }
-    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .nav-dropdown{position:relative;display:inline-flex;}.nav-dropdown-btn{cursor:pointer;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;border-radius:999px;padding:0 14px;min-height:38px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;text-decoration:none;}.nav-dropdown-btn:hover,.nav-dropdown:focus-within .nav-dropdown-btn{background:rgba(255,255,255,0.18);}.nav-dropdown-menu{opacity:0;visibility:hidden;position:absolute;top:calc(100% + 8px);right:0;background:linear-gradient(180deg,var(--nav),var(--nav-2));border:1px solid rgba(255,255,255,0.15);border-radius:12px;min-width:165px;overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,0.28);z-index:100;transition:opacity 0.13s ease,visibility 0s ease 0.13s;}.nav-dropdown:hover .nav-dropdown-menu,.nav-dropdown:focus-within .nav-dropdown-menu{opacity:1;visibility:visible;transition:opacity 0.13s ease,visibility 0s ease 0s;}.nav-dropdown-menu a{display:flex;align-items:center;gap:9px;padding:11px 16px;color:rgba(255,255,255,0.92);text-decoration:none;font-size:12px;font-weight:700;border-bottom:1px solid rgba(255,255,255,0.10);}.nav-dropdown-menu a:last-child{border-bottom:none;}.nav-dropdown-menu a:hover{background:rgba(255,255,255,0.14);color:#fff;}.nav-dropdown-menu a svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;flex:0 0 auto;}
     .submodule-preview-strip { display:flex; align-items:center; gap:14px; padding:12px 16px; border:1px solid rgba(37,99,235,0.2); border-radius:12px; background:linear-gradient(180deg,rgba(37,99,235,0.05),transparent),var(--surface-2); flex-wrap:wrap; }
@@ -22670,18 +22857,18 @@ int main() { … }   ← code
       (function spawnCodeParticles() {
         var container = document.getElementById('code-particles');
         if (!container) return;
-        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
-        for (var i = 0; i < 38; i++) {
+        var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+        for (var i = 0; i < 44; i++) {
           (function(idx) {
             var el = document.createElement('span');
             el.className = 'code-particle';
-            el.textContent = snippets[idx % snippets.length];
+            el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
             var left = Math.random() * 94 + 2;
             var top = Math.random() * 88 + 6;
             var dur = (Math.random() * 10 + 9).toFixed(1);
             var delay = (Math.random() * 18).toFixed(1);
             var rot = (Math.random() * 26 - 13).toFixed(1);
-            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            var op = (Math.random() * 0.108 + 0.072).toFixed(3);
             el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
             container.appendChild(el);
           })(i);
@@ -22876,7 +23063,7 @@ struct IndexTemplate {
     .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
     .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
     .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
-    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
     .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
@@ -23387,26 +23574,20 @@ struct IndexTemplate {
       (function spawnCodeParticles() {
         var container = document.getElementById('code-particles');
         if (!container) return;
-        var snippets = [
-          '1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312',
-          '// comment','pub fn run','use std::fs','Result<()>','let mut n = 0',
-          'git main','#[derive]','impl Scan','3,841 physical','files: 60',
-          '450 comments','cargo build','Ok(run)','Vec<String>','match lang',
-          'fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'
-        ];
-        var count = 38;
+        var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+        var count = 44;
         for (var i = 0; i < count; i++) {
           (function(idx) {
             var el = document.createElement('span');
             el.className = 'code-particle';
-            var text = snippets[idx % snippets.length];
+            var text = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
             el.textContent = text;
             var left = Math.random() * 94 + 2;
             var top = Math.random() * 88 + 6;
             var dur = (Math.random() * 10 + 9).toFixed(1);
             var delay = (Math.random() * 18).toFixed(1);
             var rot = (Math.random() * 26 - 13).toFixed(1);
-            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            var op = (Math.random() * 0.108 + 0.072).toFixed(3);
             el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';
               + '--rot:' + rot + 'deg;--op:' + op + ';'
               + 'animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
@@ -23710,7 +23891,7 @@ struct SplashTemplate {
     .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
     .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
     .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
-    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     /* Recent list (card 3 — full-width section below header) */
     .section-divider{height:1px;background:var(--line);margin:16px 0 14px;}
@@ -23934,9 +24115,9 @@ struct SplashTemplate {
       (function spawnCodeParticles() {
         var container = document.getElementById('code-particles');
         if (!container) return;
-        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
-        var count = 38;
-        for (var i = 0; i < count; i++) { (function(idx) { var el = document.createElement('span'); el.className = 'code-particle'; el.textContent = snippets[idx % snippets.length]; var left = Math.random() * 94 + 2; var top = Math.random() * 88 + 6; var dur = (Math.random() * 10 + 9).toFixed(1); var delay = (Math.random() * 18).toFixed(1); var rot = (Math.random() * 26 - 13).toFixed(1); var op = (Math.random() * 0.09 + 0.06).toFixed(3); el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s'; container.appendChild(el); })(i); }
+        var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+        var count = 44;
+        for (var i = 0; i < count; i++) { (function(idx) { var el = document.createElement('span'); el.className = 'code-particle'; el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1)); var left = Math.random() * 94 + 2; var top = Math.random() * 88 + 6; var dur = (Math.random() * 10 + 9).toFixed(1); var delay = (Math.random() * 18).toFixed(1); var rot = (Math.random() * 26 - 13).toFixed(1); var op = (Math.random() * 0.108 + 0.072).toFixed(3); el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s'; container.appendChild(el); })(i); }
       })();
       // Recent scans data injected from server
       var recentScans = {{ recent_scans_json|safe }};
@@ -24365,7 +24546,7 @@ struct ScanSetupTemplate {
       .hero-top { flex-direction: column; }
       .run-mgmt-strip { flex-direction: column; }
     }
-    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .nav-dropdown{position:relative;display:inline-flex;}.nav-dropdown-btn{cursor:pointer;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;border-radius:999px;padding:0 14px;min-height:38px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;text-decoration:none;}.nav-dropdown-btn:hover,.nav-dropdown:focus-within .nav-dropdown-btn{background:rgba(255,255,255,0.18);}.nav-dropdown-menu{opacity:0;visibility:hidden;position:absolute;top:calc(100% + 8px);right:0;background:linear-gradient(180deg,var(--nav),var(--nav-2));border:1px solid rgba(255,255,255,0.15);border-radius:12px;min-width:165px;overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,0.28);z-index:100;transition:opacity 0.13s ease,visibility 0s ease 0.13s;}.nav-dropdown:hover .nav-dropdown-menu,.nav-dropdown:focus-within .nav-dropdown-menu{opacity:1;visibility:visible;transition:opacity 0.13s ease,visibility 0s ease 0s;}.nav-dropdown-menu a{display:flex;align-items:center;gap:9px;padding:11px 16px;color:rgba(255,255,255,0.92);text-decoration:none;font-size:12px;font-weight:700;border-bottom:1px solid rgba(255,255,255,0.10);}.nav-dropdown-menu a:last-child{border-bottom:none;}.nav-dropdown-menu a:hover{background:rgba(255,255,255,0.14);color:#fff;}.nav-dropdown-menu a svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;flex:0 0 auto;}
     /* ── Result-page chart controls ─────────────────────────────────────────── */
@@ -26283,18 +26464,18 @@ struct ScanSetupTemplate {
       (function spawnCodeParticles() {
         var container = document.getElementById('code-particles');
         if (!container) return;
-        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
-        for (var i = 0; i < 38; i++) {
+        var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+        for (var i = 0; i < 44; i++) {
           (function(idx) {
             var el = document.createElement('span');
             el.className = 'code-particle';
-            el.textContent = snippets[idx % snippets.length];
+            el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
             var left = Math.random() * 94 + 2;
             var top = Math.random() * 88 + 6;
             var dur = (Math.random() * 10 + 9).toFixed(1);
             var delay = (Math.random() * 18).toFixed(1);
             var rot = (Math.random() * 26 - 13).toFixed(1);
-            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            var op = (Math.random() * 0.108 + 0.072).toFixed(3);
             el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
             container.appendChild(el);
           })(i);
@@ -26728,7 +26909,7 @@ struct ResultTemplate {
     .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
     @keyframes wmFade{0%,100%{opacity:.07;}50%{opacity:.13;}}
     .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
-    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .site-footer{text-align:center;padding:12px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
     .site-footer a{color:var(--muted);}
@@ -26931,12 +27112,12 @@ struct ResultTemplate {
     })();
     (function spawnCodeParticles(){
       var c=document.getElementById('code-particles');if(!c)return;
-      var sn=['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n=0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main()','sloc_core','render_html','2,163 code'];
-      for(var i=0;i<32;i++){(function(idx){
-        var el=document.createElement('span');el.className='code-particle';el.textContent=sn[idx%sn.length];
+      var sn = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+      for(var i=0;i<38;i++){(function(idx){
+        var el=document.createElement('span');el.className='code-particle';el.textContent=sn[idx%sn.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
         var l=(Math.random()*94+2).toFixed(1),t=(Math.random()*88+6).toFixed(1);
         var dur=(Math.random()*10+9).toFixed(1),delay=(Math.random()*18).toFixed(1);
-        var rot=(Math.random()*26-13).toFixed(1),op=(Math.random()*0.09+0.06).toFixed(3);
+        var rot=(Math.random()*26-13).toFixed(1),op=(Math.random() * 0.108 + 0.072).toFixed(3);
         el.style.left=l+'%';el.style.top=t+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);
         el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
         c.appendChild(el);
@@ -27085,7 +27266,7 @@ struct ScanWaitTemplate {
     .site-footer a{color:var(--muted);text-decoration:none;}.site-footer a:hover{color:var(--oxide);}
     .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
-    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .nav-dropdown{position:relative;display:inline-flex;}.nav-dropdown-btn{cursor:pointer;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;border-radius:999px;padding:0 14px;min-height:38px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;text-decoration:none;}.nav-dropdown-btn:hover,.nav-dropdown:focus-within .nav-dropdown-btn{background:rgba(255,255,255,0.18);}.nav-dropdown-menu{opacity:0;visibility:hidden;position:absolute;top:calc(100% + 8px);right:0;background:linear-gradient(180deg,var(--nav),var(--nav-2));border:1px solid rgba(255,255,255,0.15);border-radius:12px;min-width:165px;overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,0.28);z-index:100;transition:opacity 0.13s ease,visibility 0s ease 0.13s;}.nav-dropdown:hover .nav-dropdown-menu,.nav-dropdown:focus-within .nav-dropdown-menu{opacity:1;visibility:visible;transition:opacity 0.13s ease,visibility 0s ease 0s;}.nav-dropdown-menu a{display:flex;align-items:center;gap:9px;padding:11px 16px;color:rgba(255,255,255,0.92);text-decoration:none;font-size:12px;font-weight:700;border-bottom:1px solid rgba(255,255,255,0.10);}.nav-dropdown-menu a:last-child{border-bottom:none;}.nav-dropdown-menu a:hover{background:rgba(255,255,255,0.14);color:#fff;}.nav-dropdown-menu a svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;flex:0 0 auto;}
   </style>
@@ -27317,18 +27498,18 @@ struct ScanWaitTemplate {
     (function spawnCodeParticles() {
       var container = document.getElementById('code-particles');
       if (!container) return;
-      var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
-      for (var i = 0; i < 38; i++) {
+      var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+      for (var i = 0; i < 44; i++) {
         (function(idx) {
           var el = document.createElement('span');
           el.className = 'code-particle';
-          el.textContent = snippets[idx % snippets.length];
+          el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
           var left = Math.random() * 94 + 2;
           var top = Math.random() * 88 + 6;
           var dur = (Math.random() * 10 + 9).toFixed(1);
           var delay = (Math.random() * 18).toFixed(1);
           var rot = (Math.random() * 26 - 13).toFixed(1);
-          var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+          var op = (Math.random() * 0.108 + 0.072).toFixed(3);
           el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
           container.appendChild(el);
         })(i);
@@ -27494,7 +27675,7 @@ struct ErrorTemplate {
     .btn-secondary:hover{background:var(--line);}
     .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
-    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .nav-dropdown{position:relative;display:inline-flex;}.nav-dropdown-btn{cursor:pointer;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;border-radius:999px;padding:0 14px;min-height:38px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;text-decoration:none;}.nav-dropdown-btn:hover,.nav-dropdown:focus-within .nav-dropdown-btn{background:rgba(255,255,255,0.18);}.nav-dropdown-menu{opacity:0;visibility:hidden;position:absolute;top:calc(100% + 8px);right:0;background:linear-gradient(180deg,var(--nav),var(--nav-2));border:1px solid rgba(255,255,255,0.15);border-radius:12px;min-width:165px;overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,0.28);z-index:100;transition:opacity 0.13s ease,visibility 0s ease 0.13s;}.nav-dropdown:hover .nav-dropdown-menu,.nav-dropdown:focus-within .nav-dropdown-menu{opacity:1;visibility:visible;transition:opacity 0.13s ease,visibility 0s ease 0s;}.nav-dropdown-menu a{display:flex;align-items:center;gap:9px;padding:11px 16px;color:rgba(255,255,255,0.92);text-decoration:none;font-size:12px;font-weight:700;border-bottom:1px solid rgba(255,255,255,0.10);}.nav-dropdown-menu a:last-child{border-bottom:none;}.nav-dropdown-menu a:hover{background:rgba(255,255,255,0.14);color:#fff;}.nav-dropdown-menu a svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;flex:0 0 auto;}
     .site-footer{margin-top:auto;padding:16px 24px;text-align:center;font-size:11px;color:var(--muted);border-top:1px solid var(--line);position:relative;z-index:1;}
@@ -27661,8 +27842,8 @@ struct ErrorTemplate {
   })();</script>
   <script nonce="{{ csp_nonce }}">(function spawnCodeParticles(){
     var c=document.getElementById('code-particles');if(!c)return;
-    var snips=['report moved','fn analyze()','locate file','.html report','restore path','folder path','result.json','run_id','pub fn run','use std::fs','Result<()>','git main','files: 60','cargo build','Ok(run)','match lang','fn main() {','.rs .go .py','sloc_core','render_html'];
-    for(var i=0;i<38;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snips[idx%snips.length];var l=(Math.random()*94+2).toFixed(1),t=(Math.random()*88+6).toFixed(1),dur=(Math.random()*10+9).toFixed(1),delay=(Math.random()*18).toFixed(1),rot=(Math.random()*26-13).toFixed(1),op=(Math.random()*0.09+0.06).toFixed(3);el.style.left=l+'%';el.style.top=t+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';c.appendChild(el);})(i);}
+    var snips = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+    for(var i=0;i<44;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snips[idx%snips.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));var l=(Math.random()*94+2).toFixed(1),t=(Math.random()*88+6).toFixed(1),dur=(Math.random()*10+9).toFixed(1),delay=(Math.random()*18).toFixed(1),rot=(Math.random()*26-13).toFixed(1),op=(Math.random() * 0.108 + 0.072).toFixed(3);el.style.left=l+'%';el.style.top=t+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';c.appendChild(el);})(i);}
   })();
   (function randomizeWatermarks(){var wms=Array.prototype.slice.call(document.querySelectorAll('.background-watermarks img'));if(!wms.length)return;var placed=[];function tooClose(t,l){for(var i=0;i<placed.length;i++){if(Math.abs(placed[i][0]-t)<16&&Math.abs(placed[i][1]-l)<12)return true;}return false;}function pick(lb){for(var a=0;a<50;a++){var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;if(!tooClose(t,l)){placed.push([t,l]);return[t,l];}}var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;placed.push([t,l]);return[t,l];}var half=Math.floor(wms.length/2);wms.forEach(function(img,i){var pos=pick(i<half),w=Math.floor(Math.random()*100+120),rot=(Math.random()*360).toFixed(1),op=(Math.random()*0.08+0.12).toFixed(2);img.style.top=pos[0].toFixed(1)+'%';img.style.left=pos[1].toFixed(1)+'%';img.style.width=w+'px';img.style.transform='rotate('+rot+'deg)';img.style.opacity=op;});})();</script>
   <script nonce="{{ csp_nonce }}">(function(){
@@ -27851,7 +28032,7 @@ struct LocateFileTemplate {
     .btn-secondary:hover{background:var(--line);}
     .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
-    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .nav-dropdown{position:relative;display:inline-flex;}.nav-dropdown-btn{cursor:pointer;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;border-radius:999px;padding:0 14px;min-height:38px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;text-decoration:none;}.nav-dropdown-btn:hover,.nav-dropdown:focus-within .nav-dropdown-btn{background:rgba(255,255,255,0.18);}.nav-dropdown-menu{opacity:0;visibility:hidden;position:absolute;top:calc(100% + 8px);right:0;background:linear-gradient(180deg,var(--nav),var(--nav-2));border:1px solid rgba(255,255,255,0.15);border-radius:12px;min-width:165px;overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,0.28);z-index:100;transition:opacity 0.13s ease,visibility 0s ease 0.13s;}.nav-dropdown:hover .nav-dropdown-menu,.nav-dropdown:focus-within .nav-dropdown-menu{opacity:1;visibility:visible;transition:opacity 0.13s ease,visibility 0s ease 0s;}.nav-dropdown-menu a{display:flex;align-items:center;gap:9px;padding:11px 16px;color:rgba(255,255,255,0.92);text-decoration:none;font-size:12px;font-weight:700;border-bottom:1px solid rgba(255,255,255,0.10);}.nav-dropdown-menu a:last-child{border-bottom:none;}.nav-dropdown-menu a:hover{background:rgba(255,255,255,0.14);color:#fff;}.nav-dropdown-menu a svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;flex:0 0 auto;}
     .relocate-section{border:1px solid var(--line);border-radius:14px;padding:20px 22px;background:var(--surface-2);}
@@ -27958,7 +28139,7 @@ struct LocateFileTemplate {
   </footer>
   <script nonce="{{ csp_nonce }}">
     (function(){var k="oxide-theme",b=document.body,s=localStorage.getItem(k);if(s==="dark")b.classList.add("dark-theme");document.getElementById("theme-toggle").addEventListener("click",function(){var d=b.classList.toggle("dark-theme");localStorage.setItem(k,d?"dark":"light");});})();
-    (function spawnCodeParticles(){var c=document.getElementById('code-particles');if(!c)return;var snips=['scan moved','fn analyze()','result.json','.html .pdf','locate files','restore scan','folder path','result*.json','run_id','compare','pub fn run','use std::fs','Result<()>','git main','files: 60','cargo build','Ok(run)','match lang','fn main() {','.rs .go .py','sloc_core','render_html'];for(var i=0;i<38;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snips[idx%snips.length];var l=(Math.random()*94+2).toFixed(1),t=(Math.random()*88+6).toFixed(1),dur=(Math.random()*10+9).toFixed(1),delay=(Math.random()*18).toFixed(1),rot=(Math.random()*26-13).toFixed(1),op=(Math.random()*0.09+0.06).toFixed(3);el.style.left=l+'%';el.style.top=t+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';c.appendChild(el);})(i);}})();
+    (function spawnCodeParticles(){var c=document.getElementById('code-particles');if(!c)return;var snips = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];for(var i=0;i<44;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snips[idx%snips.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));var l=(Math.random()*94+2).toFixed(1),t=(Math.random()*88+6).toFixed(1),dur=(Math.random()*10+9).toFixed(1),delay=(Math.random()*18).toFixed(1),rot=(Math.random()*26-13).toFixed(1),op=(Math.random() * 0.108 + 0.072).toFixed(3);el.style.left=l+'%';el.style.top=t+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';c.appendChild(el);})(i);}})();
     (function randomizeWatermarks(){var wms=Array.prototype.slice.call(document.querySelectorAll('.background-watermarks img'));if(!wms.length)return;var placed=[];function tooClose(t,l){for(var i=0;i<placed.length;i++){if(Math.abs(placed[i][0]-t)<16&&Math.abs(placed[i][1]-l)<12)return true;}return false;}function pick(lb){for(var a=0;a<50;a++){var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;if(!tooClose(t,l)){placed.push([t,l]);return[t,l];}}var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;placed.push([t,l]);return[t,l];}var half=Math.floor(wms.length/2);wms.forEach(function(img,i){var pos=pick(i<half),w=Math.floor(Math.random()*100+120),rot=(Math.random()*360).toFixed(1),op=(Math.random()*0.08+0.12).toFixed(2);img.style.top=pos[0].toFixed(1)+'%';img.style.left=pos[1].toFixed(1)+'%';img.style.width=w+'px';img.style.transform='rotate('+rot+'deg)';img.style.opacity=op;});})();
   </script>
   <script nonce="{{ csp_nonce }}">
@@ -28174,7 +28355,7 @@ struct RelocateScanTemplate {
     body.dark-theme .toast-error{background:rgba(180,30,30,0.12);border-color:rgba(245,163,163,0.3);color:#f08080;}
     .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
-    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .nav-dropdown{position:relative;display:inline-flex;}.nav-dropdown-btn{cursor:pointer;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;border-radius:999px;padding:0 14px;min-height:38px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;text-decoration:none;}.nav-dropdown-btn:hover,.nav-dropdown:focus-within .nav-dropdown-btn{background:rgba(255,255,255,0.18);}.nav-dropdown-menu{opacity:0;visibility:hidden;position:absolute;top:calc(100% + 8px);right:0;background:linear-gradient(180deg,var(--nav),var(--nav-2));border:1px solid rgba(255,255,255,0.15);border-radius:12px;min-width:165px;overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,0.28);z-index:100;transition:opacity 0.13s ease,visibility 0s ease 0.13s;}.nav-dropdown:hover .nav-dropdown-menu,.nav-dropdown:focus-within .nav-dropdown-menu{opacity:1;visibility:visible;transition:opacity 0.13s ease,visibility 0s ease 0s;}.nav-dropdown-menu a{display:flex;align-items:center;gap:9px;padding:11px 16px;color:rgba(255,255,255,0.92);text-decoration:none;font-size:12px;font-weight:700;border-bottom:1px solid rgba(255,255,255,0.10);}.nav-dropdown-menu a:last-child{border-bottom:none;}.nav-dropdown-menu a:hover{background:rgba(255,255,255,0.14);color:#fff;}.nav-dropdown-menu a svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;flex:0 0 auto;}
     .watched-bar{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 12px;flex-wrap:wrap;margin-bottom:14px;position:relative;z-index:1;}
@@ -29054,18 +29235,18 @@ struct RelocateScanTemplate {
       (function spawnCodeParticles() {
         var container = document.getElementById('code-particles');
         if (!container) return;
-        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
-        for (var i = 0; i < 38; i++) {
+        var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+        for (var i = 0; i < 44; i++) {
           (function(idx) {
             var el = document.createElement('span');
             el.className = 'code-particle';
-            el.textContent = snippets[idx % snippets.length];
+            el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
             var left = Math.random() * 94 + 2;
             var top = Math.random() * 88 + 6;
             var dur = (Math.random() * 10 + 9).toFixed(1);
             var delay = (Math.random() * 18).toFixed(1);
             var rot = (Math.random() * 26 - 13).toFixed(1);
-            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            var op = (Math.random() * 0.108 + 0.072).toFixed(3);
             el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
             container.appendChild(el);
           })(i);
@@ -29256,7 +29437,7 @@ struct HistoryTemplate {
     @media(max-width:700px){td,th{padding:7px 8px;}.run-id-chip,.git-chip{display:none;}}
     .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
-    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .summary-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
     @media(max-width:800px){.summary-strip{grid-template-columns:repeat(2,1fr);}}
@@ -29940,18 +30121,18 @@ struct HistoryTemplate {
       (function spawnCodeParticles() {
         var container = document.getElementById('code-particles');
         if (!container) return;
-        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
-        for (var i = 0; i < 38; i++) {
+        var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+        for (var i = 0; i < 44; i++) {
           (function(idx) {
             var el = document.createElement('span');
             el.className = 'code-particle';
-            el.textContent = snippets[idx % snippets.length];
+            el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
             var left = Math.random() * 94 + 2;
             var top = Math.random() * 88 + 6;
             var dur = (Math.random() * 10 + 9).toFixed(1);
             var delay = (Math.random() * 18).toFixed(1);
             var rot = (Math.random() * 26 - 13).toFixed(1);
-            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            var op = (Math.random() * 0.108 + 0.072).toFixed(3);
             el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
             container.appendChild(el);
           })(i);
@@ -30259,7 +30440,7 @@ struct CompareSelectTemplate {
     .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
     .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
-    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .path-link{color:var(--oxide);text-decoration:underline;text-underline-offset:3px;cursor:pointer;}
     .path-link:hover{color:var(--oxide-2);}
@@ -30761,18 +30942,18 @@ struct CompareSelectTemplate {
       (function spawnCodeParticles() {
         var container = document.getElementById('code-particles');
         if (!container) return;
-        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
-        for (var i = 0; i < 38; i++) {
+        var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+        for (var i = 0; i < 44; i++) {
           (function(idx) {
             var el = document.createElement('span');
             el.className = 'code-particle';
-            el.textContent = snippets[idx % snippets.length];
+            el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
             var left = Math.random() * 94 + 2;
             var top = Math.random() * 88 + 6;
             var dur = (Math.random() * 10 + 9).toFixed(1);
             var delay = (Math.random() * 18).toFixed(1);
             var rot = (Math.random() * 26 - 13).toFixed(1);
-            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            var op = (Math.random() * 0.108 + 0.072).toFixed(3);
             el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
             container.appendChild(el);
           })(i);
@@ -31985,7 +32166,7 @@ struct CompareTemplate {
     .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
     .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
     .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
-    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .page{display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 56px);padding:24px;position:relative;z-index:1;}
     .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:40px;max-width:420px;width:100%;box-shadow:var(--shadow);}
@@ -32074,25 +32255,19 @@ struct CompareTemplate {
   (function spawnCodeParticles() {
     var container = document.getElementById('code-particles');
     if (!container) return;
-    var snippets = [
-      '1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312',
-      '// comment','pub fn run','use std::fs','Result<()>','let mut n = 0',
-      'git main','#[derive]','impl Scan','3,841 physical','files: 60',
-      '450 comments','cargo build','Ok(run)','Vec<String>','match lang',
-      'fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'
-    ];
-    var count = 38;
+    var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+    var count = 44;
     for (var i = 0; i < count; i++) {
       (function(idx) {
         var el = document.createElement('span');
         el.className = 'code-particle';
-        el.textContent = snippets[idx % snippets.length];
+        el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
         var left = Math.random() * 94 + 2;
         var top = Math.random() * 88 + 6;
         var dur = (Math.random() * 10 + 9).toFixed(1);
         var delay = (Math.random() * 18).toFixed(1);
         var rot = (Math.random() * 26 - 13).toFixed(1);
-        var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+        var op = (Math.random() * 0.108 + 0.072).toFixed(3);
         el.style.cssText = 'left:'+left.toFixed(1)+'%;top:'+top.toFixed(1)+'%;--rot:'+rot+'deg;--op:'+op+';animation-duration:'+dur+'s;animation-delay:-'+delay+'s;';
         container.appendChild(el);
       })(i);
@@ -32249,7 +32424,7 @@ pub(crate) struct LoginTemplate {
     .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
     .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
     .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
-    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
     .site-footer{text-align:center;padding:12px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
     .site-footer a{color:var(--muted);}
@@ -33623,25 +33798,19 @@ Content-Disposition: attachment; filename="sloc-run-&lt;run_id&gt;.zip"
       (function spawnCodeParticles() {
         var container = document.getElementById('code-particles');
         if (!container) return;
-        var snippets = [
-          '1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312',
-          '// comment','pub fn run','use std::fs','Result<()>','let mut n = 0',
-          'git main','#[derive]','impl Scan','3,841 physical','files: 60',
-          '450 comments','cargo build','Ok(run)','Vec<String>','match lang',
-          'fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'
-        ];
-        var count = 38;
+        var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
+        var count = 44;
         for (var i = 0; i < count; i++) {
           (function(idx) {
             var el = document.createElement('span');
             el.className = 'code-particle';
-            el.textContent = snippets[idx % snippets.length];
+            el.textContent = snippets[idx % snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));
             var left = Math.random() * 94 + 2;
             var top = Math.random() * 88 + 6;
             var dur = (Math.random() * 10 + 9).toFixed(1);
             var delay = (Math.random() * 18).toFixed(1);
             var rot = (Math.random() * 26 - 13).toFixed(1);
-            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            var op = (Math.random() * 0.108 + 0.072).toFixed(3);
             el.style.cssText = 'left:'+left.toFixed(1)+'%;top:'+top.toFixed(1)+'%;--rot:'+rot+'deg;--op:'+op+';animation-duration:'+dur+'s;animation-delay:-'+delay+'s;';
             container.appendChild(el);
           })(i);
@@ -35847,7 +36016,7 @@ mod tests_private {
 
     #[test]
     fn code_ownership_empty_state_renders_guidance() {
-        let html = render_code_ownership_html("nonce123", None, "myrepo");
+        let html = render_code_ownership_html("nonce123", None, "myrepo", &[]);
         assert!(html.contains("No ownership data"));
         assert!(html.contains("oxide-sloc analyze"));
         assert!(html.contains("myrepo"));
@@ -35878,7 +36047,7 @@ mod tests_private {
             ]
         });
         let run: AnalysisRun = serde_json::from_value(json).expect("run deserializes");
-        let html = render_code_ownership_html("nonce123", Some(&run), "myrepo");
+        let html = render_code_ownership_html("nonce123", Some(&run), "myrepo", &[]);
         assert!(html.contains("Nima Shafie"));
         assert!(html.contains("Other Dev"));
         assert!(html.contains("own-data"));
@@ -35887,6 +36056,40 @@ mod tests_private {
         assert!(!html.contains("No ownership data"));
         // Nima owns 150 of 200 code lines (75% >= 50%), so the bus factor is 1.
         assert!(html.contains(">1</div><div class=\"stat-chip-label\">Bus Factor"));
+        // Combine-contributors merge panel with a checkbox per author.
+        assert!(html.contains("Combine contributors"));
+        assert!(html.contains("/api/ownership/merge"));
+        assert!(html.contains("name=\"email\" value=\"nimzshafie@gmail.com\""));
+    }
+
+    #[test]
+    fn code_ownership_shows_active_merge_group() {
+        let group = AuthorMergeGroup {
+            canonical_name: "Nima Shafie".into(),
+            canonical_email: "nima@corp.com".into(),
+            members: vec!["nima@corp.com".into(), "nima@personal.com".into()],
+        };
+        let json = serde_json::json!({
+            "tool": {"name":"oxide-sloc","version":"0.0.0","run_id":"t","timestamp_utc":"2026-01-01T00:00:00Z"},
+            "environment": {"operating_system":"x","architecture":"x86_64","runtime_mode":"cli","initiator_username":"u","initiator_hostname":"h"},
+            "effective_configuration": {},
+            "input_roots": ["/tmp/myrepo"],
+            "summary_totals": {"files_considered":1,"files_analyzed":1,"files_skipped":0,"total_physical_lines":260,"code_lines":200,"comment_lines":40,"blank_lines":20,"mixed_lines_separate":0},
+            "totals_by_language": [],
+            "per_file_records": [],
+            "skipped_file_records": [],
+            "warnings": [],
+            "authors": [
+                {"id":0,"canonical_name":"Nima Shafie","canonical_email":"nima@corp.com","aliases":[],
+                 "counts":{"code_lines":150,"comment_lines":30,"blank_lines":15,"total_lines":195}}
+            ]
+        });
+        let run: AnalysisRun = serde_json::from_value(json).expect("run deserializes");
+        let html =
+            render_code_ownership_html("n", Some(&run), "myrepo", std::slice::from_ref(&group));
+        assert!(html.contains("Active merges"));
+        assert!(html.contains("/api/ownership/unmerge"));
+        assert!(html.contains("Unmerge"));
     }
 
     #[test]
