@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use sloc_git::{
-    ScanSchedule, ScanScheduleKind, ScanScheduleProvider, WebhookEvent, WebhookProvider,
-    clone_or_fetch, create_worktree, destroy_worktree, get_sha, parse_bitbucket_push,
-    parse_github_push, parse_gitlab_push,
+    ScanSchedule, ScanScheduleKind, ScanScheduleProvider, ScheduleStore, WebhookEvent,
+    WebhookProvider, clone_or_fetch, create_worktree, destroy_worktree, get_sha,
+    parse_bitbucket_push, parse_github_push, parse_gitlab_push,
     webhook::{verify_bitbucket_sig, verify_github_sig},
 };
 
@@ -294,18 +294,7 @@ pub async fn handle_ci_webhook(
         .collect();
     let valid_sig_count = matching_ids.len();
 
-    let mut fresh: Vec<ScanSchedule> = Vec::new();
-    for id in &matching_ids {
-        if let Some(s) = store.by_id_mut(*id) {
-            if let Some(key) = &build_key {
-                if s.last_ci_build.as_deref() == Some(key.as_str()) {
-                    continue; // duplicate delivery of the same upstream build
-                }
-                s.last_ci_build = Some(key.clone());
-            }
-            fresh.push(s.clone());
-        }
-    }
+    let fresh = claim_fresh_schedules(&mut store, &matching_ids, &build_key);
     let duplicate = valid_sig_count > 0 && fresh.is_empty();
     if !fresh.is_empty() {
         let _ = store.save(&state.schedules_path);
@@ -345,6 +334,32 @@ pub async fn handle_ci_webhook(
     };
     spawn_scans(state, event, fresh);
     StatusCode::ACCEPTED.into_response()
+}
+
+/// Guard 3 — idempotency. From the HMAC-validated `matching_ids`, return the schedules that have
+/// not already processed this upstream build, optimistically claiming `build_key` on each so a
+/// retried upstream notification cannot double-trigger. A schedule whose `last_ci_build` already
+/// equals the key is skipped as a duplicate; with no build key every match is returned (such
+/// deliveries cannot be de-duplicated). Mutates `store` in place — the caller persists it.
+fn claim_fresh_schedules(
+    store: &mut ScheduleStore,
+    matching_ids: &[uuid::Uuid],
+    build_key: &Option<String>,
+) -> Vec<ScanSchedule> {
+    let mut fresh: Vec<ScanSchedule> = Vec::new();
+    for id in matching_ids {
+        let Some(s) = store.by_id_mut(*id) else {
+            continue;
+        };
+        if let Some(key) = build_key {
+            if s.last_ci_build.as_deref() == Some(key.as_str()) {
+                continue; // duplicate delivery of the same upstream build
+            }
+            s.last_ci_build = Some(key.clone());
+        }
+        fresh.push(s.clone());
+    }
+    fresh
 }
 
 /// A non-secret 200 skip: the request was well-formed and (where relevant)
@@ -745,6 +760,56 @@ mod tests {
         .unwrap();
         assert_eq!(full.commit_sha.as_deref(), Some("abc"));
         assert_eq!(full.upstream.unwrap().build_id.as_deref(), Some("9"));
+    }
+
+    // ── claim_fresh_schedules (Guard 3 idempotency) ───────────────────────────
+
+    fn webhook_sched() -> ScanSchedule {
+        ScanSchedule::new_webhook(
+            "https://x/y.git".into(),
+            "main".into(),
+            ScanScheduleProvider::Any,
+            "ci".into(),
+            Some("s3cr3t".into()),
+        )
+    }
+
+    #[test]
+    fn claim_fresh_schedules_dedups_by_build_key() {
+        let mut store = ScheduleStore::default();
+        store.schedules.push(webhook_sched());
+        store.schedules.push(webhook_sched());
+        let ids: Vec<uuid::Uuid> = store.schedules.iter().map(|s| s.id).collect();
+        let key = Some("jenkins:api:1".to_string());
+
+        // First delivery: both schedules are fresh and get the build id claimed.
+        let fresh = claim_fresh_schedules(&mut store, &ids, &key);
+        assert_eq!(fresh.len(), 2);
+        assert!(
+            store
+                .schedules
+                .iter()
+                .all(|s| s.last_ci_build.as_deref() == Some("jenkins:api:1"))
+        );
+
+        // Re-delivery of the same build id: both are now duplicates.
+        assert!(claim_fresh_schedules(&mut store, &ids, &key).is_empty());
+
+        // A new build id claims them again.
+        let key2 = Some("jenkins:api:2".to_string());
+        assert_eq!(claim_fresh_schedules(&mut store, &ids, &key2).len(), 2);
+    }
+
+    #[test]
+    fn claim_fresh_schedules_without_key_returns_all_and_skips_unknown_ids() {
+        let mut store = ScheduleStore::default();
+        store.schedules.push(webhook_sched());
+        let real = store.schedules[0].id;
+        let bogus = uuid::Uuid::new_v4();
+        // No build key ⇒ dedup disabled ⇒ every existing match returned; unknown ids skipped.
+        let fresh = claim_fresh_schedules(&mut store, &[real, bogus], &None);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].id, real);
     }
 
     // ── ct_eq ─────────────────────────────────────────────────────────────────

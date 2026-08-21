@@ -3912,3 +3912,134 @@ mod truncate_tests {
         assert_eq!(truncate("héllo", 4), "hél…");
     }
 }
+
+#[cfg(test)]
+mod atlassian_and_summary_tests {
+    use super::*;
+
+    /// A small but complete `AnalysisRun` fixture (two languages, three authors incl. one with a
+    /// long name to exercise truncation) used to drive the pure summary/PR-comment renderers.
+    fn sample_run() -> AnalysisRun {
+        let json = serde_json::json!({
+            "tool": {"name":"oxide-sloc","version":"0.0.0","run_id":"t","timestamp_utc":"2026-01-01T00:00:00Z"},
+            "environment": {"operating_system":"x","architecture":"x86_64","runtime_mode":"cli","initiator_username":"u","initiator_hostname":"h"},
+            "effective_configuration": {},
+            "input_roots": ["/tmp/myrepo"],
+            "summary_totals": {"files_considered":3,"files_analyzed":3,"files_skipped":0,"total_physical_lines":1000,"code_lines":1234,"comment_lines":200,"blank_lines":66,"mixed_lines_separate":0},
+            "totals_by_language": [
+                {"language":"rust","files":2,"total_physical_lines":800,"code_lines":700,"comment_lines":80,"blank_lines":20,"mixed_lines_separate":0},
+                {"language":"python","files":1,"total_physical_lines":200,"code_lines":160,"comment_lines":30,"blank_lines":10,"mixed_lines_separate":0}
+            ],
+            "per_file_records": [],
+            "skipped_file_records": [],
+            "warnings": [],
+            "authors": [
+                {"id":0,"canonical_name":"A Contributor With A Very Long Display Name Indeed","canonical_email":"long@example.com","aliases":[],
+                 "counts":{"code_lines":900,"comment_lines":100,"blank_lines":40,"total_lines":1040}},
+                {"id":1,"canonical_name":"Other Dev","canonical_email":"other@example.com","aliases":[],
+                 "counts":{"code_lines":334,"comment_lines":100,"blank_lines":26,"total_lines":460}}
+            ]
+        });
+        serde_json::from_value(json).expect("sample run deserializes")
+    }
+
+    #[test]
+    fn pr_comment_body_without_delta_includes_summary_and_languages() {
+        let run = sample_run();
+        let body = build_pr_comment_body(&run, None, Some("https://reports.example/r/1"));
+        assert!(body.contains("## SLOC Report"));
+        assert!(body.contains("| Code lines | 1,234 |"));
+        assert!(body.contains("Language breakdown"));
+        assert!(body.contains("Rust"));
+        assert!(body.contains("[View full report](https://reports.example/r/1)"));
+        assert!(!body.contains("Changes vs. Target Branch"));
+    }
+
+    #[test]
+    fn pr_comment_body_with_delta_renders_change_section() {
+        let base = sample_run();
+        let current = sample_run();
+        let cmp = compute_delta(&base, &current);
+        let body = build_pr_comment_body(&current, Some(&cmp), None);
+        assert!(body.contains("Changes vs. Target Branch"));
+        assert!(body.contains("| Code Δ |"));
+        assert!(!body.contains("View full report"));
+    }
+
+    #[test]
+    fn fmt_thousands_groups_digits() {
+        assert_eq!(fmt_thousands(0), "0");
+        assert_eq!(fmt_thousands(999), "999");
+        assert_eq!(fmt_thousands(1000), "1,000");
+        assert_eq!(fmt_thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn validate_webhook_url_enforces_https_unless_opted_out() {
+        assert!(validate_webhook_url("https://api.github.com/x", false).is_ok());
+        assert!(validate_webhook_url("http://example.com/x", false).is_err());
+        // The opt-in flag bypasses both the HTTPS and private-net checks.
+        assert!(validate_webhook_url("http://127.0.0.1/x", true).is_ok());
+        assert!(validate_webhook_url("not a url", false).is_err());
+    }
+
+    #[test]
+    fn percent_encode_matches_form_urlencoding() {
+        assert_eq!(percent_encode("a b"), "a+b");
+        assert_eq!(percent_encode("A-Za-z0-9-_.~"), "A-Za-z0-9-_.~");
+        assert_eq!(percent_encode("k&v=?/"), "k%26v%3D%3F%2F");
+    }
+
+    #[test]
+    fn confluence_auth_basic_vs_bearer() {
+        assert_eq!(build_confluence_auth(None, "tok"), "Bearer tok");
+        assert_eq!(build_confluence_auth(Some(""), "tok"), "Bearer tok");
+        assert_eq!(build_confluence_auth(Some("me"), "tok"), "Basic bWU6dG9r");
+    }
+
+    #[test]
+    fn bitbucket_cloud_detection() {
+        assert!(bitbucket_is_cloud("https://api.bitbucket.org", None));
+        assert!(bitbucket_is_cloud(
+            "https://bitbucket.mycorp.com",
+            Some("ws")
+        ));
+        assert!(!bitbucket_is_cloud("https://bitbucket.mycorp.com", None));
+    }
+
+    #[test]
+    fn line_pct_handles_zero_denominator() {
+        assert_eq!(line_pct(0, 0), 0.0);
+        assert!((line_pct(1, 2) - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fmt_delta_signs_values() {
+        assert_eq!(fmt_delta(false, 5), "+5");
+        assert_eq!(fmt_delta(false, -3), "-3");
+        assert_eq!(fmt_delta(false, 0), "0");
+        // Colourised variants just need to run for coverage.
+        let _ = fmt_delta(true, 5);
+        let _ = fmt_delta(true, -3);
+    }
+
+    #[test]
+    fn validate_lists_flag_missing_paths_and_bad_globs() {
+        let missing = validate_path_list(&[std::path::PathBuf::from("/no/such/xyzzy-42")], "root");
+        assert_eq!(missing.len(), 1);
+        assert!(missing[0].contains("does not exist"));
+        let bad = validate_glob_list(&["[".to_string()], "include");
+        assert_eq!(bad.len(), 1);
+        assert!(bad[0].contains("invalid glob"));
+        // Valid inputs produce no findings.
+        assert!(validate_glob_list(&["**/*.rs".to_string()], "include").is_empty());
+    }
+
+    #[test]
+    fn print_ownership_table_renders_for_authored_run() {
+        // Exercises the terminal ownership renderer, incl. the long-name truncation branch.
+        let run = sample_run();
+        print_ownership_table(&run, false);
+        print_ownership_table(&run, true);
+    }
+}

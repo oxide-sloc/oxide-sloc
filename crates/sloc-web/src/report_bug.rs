@@ -714,4 +714,42 @@ mod tests {
         assert_eq!(url, DEFAULT_REPO);
         assert_eq!(src, TargetSource::Default);
     }
+
+    #[test]
+    fn tracker_kind_slug_and_label_cover_all_variants() {
+        for (kind, slug, label) in [
+            (BugTrackerKind::GitHub, "github", "GitHub"),
+            (BugTrackerKind::GitLab, "gitlab", "GitLab"),
+            (BugTrackerKind::Bitbucket, "bitbucket", "Bitbucket"),
+            (BugTrackerKind::Other, "other", "the repository"),
+        ] {
+            assert_eq!(kind.slug(), slug);
+            assert_eq!(kind.label(), label);
+        }
+    }
+
+    #[test]
+    fn target_source_label_covers_all_variants() {
+        assert!(TargetSource::Configured.label().contains("configured"));
+        assert!(TargetSource::BuildOrigin.label().contains("origin"));
+        assert!(TargetSource::Default.label().contains("upstream"));
+    }
+
+    #[test]
+    fn bare_host_path_without_scheme_becomes_https() {
+        assert_eq!(
+            to_web_url("github.com/oxide-sloc/oxide-sloc"),
+            "https://github.com/oxide-sloc/oxide-sloc"
+        );
+    }
+
+    #[test]
+    fn scheme_url_without_path_keeps_host_only() {
+        assert_eq!(to_web_url("https://example.com/"), "https://example.com");
+    }
+
+    #[test]
+    fn empty_raw_falls_back_to_default_repo() {
+        assert_eq!(to_web_url("   "), DEFAULT_REPO);
+    }
 }

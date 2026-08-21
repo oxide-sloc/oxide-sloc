@@ -3583,26 +3583,36 @@ pub fn classify_physical_lines(language: Language, text: &str) -> Vec<LineCatego
             &mut code_mask,
         );
 
-        let category = if facts.has_code {
-            LineCategory::Code
-        } else if facts.has_single_comment || facts.has_multi_comment || facts.has_docstring {
-            LineCategory::Comment
-        } else if trimmed.is_empty() {
-            // A blank line spanned by an open block comment counts as a comment line.
-            if opened_in_block {
-                LineCategory::Comment
-            } else {
-                LineCategory::Blank
-            }
-        } else {
-            // Non-empty, non-comment, non-code (rare "skipped/unknown") — attribute as code so
-            // ownership totals never silently drop physical lines.
-            LineCategory::Code
-        };
-        out.push(category);
+        out.push(categorize_physical_line(&facts, trimmed, opened_in_block));
     }
 
     out
+}
+
+/// Decide the [`LineCategory`] for a single physical line from its scanned `facts`. Split out of
+/// [`classify_physical_lines`] so the (otherwise deeply nested) blank-in-block branch is isolated
+/// and directly unit-testable. Mirrors the ordering of the `classify_line` bucket assignment below.
+fn categorize_physical_line(
+    facts: &LineFacts,
+    trimmed: &str,
+    opened_in_block: bool,
+) -> LineCategory {
+    if facts.has_code {
+        LineCategory::Code
+    } else if facts.has_single_comment || facts.has_multi_comment || facts.has_docstring {
+        LineCategory::Comment
+    } else if trimmed.is_empty() {
+        // A blank line spanned by an open block comment counts as a comment line.
+        if opened_in_block {
+            LineCategory::Comment
+        } else {
+            LineCategory::Blank
+        }
+    } else {
+        // Non-empty, non-comment, non-code (rare "skipped/unknown") — attribute as code so
+        // ownership totals never silently drop physical lines.
+        LineCategory::Code
+    }
 }
 
 const fn classify_line(raw: &mut RawLineCounts, facts: &LineFacts, trimmed: &str) {

@@ -71,7 +71,7 @@ static CHART_JS: &[u8] = include_bytes!("../static/chart.umd.min.js");
 static REPORT_CHART_JS: &[u8] = include_bytes!("../static/chart.min.js");
 
 use sloc_core::{
-    AnalysisRun, AuthorMergeGroup, CleanupPolicy, CleanupPolicyStore, FileChangeStatus,
+    AnalysisRun, Author, AuthorMergeGroup, CleanupPolicy, CleanupPolicyStore, FileChangeStatus,
     IdentityMap, MultiScanComparison, RegistryEntry, ScanRegistry, ScanSummarySnapshot,
     SummaryTotals, WatchedDirsStore, analyze, apply_identity_map, compute_delta,
     compute_multi_delta, read_json,
@@ -1067,292 +1067,24 @@ fn render_code_ownership_html(
     // ── Compute display data ──────────────────────────────────────────────────
     let authors = run.map(|r| r.authors.as_slice()).unwrap_or(&[]);
     let has_data = !authors.is_empty();
-
     let total_code: u64 = authors.iter().map(|a| a.counts.code_lines).sum();
-
-    // Files where each author is the single largest owner (ownership is pre-sorted desc).
-    let mut files_owned: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
-    if let Some(r) = run {
-        for rec in &r.per_file_records {
-            if let Some(top) = rec.ownership.as_ref().and_then(|o| o.first()) {
-                *files_owned.entry(top.author_id).or_default() += 1;
-            }
-        }
-    }
-
-    let rows: Vec<OwnershipRow> = authors
-        .iter()
-        .enumerate()
-        .map(|(i, a)| OwnershipRow {
-            name: a.canonical_name.clone(),
-            email: a.canonical_email.clone(),
-            code: a.counts.code_lines,
-            comment: a.counts.comment_lines,
-            blank: a.counts.blank_lines,
-            total: a.counts.total_lines,
-            code_pct: if total_code > 0 {
-                a.counts.code_lines as f64 / total_code as f64 * 100.0
-            } else {
-                0.0
-            },
-            files_owned: files_owned.get(&a.id).copied().unwrap_or(0),
-            aliases: a.aliases.len(),
-            color: OWNERSHIP_PALETTE[i % OWNERSHIP_PALETTE.len()],
-        })
-        .collect();
-
-    // Bus factor: fewest top contributors whose combined code covers >= 50% of the codebase.
-    let bus_factor = {
-        let mut acc = 0u64;
-        let mut n = 0usize;
-        for a in authors {
-            acc += a.counts.code_lines;
-            n += 1;
-            if total_code > 0 && acc * 2 >= total_code {
-                break;
-            }
-        }
-        n
-    };
-
-    let top_owner = rows.first();
-
-    // Per-language ownership: language -> author_id -> code lines.
-    let mut lang_map: std::collections::HashMap<String, std::collections::HashMap<u32, u64>> =
-        std::collections::HashMap::new();
-    if let Some(r) = run {
-        for rec in &r.per_file_records {
-            let (Some(lang), Some(ownership)) = (rec.language, rec.ownership.as_ref()) else {
-                continue;
-            };
-            let entry = lang_map.entry(lang.display_name().to_string()).or_default();
-            for own in ownership {
-                *entry.entry(own.author_id).or_default() += own.counts.code_lines;
-            }
-        }
-    }
-    let author_name = |id: u32| -> String {
-        rows.get(id as usize)
-            .map(|r| r.name.clone())
-            .unwrap_or_default()
-    };
-    let mut lang_rows: Vec<(String, u64, String, f64)> = lang_map
-        .into_iter()
-        .map(|(lang, by_author)| {
-            let lang_total: u64 = by_author.values().sum();
-            let (top_id, top_code) = by_author
-                .iter()
-                .max_by_key(|(_, c)| **c)
-                .map(|(id, c)| (*id, *c))
-                .unwrap_or((0, 0));
-            let pct = if lang_total > 0 {
-                top_code as f64 / lang_total as f64 * 100.0
-            } else {
-                0.0
-            };
-            (lang, lang_total, author_name(top_id), pct)
-        })
-        .collect();
-    lang_rows.sort_by_key(|r| std::cmp::Reverse(r.1));
-    lang_rows.truncate(15);
-
-    // ── Data island for the client-side bar re-render on filter change ────────
-    let data_json = serde_json::to_string(
-        &rows
-            .iter()
-            .map(|r| {
-                serde_json::json!({
-                    "name": r.name,
-                    "email": r.email,
-                    "code": r.code,
-                    "comment": r.comment,
-                    "blank": r.blank,
-                    "total": r.total,
-                    "color": r.color,
-                })
-            })
-            .collect::<Vec<_>>(),
-    )
-    .unwrap_or_else(|_| "[]".to_string());
 
     // ── Main content ──────────────────────────────────────────────────────────
     let content = if !has_data {
-        format!(
-            r#"<div class="panel own-empty">
-  <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-  <div class="own-empty-title">No ownership data for the latest scan</div>
-  <p class="muted" style="max-width:560px;text-align:center;">
-    Code ownership is computed from <strong>git blame</strong> and is <strong>on by default</strong>.
-    This scan has none &mdash; the scanned path is likely not a git repository, or attribution was
-    turned off for this run. Re-scan a git repo with attribution on to populate this page:
-  </p>
-  <pre class="own-code">oxide-sloc analyze {project}</pre>
-  <p class="muted" style="max-width:560px;text-align:center;">
-    The scan root must be a git repository. Same-email identities are merged automatically;
-    cross-account merges are a later step.
-  </p>
-</div>"#,
-            project = esc(project_label),
-        )
+        render_ownership_empty(project_label)
     } else {
-        let top_name = top_owner.map(|r| esc(&r.name)).unwrap_or_default();
-        let top_pct = top_owner.map(|r| r.code_pct).unwrap_or(0.0);
-
-        // Server-rendered bars (metric = code); JS re-renders on filter change.
-        let max_code = rows.iter().map(|r| r.code).max().unwrap_or(1).max(1);
-        let mut bars = String::new();
-        for r in &rows {
-            use std::fmt::Write as _;
-            let pct = (r.code as f64 / max_code as f64 * 100.0).round() as u64;
-            let _ = write!(
-                bars,
-                r#"<div class="own-bar-row"><div class="own-bar-name" title="{email}">{name}</div><div class="own-bar-track"><div class="own-bar-fill" style="width:{pct}%;background:{color};"></div></div><div class="own-bar-val">{val}</div></div>"#,
-                email = esc(&r.email),
-                name = esc(&r.name),
-                pct = pct,
-                color = r.color,
-                val = fmt_num(r.code as i64),
-            );
-        }
-
-        let mut author_table = String::new();
-        for r in &rows {
-            use std::fmt::Write as _;
-            let _ = write!(
-                author_table,
-                r#"<tr><td><span class="own-dot" style="background:{color};"></span>{name}</td><td class="own-email">{email}</td><td class="num">{code}</td><td class="num">{comment}</td><td class="num">{blank}</td><td class="num">{total}</td><td class="num">{pct:.1}%</td><td class="num">{files}</td><td class="num">{aliases}</td></tr>"#,
-                color = r.color,
-                name = esc(&r.name),
-                email = esc(&r.email),
-                code = fmt_num(r.code as i64),
-                comment = fmt_num(r.comment as i64),
-                blank = fmt_num(r.blank as i64),
-                total = fmt_num(r.total as i64),
-                pct = r.code_pct,
-                files = r.files_owned,
-                aliases = r.aliases,
-            );
-        }
-
-        let mut lang_table = String::new();
-        for (lang, code, owner, pct) in &lang_rows {
-            use std::fmt::Write as _;
-            let _ = write!(
-                lang_table,
-                r#"<tr><td>{lang}</td><td class="num">{code}</td><td>{owner}</td><td class="num">{pct:.1}%</td></tr>"#,
-                lang = esc(lang),
-                code = fmt_num(*code as i64),
-                owner = esc(owner),
-                pct = pct,
-            );
-        }
-
-        // ── Combine-contributors panel: checkboxes for each author + active merges list ──
-        let mut merge_checks = String::new();
-        for r in &rows {
-            use std::fmt::Write as _;
-            let _ = write!(
-                merge_checks,
-                r#"<label class="merge-opt"><input type="checkbox" name="email" value="{email}"><span class="merge-opt-dot" style="background:{color};"></span><span class="merge-opt-name">{name}</span><span class="merge-opt-email">{email}</span></label>"#,
-                email = esc(&r.email),
-                color = r.color,
-                name = esc(&r.name),
-            );
-        }
-        let mut merge_existing = String::new();
-        if !merge_groups.is_empty() {
-            use std::fmt::Write as _;
-            merge_existing.push_str(r#"<div class="merge-existing"><div class="merge-existing-title">Active merges</div>"#);
-            for g in merge_groups {
-                let members = g
-                    .members
-                    .iter()
-                    .map(|m| esc(m))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = write!(
-                    merge_existing,
-                    r#"<div class="merge-chip"><span class="merge-chip-text"><strong>{name}</strong> &nbsp;{count} emails &middot; {members}</span><form method="POST" action="/api/ownership/unmerge" style="display:inline;margin:0;"><input type="hidden" name="canonical_email" value="{cemail}"><button type="submit" class="merge-unmerge">Unmerge</button></form></div>"#,
-                    name = esc(&g.canonical_name),
-                    count = g.members.len(),
-                    members = members,
-                    cemail = esc(&g.canonical_email),
-                );
-            }
-            merge_existing.push_str("</div>");
-        }
-        let merge_panel = format!(
-            r#"<div class="section-header">Combine contributors</div>
-<div class="panel">
-  <p class="muted" style="margin-bottom:14px;">Same person committing under different names or emails? Select two or more contributors and merge them into a single identity. This is applied on top of the scan &mdash; <strong>no re-scan needed</strong> &mdash; and can be exported as a git <code>.mailmap</code> so the merge carries into git itself and future scans.</p>
-  <form method="POST" action="/api/ownership/merge">
-    <div class="merge-grid">{merge_checks}</div>
-    <div class="merge-controls">
-      <input type="text" name="canonical_name" class="merge-name-input" placeholder="Canonical display name (optional)">
-      <button type="submit" class="merge-btn">Merge selected</button>
-      <a href="/code-ownership/mailmap" class="merge-mailmap-link">&#8681; Download .mailmap</a>
-    </div>
-  </form>
-  {merge_existing}
-</div>
-
-"#,
-            merge_checks = merge_checks,
-            merge_existing = merge_existing,
-        );
-
-        format!(
-            r#"<div class="summary-strip">
-  <div class="stat-chip"><div class="stat-chip-val">{contributors}</div><div class="stat-chip-label">Contributors</div></div>
-  <div class="stat-chip"><div class="stat-chip-val">{top_name}</div><div class="stat-chip-label">Top Owner &middot; {top_pct:.0}% of code</div></div>
-  <div class="stat-chip"><div class="stat-chip-val">{bus_factor}</div><div class="stat-chip-label">Bus Factor (owners of 50% code)</div></div>
-  <div class="stat-chip"><div class="stat-chip-val">{total_code}</div><div class="stat-chip-label">Total Code Lines</div></div>
-</div>
-
-<div class="chart-box">
-  <div class="own-chart-head">
-    <div class="chart-box-title">Lines owned per contributor</div>
-    <div class="own-controls">
-      <button type="button" class="own-filter active" data-metric="code">Code</button>
-      <button type="button" class="own-filter" data-metric="comment">Comment</button>
-      <button type="button" class="own-filter" data-metric="blank">Blank</button>
-      <button type="button" class="own-filter" data-metric="total">Total</button>
-    </div>
-  </div>
-  <div id="own-bars">{bars}</div>
-</div>
-
-<div class="section-header">Contributors</div>
-<div class="panel" style="padding:0;overflow:auto;">
-  <table class="data-table">
-    <thead><tr><th>Author</th><th>Email</th><th class="num">Code</th><th class="num">Comment</th><th class="num">Blank</th><th class="num">Total</th><th class="num">Code %</th><th class="num">Files Owned</th><th class="num">Aliases</th></tr></thead>
-    <tbody>{author_table}</tbody>
-  </table>
-</div>
-
-<div class="section-header">Ownership by language</div>
-<div class="panel" style="padding:0;overflow:auto;">
-  <table class="data-table">
-    <thead><tr><th>Language</th><th class="num">Code Lines</th><th>Top Owner</th><th class="num">Owner %</th></tr></thead>
-    <tbody>{lang_table}</tbody>
-  </table>
-</div>
-
-{merge_panel}
-<p class="muted" style="margin-top:14px;">Ownership reflects the author who last touched each physical line (<code>git blame -w -M -C</code>, <code>.mailmap</code> honoured). Counts are physical lines and sum to the file's line total; they can differ slightly from the policy-adjusted SLOC totals elsewhere. Same-email identities are auto-merged; use <strong>Combine contributors</strong> above to merge across different emails.</p>
-
-<script id="own-data" type="application/json" nonce="{nonce}">{data_json}</script>"#,
-            contributors = rows.len(),
-            top_name = top_name,
-            top_pct = top_pct,
-            bus_factor = bus_factor,
-            total_code = fmt_num(total_code as i64),
-            bars = bars,
-            author_table = author_table,
-            lang_table = lang_table,
-            merge_panel = merge_panel,
-            nonce = nonce,
-            data_json = data_json,
+        let rows = build_ownership_rows(run, total_code);
+        let bus_factor = compute_bus_factor(authors, total_code);
+        let lang_rows = build_language_rows(run, &rows);
+        let data_json = ownership_data_json(&rows);
+        render_ownership_populated(
+            &rows,
+            bus_factor,
+            total_code,
+            &lang_rows,
+            &data_json,
+            merge_groups,
+            nonce,
         )
     };
 
@@ -1403,6 +1135,328 @@ fn render_code_ownership_html(
         content = content,
         version = version,
         scripts = scripts,
+    )
+}
+
+/// Minimal HTML-escape for the dynamic text on the Code Ownership page.
+fn own_esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Compute one display row per contributor. `files_owned` counts the files where each author is
+/// the single largest owner (ownership lists are pre-sorted descending). Empty when the run has no
+/// authors.
+fn build_ownership_rows(run: Option<&AnalysisRun>, total_code: u64) -> Vec<OwnershipRow> {
+    let authors = run.map(|r| r.authors.as_slice()).unwrap_or(&[]);
+    let mut files_owned: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+    if let Some(r) = run {
+        for rec in &r.per_file_records {
+            if let Some(top) = rec.ownership.as_ref().and_then(|o| o.first()) {
+                *files_owned.entry(top.author_id).or_default() += 1;
+            }
+        }
+    }
+    authors
+        .iter()
+        .enumerate()
+        .map(|(i, a)| OwnershipRow {
+            name: a.canonical_name.clone(),
+            email: a.canonical_email.clone(),
+            code: a.counts.code_lines,
+            comment: a.counts.comment_lines,
+            blank: a.counts.blank_lines,
+            total: a.counts.total_lines,
+            code_pct: if total_code > 0 {
+                a.counts.code_lines as f64 / total_code as f64 * 100.0
+            } else {
+                0.0
+            },
+            files_owned: files_owned.get(&a.id).copied().unwrap_or(0),
+            aliases: a.aliases.len(),
+            color: OWNERSHIP_PALETTE[i % OWNERSHIP_PALETTE.len()],
+        })
+        .collect()
+}
+
+/// Bus factor: the fewest top contributors whose combined code covers ≥ 50% of the codebase.
+fn compute_bus_factor(authors: &[Author], total_code: u64) -> usize {
+    let mut acc = 0u64;
+    let mut n = 0usize;
+    for a in authors {
+        acc += a.counts.code_lines;
+        n += 1;
+        if total_code > 0 && acc * 2 >= total_code {
+            break;
+        }
+    }
+    n
+}
+
+/// Per-language ownership rows `(language, code_lines, top_owner_name, owner_pct)`, sorted by code
+/// lines descending and capped at the top 15 languages.
+fn build_language_rows(
+    run: Option<&AnalysisRun>,
+    rows: &[OwnershipRow],
+) -> Vec<(String, u64, String, f64)> {
+    let mut lang_map: std::collections::HashMap<String, std::collections::HashMap<u32, u64>> =
+        std::collections::HashMap::new();
+    if let Some(r) = run {
+        for rec in &r.per_file_records {
+            let (Some(lang), Some(ownership)) = (rec.language, rec.ownership.as_ref()) else {
+                continue;
+            };
+            let entry = lang_map.entry(lang.display_name().to_string()).or_default();
+            for own in ownership {
+                *entry.entry(own.author_id).or_default() += own.counts.code_lines;
+            }
+        }
+    }
+    let author_name = |id: u32| -> String {
+        rows.get(id as usize)
+            .map(|r| r.name.clone())
+            .unwrap_or_default()
+    };
+    let mut lang_rows: Vec<(String, u64, String, f64)> = lang_map
+        .into_iter()
+        .map(|(lang, by_author)| {
+            let lang_total: u64 = by_author.values().sum();
+            let (top_id, top_code) = by_author
+                .iter()
+                .max_by_key(|(_, c)| **c)
+                .map(|(id, c)| (*id, *c))
+                .unwrap_or((0, 0));
+            let pct = if lang_total > 0 {
+                top_code as f64 / lang_total as f64 * 100.0
+            } else {
+                0.0
+            };
+            (lang, lang_total, author_name(top_id), pct)
+        })
+        .collect();
+    lang_rows.sort_by_key(|r| std::cmp::Reverse(r.1));
+    lang_rows.truncate(15);
+    lang_rows
+}
+
+/// Serialize the per-contributor JSON data island consumed by the client-side bar re-render.
+fn ownership_data_json(rows: &[OwnershipRow]) -> String {
+    serde_json::to_string(
+        &rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "name": r.name,
+                    "email": r.email,
+                    "code": r.code,
+                    "comment": r.comment,
+                    "blank": r.blank,
+                    "total": r.total,
+                    "color": r.color,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string())
+}
+
+/// The "no ownership data" placeholder shown when the latest scan produced no authors.
+fn render_ownership_empty(project_label: &str) -> String {
+    format!(
+        r#"<div class="panel own-empty">
+  <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+  <div class="own-empty-title">No ownership data for the latest scan</div>
+  <p class="muted" style="max-width:560px;text-align:center;">
+    Code ownership is computed from <strong>git blame</strong> and is <strong>on by default</strong>.
+    This scan has none &mdash; the scanned path is likely not a git repository, or attribution was
+    turned off for this run. Re-scan a git repo with attribution on to populate this page:
+  </p>
+  <pre class="own-code">oxide-sloc analyze {project}</pre>
+  <p class="muted" style="max-width:560px;text-align:center;">
+    The scan root must be a git repository. Same-email identities are merged automatically;
+    cross-account merges are a later step.
+  </p>
+</div>"#,
+        project = own_esc(project_label),
+    )
+}
+
+/// Render the "Combine contributors" panel: a checkbox per contributor plus the list of any
+/// active merges (each with an Unmerge form).
+fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) -> String {
+    use std::fmt::Write as _;
+    let mut merge_checks = String::new();
+    for r in rows {
+        let _ = write!(
+            merge_checks,
+            r#"<label class="merge-opt"><input type="checkbox" name="email" value="{email}"><span class="merge-opt-dot" style="background:{color};"></span><span class="merge-opt-name">{name}</span><span class="merge-opt-email">{email}</span></label>"#,
+            email = own_esc(&r.email),
+            color = r.color,
+            name = own_esc(&r.name),
+        );
+    }
+    let mut merge_existing = String::new();
+    if !merge_groups.is_empty() {
+        merge_existing.push_str(
+            r#"<div class="merge-existing"><div class="merge-existing-title">Active merges</div>"#,
+        );
+        for g in merge_groups {
+            let members = g
+                .members
+                .iter()
+                .map(|m| own_esc(m))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = write!(
+                merge_existing,
+                r#"<div class="merge-chip"><span class="merge-chip-text"><strong>{name}</strong> &nbsp;{count} emails &middot; {members}</span><form method="POST" action="/api/ownership/unmerge" style="display:inline;margin:0;"><input type="hidden" name="canonical_email" value="{cemail}"><button type="submit" class="merge-unmerge">Unmerge</button></form></div>"#,
+                name = own_esc(&g.canonical_name),
+                count = g.members.len(),
+                members = members,
+                cemail = own_esc(&g.canonical_email),
+            );
+        }
+        merge_existing.push_str("</div>");
+    }
+    format!(
+        r#"<div class="section-header">Combine contributors</div>
+<div class="panel">
+  <p class="muted" style="margin-bottom:14px;">Same person committing under different names or emails? Select two or more contributors and merge them into a single identity. This is applied on top of the scan &mdash; <strong>no re-scan needed</strong> &mdash; and can be exported as a git <code>.mailmap</code> so the merge carries into git itself and future scans.</p>
+  <form method="POST" action="/api/ownership/merge">
+    <div class="merge-grid">{merge_checks}</div>
+    <div class="merge-controls">
+      <input type="text" name="canonical_name" class="merge-name-input" placeholder="Canonical display name (optional)">
+      <button type="submit" class="merge-btn">Merge selected</button>
+      <a href="/code-ownership/mailmap" class="merge-mailmap-link">&#8681; Download .mailmap</a>
+    </div>
+  </form>
+  {merge_existing}
+</div>
+
+"#,
+        merge_checks = merge_checks,
+        merge_existing = merge_existing,
+    )
+}
+
+/// Render the populated Code Ownership content: summary chips, the per-contributor bar chart,
+/// the contributor + per-language tables, and the combine-contributors panel.
+fn render_ownership_populated(
+    rows: &[OwnershipRow],
+    bus_factor: usize,
+    total_code: u64,
+    lang_rows: &[(String, u64, String, f64)],
+    data_json: &str,
+    merge_groups: &[AuthorMergeGroup],
+    nonce: &str,
+) -> String {
+    use std::fmt::Write as _;
+    let top_owner = rows.first();
+    let top_name = top_owner.map(|r| own_esc(&r.name)).unwrap_or_default();
+    let top_pct = top_owner.map(|r| r.code_pct).unwrap_or(0.0);
+
+    // Server-rendered bars (metric = code); JS re-renders on filter change.
+    let max_code = rows.iter().map(|r| r.code).max().unwrap_or(1).max(1);
+    let mut bars = String::new();
+    for r in rows {
+        let pct = (r.code as f64 / max_code as f64 * 100.0).round() as u64;
+        let _ = write!(
+            bars,
+            r#"<div class="own-bar-row"><div class="own-bar-name" title="{email}">{name}</div><div class="own-bar-track"><div class="own-bar-fill" style="width:{pct}%;background:{color};"></div></div><div class="own-bar-val">{val}</div></div>"#,
+            email = own_esc(&r.email),
+            name = own_esc(&r.name),
+            pct = pct,
+            color = r.color,
+            val = fmt_num(r.code as i64),
+        );
+    }
+
+    let mut author_table = String::new();
+    for r in rows {
+        let _ = write!(
+            author_table,
+            r#"<tr><td><span class="own-dot" style="background:{color};"></span>{name}</td><td class="own-email">{email}</td><td class="num">{code}</td><td class="num">{comment}</td><td class="num">{blank}</td><td class="num">{total}</td><td class="num">{pct:.1}%</td><td class="num">{files}</td><td class="num">{aliases}</td></tr>"#,
+            color = r.color,
+            name = own_esc(&r.name),
+            email = own_esc(&r.email),
+            code = fmt_num(r.code as i64),
+            comment = fmt_num(r.comment as i64),
+            blank = fmt_num(r.blank as i64),
+            total = fmt_num(r.total as i64),
+            pct = r.code_pct,
+            files = r.files_owned,
+            aliases = r.aliases,
+        );
+    }
+
+    let mut lang_table = String::new();
+    for (lang, code, owner, pct) in lang_rows {
+        let _ = write!(
+            lang_table,
+            r#"<tr><td>{lang}</td><td class="num">{code}</td><td>{owner}</td><td class="num">{pct:.1}%</td></tr>"#,
+            lang = own_esc(lang),
+            code = fmt_num(*code as i64),
+            owner = own_esc(owner),
+            pct = pct,
+        );
+    }
+
+    let merge_panel = render_merge_panel(merge_groups, rows);
+
+    format!(
+        r#"<div class="summary-strip">
+  <div class="stat-chip"><div class="stat-chip-val">{contributors}</div><div class="stat-chip-label">Contributors</div></div>
+  <div class="stat-chip"><div class="stat-chip-val">{top_name}</div><div class="stat-chip-label">Top Owner &middot; {top_pct:.0}% of code</div></div>
+  <div class="stat-chip"><div class="stat-chip-val">{bus_factor}</div><div class="stat-chip-label">Bus Factor (owners of 50% code)</div></div>
+  <div class="stat-chip"><div class="stat-chip-val">{total_code}</div><div class="stat-chip-label">Total Code Lines</div></div>
+</div>
+
+<div class="chart-box">
+  <div class="own-chart-head">
+    <div class="chart-box-title">Lines owned per contributor</div>
+    <div class="own-controls">
+      <button type="button" class="own-filter active" data-metric="code">Code</button>
+      <button type="button" class="own-filter" data-metric="comment">Comment</button>
+      <button type="button" class="own-filter" data-metric="blank">Blank</button>
+      <button type="button" class="own-filter" data-metric="total">Total</button>
+    </div>
+  </div>
+  <div id="own-bars">{bars}</div>
+</div>
+
+<div class="section-header">Contributors</div>
+<div class="panel" style="padding:0;overflow:auto;">
+  <table class="data-table">
+    <thead><tr><th>Author</th><th>Email</th><th class="num">Code</th><th class="num">Comment</th><th class="num">Blank</th><th class="num">Total</th><th class="num">Code %</th><th class="num">Files Owned</th><th class="num">Aliases</th></tr></thead>
+    <tbody>{author_table}</tbody>
+  </table>
+</div>
+
+<div class="section-header">Ownership by language</div>
+<div class="panel" style="padding:0;overflow:auto;">
+  <table class="data-table">
+    <thead><tr><th>Language</th><th class="num">Code Lines</th><th>Top Owner</th><th class="num">Owner %</th></tr></thead>
+    <tbody>{lang_table}</tbody>
+  </table>
+</div>
+
+{merge_panel}
+<p class="muted" style="margin-top:14px;">Ownership reflects the author who last touched each physical line (<code>git blame -w -M -C</code>, <code>.mailmap</code> honoured). Counts are physical lines and sum to the file's line total; they can differ slightly from the policy-adjusted SLOC totals elsewhere. Same-email identities are auto-merged; use <strong>Combine contributors</strong> above to merge across different emails.</p>
+
+<script id="own-data" type="application/json" nonce="{nonce}">{data_json}</script>"#,
+        contributors = rows.len(),
+        top_name = top_name,
+        top_pct = top_pct,
+        bus_factor = bus_factor,
+        total_code = fmt_num(total_code as i64),
+        bars = bars,
+        author_table = author_table,
+        lang_table = lang_table,
+        merge_panel = merge_panel,
+        nonce = nonce,
+        data_json = data_json,
     )
 }
 
@@ -36104,6 +36158,79 @@ mod tests_private {
         assert!(html.contains("Active merges"));
         assert!(html.contains("/api/ownership/unmerge"));
         assert!(html.contains("Unmerge"));
+    }
+
+    #[test]
+    fn code_ownership_language_table_and_files_owned() {
+        use sloc_core::{AuthorLineCounts, FileOwnership, FileRecord, FileStatus};
+        use sloc_languages::Language;
+
+        let own = |author_id: u32, code: u64| FileOwnership {
+            author_id,
+            counts: AuthorLineCounts {
+                code_lines: code,
+                comment_lines: 0,
+                blank_lines: 0,
+                total_lines: code,
+            },
+        };
+        let rec = |path: &str, lang: Language, owners: Vec<FileOwnership>| FileRecord {
+            path: path.into(),
+            relative_path: path.into(),
+            language: Some(lang),
+            size_bytes: 100,
+            detected_encoding: None,
+            raw_line_categories: Default::default(),
+            effective_counts: Default::default(),
+            status: FileStatus::AnalyzedExact,
+            warnings: vec![],
+            generated: false,
+            minified: false,
+            vendor: false,
+            parse_mode: None,
+            submodule: None,
+            coverage: None,
+            style_analysis: None,
+            cyclomatic_complexity: None,
+            lsloc: None,
+            commit_count: None,
+            last_commit_date: None,
+            ownership: Some(owners),
+            content_hash: 0,
+        };
+
+        let json = serde_json::json!({
+            "tool": {"name":"oxide-sloc","version":"0.0.0","run_id":"t","timestamp_utc":"2026-01-01T00:00:00Z"},
+            "environment": {"operating_system":"x","architecture":"x86_64","runtime_mode":"cli","initiator_username":"u","initiator_hostname":"h"},
+            "effective_configuration": {},
+            "input_roots": ["/tmp/myrepo"],
+            "summary_totals": {"files_considered":2,"files_analyzed":2,"files_skipped":0,"total_physical_lines":235,"code_lines":235,"comment_lines":0,"blank_lines":0,"mixed_lines_separate":0},
+            "totals_by_language": [],
+            "per_file_records": [],
+            "skipped_file_records": [],
+            "warnings": [],
+            "authors": [
+                {"id":0,"canonical_name":"Nima Shafie","canonical_email":"nimzshafie@gmail.com","aliases":[],
+                 "counts":{"code_lines":125,"comment_lines":0,"blank_lines":0,"total_lines":125}},
+                {"id":1,"canonical_name":"Other Dev","canonical_email":"other@example.com","aliases":[],
+                 "counts":{"code_lines":110,"comment_lines":0,"blank_lines":0,"total_lines":110}}
+            ]
+        });
+        let mut run: AnalysisRun = serde_json::from_value(json).expect("run deserializes");
+        run.per_file_records = vec![
+            // Nima (0) owns the Rust file; Other (1) owns the Python file.
+            rec("a.rs", Language::Rust, vec![own(0, 120), own(1, 30)]),
+            rec("b.py", Language::Python, vec![own(1, 80), own(0, 5)]),
+        ];
+
+        let html = render_code_ownership_html(&test_nonce(), Some(&run), "myrepo", &[]);
+        // The per-language ownership table lists each language with its dominant owner.
+        assert!(html.contains("Ownership by language"));
+        assert!(html.contains("Rust"));
+        assert!(html.contains("Python"));
+        // Each author is the top owner of exactly one file (Files Owned column populated).
+        assert!(html.contains("Nima Shafie"));
+        assert!(html.contains("Other Dev"));
     }
 
     #[test]

@@ -1103,11 +1103,17 @@ pub fn apply_identity_map(run: &mut AnalysisRun, map: &IdentityMap) {
     if map.groups.is_empty() || run.authors.is_empty() {
         return;
     }
+    let resolved = resolve_merge_keys(&run.authors, map);
+    let (merged, old_to_new) = merge_authors(&run.authors, &resolved);
+    fold_file_ownership(&mut run.per_file_records, &old_to_new);
+    sort_and_reindex_authors(run, merged);
+}
 
-    // Resolve each existing author to a merge key + canonical (name, email).
-    // Key = the group's canonical email when the author is a member, else the author's own email.
-    let resolved: Vec<(String, String, String)> = run
-        .authors
+/// Resolve each existing author to a `(merge_key, canonical_name, canonical_email)` triple.
+/// The key is the group's canonical email (lower-cased) when the author belongs to a merge group,
+/// otherwise the author's own lower-cased email — so authors sharing a key collapse together.
+fn resolve_merge_keys(authors: &[Author], map: &IdentityMap) -> Vec<(String, String, String)> {
+    authors
         .iter()
         .map(|a| {
             map.group_for(&a.canonical_email).map_or_else(
@@ -1127,12 +1133,19 @@ pub fn apply_identity_map(run: &mut AnalysisRun, map: &IdentityMap) {
                 },
             )
         })
-        .collect();
+        .collect()
+}
 
-    // Group old author indices by merge key, preserving first-seen order.
+/// Group old author indices by merge key (first-seen order), summing line counts and unioning
+/// aliases into one `Author` per key. Returns the merged authors plus an `old_index -> new_id`
+/// map used to remap per-file ownership.
+fn merge_authors(
+    authors: &[Author],
+    resolved: &[(String, String, String)],
+) -> (Vec<Author>, Vec<u32>) {
     let mut key_to_new: HashMap<String, u32> = HashMap::new();
     let mut merged: Vec<Author> = Vec::new();
-    let mut old_to_new: Vec<u32> = vec![0; run.authors.len()];
+    let mut old_to_new: Vec<u32> = vec![0; authors.len()];
     for (old_idx, (key, name, email)) in resolved.iter().enumerate() {
         let new_id = *key_to_new.entry(key.clone()).or_insert_with(|| {
             let id = merged.len() as u32;
@@ -1146,7 +1159,7 @@ pub fn apply_identity_map(run: &mut AnalysisRun, map: &IdentityMap) {
             id
         });
         old_to_new[old_idx] = new_id;
-        let src = &run.authors[old_idx];
+        let src = &authors[old_idx];
         let dst = &mut merged[new_id as usize];
         dst.counts.add(&src.counts);
         for alias in &src.aliases {
@@ -1155,9 +1168,12 @@ pub fn apply_identity_map(run: &mut AnalysisRun, map: &IdentityMap) {
             }
         }
     }
+    (merged, old_to_new)
+}
 
-    // Remap + re-aggregate per-file ownership onto the merged author ids.
-    for rec in &mut run.per_file_records {
+/// Remap and re-aggregate each file's ownership entries onto the merged author ids, in place.
+fn fold_file_ownership(records: &mut [FileRecord], old_to_new: &[u32]) {
+    for rec in records {
         if let Some(ownership) = rec.ownership.as_mut() {
             let mut by_new: HashMap<u32, AuthorLineCounts> = HashMap::new();
             for entry in ownership.iter() {
@@ -1172,8 +1188,11 @@ pub fn apply_identity_map(run: &mut AnalysisRun, map: &IdentityMap) {
             *ownership = folded;
         }
     }
+}
 
-    // Sort merged authors by code lines owned and re-index, remapping ownership ids again.
+/// Sort merged authors by code lines owned (name as tiebreak), re-index them from 0, remap the
+/// per-file ownership ids to match, and store the ordered list on `run.authors`.
+fn sort_and_reindex_authors(run: &mut AnalysisRun, merged: Vec<Author>) {
     let mut order: Vec<usize> = (0..merged.len()).collect();
     order.sort_by(|&a, &b| {
         merged[b]
@@ -1628,15 +1647,7 @@ fn assemble_run(
     // best-effort). A window of 0 (or None) disables it; a non-git path yields an empty result.
     let activity_window = config.analysis.activity_window_days.unwrap_or(0);
     if let (true, Some(root)) = (activity_window > 0, first_root.as_deref()) {
-        let activity = detect_file_activity(root, activity_window);
-        if !activity.is_empty() {
-            for rec in &mut analyzed {
-                if let Some((count, date)) = activity.get(&rec.relative_path) {
-                    rec.commit_count = Some(*count);
-                    rec.last_commit_date.clone_from(date);
-                }
-            }
-        }
+        apply_file_activity(root, activity_window, &mut analyzed);
     }
 
     // Per-author code-ownership attribution (opt-in: one `git blame` per file). Best-effort —
@@ -1703,6 +1714,22 @@ fn assemble_run(
         duplicate_groups,
         duplicates_excluded: 0,
         authors,
+    }
+}
+
+/// Attach per-file git activity (commit count + last-change date) for the hotspots view, in place.
+/// A single `git log` pass over `root`; best-effort — an empty result (non-git path, or no history
+/// within `window_days`) leaves every record untouched.
+fn apply_file_activity(root: &Path, window_days: u32, analyzed: &mut [FileRecord]) {
+    let activity = detect_file_activity(root, window_days);
+    if activity.is_empty() {
+        return;
+    }
+    for rec in analyzed {
+        if let Some((count, date)) = activity.get(&rec.relative_path) {
+            rec.commit_count = Some(*count);
+            rec.last_commit_date.clone_from(date);
+        }
     }
 }
 
