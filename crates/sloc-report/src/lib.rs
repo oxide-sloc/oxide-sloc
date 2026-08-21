@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use askama::Template;
 use chrono::{DateTime, FixedOffset, Utc};
-use sloc_core::{AnalysisRun, CocomoMode, FileRecord, StyleSummary, SummaryTotals};
+use sloc_core::{AnalysisRun, Author, CocomoMode, FileRecord, StyleSummary, SummaryTotals};
 
 // Embed logo images at compile time so every generated HTML report is fully
 // self-contained.  Server-relative paths like /images/logo/... break when the
@@ -702,6 +702,37 @@ struct HotspotRow {
     score: u64,
     /// Primary owner of the file (top blame owner). Empty unless attribution ran.
     owner: String,
+    /// Best-effort profile URL for the primary owner (GitHub/GHE no-reply email → profile),
+    /// `None` when the owner's email carries no derivable platform handle.
+    owner_profile_url: Option<String>,
+}
+
+/// Best-effort profile URL for a contributor, derived from a GitHub / GitHub-Enterprise-style
+/// no-reply commit email of the form `<id>+<handle>@users.noreply.<host>` or
+/// `<handle>@users.noreply.<host>`. Returns `https://<host>/<handle>` — e.g.
+/// `12345+octocat@users.noreply.github.com` → `https://github.com/octocat`, and the same shape
+/// works for a GitHub Enterprise host. Returns `None` for plain corporate/personal emails, which
+/// carry no reliable platform handle (linking those would fabricate dead URLs).
+fn author_profile_url(email: &str) -> Option<String> {
+    let (local, domain) = email.trim().split_once('@')?;
+    let host = domain.strip_prefix("users.noreply.")?;
+    let handle = local.rsplit_once('+').map_or(local, |(_, h)| h);
+    if handle.is_empty() || host.is_empty() {
+        return None;
+    }
+    Some(format!("https://{host}/{handle}"))
+}
+
+/// Best-effort profile URL for a resolved [`Author`]: tries the canonical email first, then any
+/// folded alias email, so a contributor whose canonical identity is a personal email still links
+/// when one of their merged identities is a platform no-reply address.
+fn author_profile_url_for(author: &Author) -> Option<String> {
+    author_profile_url(&author.canonical_email).or_else(|| {
+        author
+            .aliases
+            .iter()
+            .find_map(|al| author_profile_url(&al.email))
+    })
 }
 
 /// Build the git hotspots from per-file activity (only files that carry a
@@ -716,18 +747,27 @@ fn build_hotspot_rows(run: &AnalysisRun, limit: usize) -> Vec<HotspotRow> {
         .iter()
         .map(|a| (a.id, a.canonical_name.as_str()))
         .collect();
+    // Parallel map: author id → best-effort profile URL, so each hotspot owner can link out.
+    let author_urls: std::collections::HashMap<u32, String> = run
+        .authors
+        .iter()
+        .filter_map(|a| author_profile_url_for(a).map(|url| (a.id, url)))
+        .collect();
     let mut rows: Vec<HotspotRow> = run
         .per_file_records
         .iter()
         .filter_map(|r| {
             let commits = r.commit_count?;
             let code = r.effective_counts.code_lines;
-            let owner = r
+            let top_owner_id = r
                 .ownership
                 .as_ref()
                 .and_then(|o| o.first())
-                .and_then(|top| author_names.get(&top.author_id))
+                .map(|top| top.author_id);
+            let owner = top_owner_id
+                .and_then(|id| author_names.get(&id))
                 .map_or_else(String::new, |name| (*name).to_string());
+            let owner_profile_url = top_owner_id.and_then(|id| author_urls.get(&id).cloned());
             Some(HotspotRow {
                 path: r.relative_path.clone(),
                 code_lines: code,
@@ -738,6 +778,7 @@ fn build_hotspot_rows(run: &AnalysisRun, limit: usize) -> Vec<HotspotRow> {
                 }),
                 score: code.saturating_mul(u64::from(commits)),
                 owner,
+                owner_profile_url,
             })
         })
         .collect();
@@ -774,6 +815,8 @@ struct AuthorReportRow {
     initials: String,
     /// Accent colour for this contributor's avatar/bar, from the canonical palette by rank.
     color: &'static str,
+    /// Best-effort profile URL (GitHub/GHE no-reply email → profile); `None` when not derivable.
+    profile_url: Option<String>,
 }
 
 /// One file a contributor owns, for the Code Ownership per-author drill-down: the lines *this*
@@ -864,6 +907,7 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
                 rank_class: "",
                 initials: author_initials(&a.canonical_name),
                 color: REPORT_PALETTE[0],
+                profile_url: author_profile_url_for(a),
             }
         })
         .collect();
@@ -4934,8 +4978,8 @@ struct WarningOpportunityRow {
       --warn-text: #9a6d00;
       --danger-bg: #fdebec;
       --danger-text: #cc4b4b;
-      --info-bg: #f2f6ff;
-      --info-text: #4467d8;
+      --info-bg: #fbf1e8;
+      --info-text: #a5541f;
     }
     {% if let Some(hex) = accent_hex %}
     :root, body.dark-theme { --accent: {{ hex }}; --accent-2: {{ hex }}; }
@@ -4964,8 +5008,8 @@ struct WarningOpportunityRow {
       --warn-text: #f3cb75;
       --danger-bg: #3d1f1f;
       --danger-text: #ff9f9f;
-      --info-bg: #202e55;
-      --info-text: #a9c1ff;
+      --info-bg: #33241b;
+      --info-text: #e6a879;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
@@ -5175,6 +5219,12 @@ struct WarningOpportunityRow {
     .lb-r3 { background:linear-gradient(135deg,#eabd92,#cd7f4c); color:#4d2a0e; border-color:#cd7f4c; box-shadow:0 3px 10px rgba(205,127,76,0.35); }
     .lb-avatar { flex:0 0 auto; width:36px; height:36px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:14px; text-shadow:0 1px 2px rgba(0,0,0,0.25); }
     .lb-name { flex:0 0 210px; font-size:16px; font-weight:800; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    /* Contributor profile links (ownership table, leaderboard, hotspot owner column) — inherit the
+       surrounding weight/size, tint oxide, underline only on hover. */
+    a.author-link { color:var(--oxide); text-decoration:none; border-bottom:1px solid transparent; transition:border-color 0.15s ease; }
+    a.author-link:hover { border-bottom-color:var(--oxide); }
+    .lb-name a.author-link { color:inherit; }
+    .lb-name a.author-link:hover { color:var(--oxide); }
     .lb-bar-wrap { flex:1 1 auto; height:12px; min-width:60px; background:var(--surface-3); border-radius:7px; overflow:hidden; box-shadow:inset 0 1px 2px rgba(0,0,0,0.08); }
     .lb-bar { display:block; height:100%; border-radius:7px; transition:width .5s cubic-bezier(.16,1,.3,1); }
     .lb-stats { flex:0 0 auto; font-size:13px; color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
@@ -5250,10 +5300,10 @@ struct WarningOpportunityRow {
     .test-density-badge.good { background:var(--good-bg); color:var(--good-text); }
     .test-density-badge.warn { background:var(--warn-bg); color:var(--warn-text); }
     .test-density-badge.danger { background:var(--danger-bg); color:var(--danger-text); }
-    .info-callout { display:flex; align-items:flex-start; gap:10px; margin-top:14px; padding:11px 14px; border-radius:10px; background:var(--info-bg); border:1px solid rgba(68,103,216,0.18); color:var(--info-text); font-size:13px; line-height:1.5; }
+    .info-callout { display:flex; align-items:flex-start; gap:10px; margin-top:14px; padding:11px 14px; border-radius:10px; background:var(--info-bg); border:1px solid rgba(196,92,16,0.20); color:var(--info-text); font-size:13px; line-height:1.5; }
     .info-callout-icon { flex:0 0 auto; font-size:15px; margin-top:1px; }
-    .info-callout code { background:rgba(68,103,216,0.12); border-radius:4px; padding:1px 5px; font-size:12px; }
-    body.dark-theme .info-callout { background:rgba(100,130,255,0.09); border-color:rgba(100,130,255,0.22); }
+    .info-callout code { background:rgba(196,92,16,0.12); border-radius:4px; padding:1px 5px; font-size:12px; }
+    body.dark-theme .info-callout { background:rgba(211,122,76,0.10); border-color:rgba(211,122,76,0.25); }
     .empty-state-row td { text-align:center; padding:20px; color:var(--muted-2); font-size:13px; font-style:italic; }
     /* auto-fit so a lone gauge card (line-only coverage) spans the full width instead of 1/3 */
     .cov-gauge-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; margin-bottom:18px; }
@@ -5632,7 +5682,7 @@ struct WarningOpportunityRow {
     .chart-tab { padding:5px 16px; border-radius:999px; border:1px solid var(--line-strong); background:var(--surface-2); color:var(--muted); font-size:12px; font-weight:700; cursor:pointer; transition:background 0.12s,color 0.12s,border-color 0.12s; }
     .chart-tab:hover { background:var(--surface-3); color:var(--text); }
     .chart-tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
-    .chart-locked-card { display:none; padding:20px 24px; border-radius:14px; background:var(--info-bg); border:1px solid rgba(111,144,255,0.28); color:var(--info-text); font-size:14px; line-height:1.6; }
+    .chart-locked-card { display:none; padding:20px 24px; border-radius:14px; background:var(--info-bg); border:1px solid rgba(196,92,16,0.28); color:var(--info-text); font-size:14px; line-height:1.6; }
     .chart-locked-card a { color:var(--accent-2); font-weight:700; }
     .chart-locked-card h3 { margin:0 0 6px; font-size:15px; }
 
@@ -5744,7 +5794,7 @@ struct WarningOpportunityRow {
     .style-score-fill{position:absolute;left:0;top:0;height:100%;border-radius:4px;background:linear-gradient(90deg,var(--oxide),var(--oxide-2));}
     .style-badge{display:inline-block;padding:2px 7px;border-radius:12px;font-size:10px;font-weight:700;background:var(--surface-3);color:var(--oxide);border:1px solid var(--line);text-decoration:none;transition:background .15s,transform .15s,box-shadow .15s;}
     a.style-badge:hover{background:var(--oxide);color:#fff !important;transform:translateY(-1px);box-shadow:0 3px 10px rgba(77,44,20,.24);}
-    .style-heuristic-note{display:flex;align-items:flex-start;gap:10px;background:var(--info-bg);color:var(--info-text);border-radius:10px;padding:11px 14px;font-size:13px;line-height:1.5;margin-top:14px;border:1px solid rgba(68,103,216,0.18);}
+    .style-heuristic-note{display:flex;align-items:flex-start;gap:10px;background:var(--info-bg);color:var(--info-text);border-radius:10px;padding:11px 14px;font-size:13px;line-height:1.5;margin-top:14px;border:1px solid rgba(196,92,16,0.20);}
     .style-lang-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;}
     .style-lang-tab{padding:4px 12px;border-radius:14px;border:1px solid var(--line);background:var(--surface);font-size:11px;font-weight:700;cursor:pointer;color:var(--text);transition:background .15s;}
     .style-lang-tab:hover{background:var(--surface-2);}
@@ -5772,7 +5822,7 @@ struct WarningOpportunityRow {
     body.dark-theme .style-guide-track{background:var(--surface-3);}
     body.dark-theme .style-chip{background:var(--surface-2);}
     body.dark-theme .style-file-table th{background:var(--surface-3);}
-    body.dark-theme .style-heuristic-note{border-color:rgba(100,130,255,0.22);}
+    body.dark-theme .style-heuristic-note{border-color:rgba(211,122,76,0.25);}
     body.dark-theme .style-lang-tab{background:var(--surface-2);color:var(--text);}
     body.dark-theme .style-lang-tab.active{background:var(--oxide);color:#fff;}
     body.dark-theme .style-sig-chip{background:var(--surface-3);color:var(--muted);}
@@ -6342,7 +6392,7 @@ struct WarningOpportunityRow {
           </div>
           {% else %}
           <div class="info-callout">
-            <span class="info-callout-icon">&#x2139;&#xFE0F;</span>
+            <span class="info-callout-icon">&#x2139;</span>
             <span>No code coverage detected. Re-run with <code>--lcov-path coverage.info</code> to see line, function, and branch coverage here.</span>
           </div>
           {% endif %}
@@ -6359,7 +6409,7 @@ struct WarningOpportunityRow {
             <div class="pill-row"><span class="pill info">{{ style_lang_count }} language group(s) &#xB7; Lexical heuristics</span></div>
           </div>
           <div class="style-heuristic-note">
-            <span class="info-callout-icon">&#x2139;&#xFE0F;</span>
+            <span class="info-callout-icon">&#x2139;</span>
             <span>Scores are lexical approximations based on indentation, line length, brace placement, and language-specific signals &#x2014; not a full parse. Use as a directional signal.</span>
           </div>
           <!-- Summary chips -->
@@ -6531,7 +6581,7 @@ struct WarningOpportunityRow {
             {% for h in hotspot_rows %}
               <tr>
                 <td class="mono" title="{{ h.path }}">{{ h.path }}</td>
-                {% if has_ownership %}<td>{{ h.owner }}</td>{% endif %}
+                {% if has_ownership %}<td>{% match h.owner_profile_url %}{% when Some with (url) %}<a class="author-link" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ h.owner }}</a>{% when None %}{{ h.owner }}{% endmatch %}</td>{% endif %}
                 <td class="num-col">{{ h.code_lines|commas }}</td>
                 <td class="num-col">{{ h.commit_count }}</td>
                 <td class="num-col" style="font-weight:700;color:var(--oxide);">{{ h.score|commas }}</td>
@@ -6573,7 +6623,7 @@ struct WarningOpportunityRow {
             <tbody>
             {% for a in ownership_rows %}
               <tr>
-                <td>{{ a.name }}</td>
+                <td>{% match a.profile_url %}{% when Some with (url) %}<a class="author-link" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ a.name }}</a>{% when None %}{{ a.name }}{% endmatch %}</td>
                 <td class="mono" style="color:var(--muted);">{{ a.email }}</td>
                 <td class="num-col">{{ a.code|commas }}</td>
                 <td class="num-col">{{ a.comment|commas }}</td>
@@ -6586,7 +6636,7 @@ struct WarningOpportunityRow {
             </tbody>
           </table>
         </div>
-        <h3 class="own-files-title">&#127942; Contributor Leaderboard</h3>
+        <h3 class="own-files-title">Contributor Leaderboard</h3>
         <p class="own-files-sub">Ranked by <strong>code lines owned</strong>. Expand a contributor to see the files they own (files where they are the top blame owner), with the lines they own in each &mdash; tying ownership to the specific files, including the Git Hotspots.</p>
         {% for a in ownership_rows %}
         {% if !a.files.is_empty() %}
@@ -6594,7 +6644,7 @@ struct WarningOpportunityRow {
           <summary>
             <span class="lb-rank {{ a.rank_class }}">{{ a.rank }}</span>
             <span class="lb-avatar" style="background:{{ a.color }};">{{ a.initials }}</span>
-            <span class="lb-name">{{ a.name }}</span>
+            <span class="lb-name">{% match a.profile_url %}{% when Some with (url) %}<a class="author-link" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ a.name }}</a>{% when None %}{{ a.name }}{% endmatch %}</span>
             <span class="lb-bar-wrap"><span class="lb-bar" style="width:{{ a.code_pct_str }}%;background:{{ a.color }};"></span></span>
             <span class="lb-stats"><strong>{{ a.code|commas }}</strong> code lines &middot; {{ a.files_owned }} file{% if a.files_owned != 1 %}s{% endif %} &middot; {{ a.code_pct_str }}%</span>
           </summary>
