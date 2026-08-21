@@ -11,6 +11,14 @@ fn main() {
     let git_sha = git_short_sha().unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=OXIDE_SLOC_GIT_SHA={git_sha}");
 
+    // Capture the `origin` remote URL so a built binary — including an air-gapped fork built
+    // from an internal `git clone` — knows which repository it came from. The web UI
+    // "Report a Bug" page uses it to direct reports back to the correct upstream. Best-effort:
+    // absent git / no remote simply omits the var and the runtime falls back to config/default.
+    if let Some(url) = git_origin_url() {
+        println!("cargo:rustc-env=SLOC_BUILD_ORIGIN_URL={url}");
+    }
+
     let epoch = build_epoch_seconds();
     println!(
         "cargo:rustc-env=OXIDE_SLOC_BUILD_TIME={}",
@@ -18,12 +26,28 @@ fn main() {
     );
 
     // Re-run when HEAD moves so the embedded SHA stays fresh; ignore if absent.
-    for hint in ["../../.git/HEAD", "../../.git/index"] {
+    for hint in ["../../.git/HEAD", "../../.git/index", "../../.git/config"] {
         if std::path::Path::new(hint).exists() {
             println!("cargo:rerun-if-changed={hint}");
         }
     }
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+}
+
+fn git_origin_url() -> Option<String> {
+    let out = Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8(out.stdout)
+        .ok()?
+        .replace(['\n', '\r'], "")
+        .trim()
+        .to_string();
+    if url.is_empty() { None } else { Some(url) }
 }
 
 fn git_short_sha() -> Option<String> {

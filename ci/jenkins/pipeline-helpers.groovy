@@ -590,8 +590,8 @@ def runSetup() {
 //     (those need the toolchain to lint / instrument the workspace).
 def runBuild() {
     if (env.SLOC_NEEDS_SOURCE == 'true') {
-        // unset CC/CXX inside the build shell: on Windows the airgap-devkit gcc can
-        // leak in via CC and conflict with the MinGW-w64 gcc that the
+        // unset CC/CXX inside the build shell: on Windows a stray gcc from another
+        // toolkit can leak in via CC and conflict with the MinGW-w64 gcc that the
         // x86_64-pc-windows-gnu target links with (documented "unset CC on Windows"
         // rule). initEnv() has already prepended <gitroot>\mingw64\bin to PATH so
         // cc/gcc/ld resolve. A best-effort `gcc --version` (never fatal) makes a
@@ -945,7 +945,7 @@ def runAnalyze() {
     }
 
     // Derive a project slug that matches the local-run naming convention:
-    //   {repo-name}_{short-sha}  (e.g. airgap-devkit_a78a632)
+    //   {repo-name}_{short-sha}  (e.g. my-project_a78a632)
     // Name comes from the last path segment of the scanned repo's URL (strip .git).
     // When scanning an external project that is SCAN_REPO_URL; otherwise the tooling
     // repo — TOOL_REPO_URL if the operator set it, else the URL the job actually checked out

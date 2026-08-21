@@ -242,8 +242,8 @@ def test_jenkinsfile():
           not re.search(r"^\s*timestamps\(\)", code, re.MULTILINE),
           "timestamps() must be removed for minimal-controller compatibility")
 
-    # F5: the source build must unset CC (and CXX) so the airgap-devkit gcc can't
-    # conflict with the MinGW gcc the windows-gnu target links with. The build shx
+    # F5: the source build must unset CC (and CXX) so a stray gcc from another
+    # toolkit can't conflict with the MinGW gcc the windows-gnu target links with. The build shx
     # body now lives in runBuild() in pipeline-helpers.groovy (the Jenkinsfile Build
     # stage just delegates to h.runBuild()), so assert the invariant there.
     helpers_src = read(HELPERS)

@@ -353,8 +353,8 @@ directory = "vendor"
 
 # ── 6. Build from vendored sources ───────────────────────────────────────────
 Info 'Building from vendored sources (cargo build --release --offline)...'
-# Unset CC/CXX so a stray airgap-devkit gcc can't override the MinGW gcc the
-# windows-gnu target links with.
+# Unset CC/CXX so a stray gcc from another toolkit can't override the MinGW gcc
+# the windows-gnu target links with.
 $env:CC = $null
 $env:CXX = $null
 Push-Location $RepoRoot

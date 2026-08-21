@@ -344,6 +344,13 @@ pub struct ReportingConfig {
     /// Use for company name, project identifier, or scanner identification.
     #[serde(default)]
     pub report_header_footer: Option<String>,
+    /// Repository (or issue-tracker) URL that the web UI "Report a Bug" page points at.
+    /// When set, it overrides the build-time detected origin and the default upstream repo.
+    /// Air-gapped forks set this to their internal GitLab/Bitbucket repo so reports land in
+    /// the right place. Also settable via the `SLOC_BUG_REPORT_URL` environment variable,
+    /// which takes precedence over this value.
+    #[serde(default)]
+    pub bug_report_url: Option<String>,
 }
 
 impl Default for ReportingConfig {
@@ -359,6 +366,7 @@ impl Default for ReportingConfig {
             logo_path: None,
             accent_color: None,
             report_header_footer: None,
+            bug_report_url: None,
         }
     }
 }

@@ -701,7 +701,7 @@ use super::{AppState, CspNonce};
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
 </body>
 </html>"##,

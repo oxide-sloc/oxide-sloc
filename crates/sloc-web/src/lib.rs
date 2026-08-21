@@ -30,6 +30,7 @@ pub(crate) mod error;
 pub(crate) mod git_browser;
 pub(crate) mod git_webhook;
 pub(crate) mod integrations;
+pub(crate) mod report_bug;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -1390,7 +1391,7 @@ fn render_code_ownership_html(
   Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
   &nbsp;&middot;&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
   &nbsp;&middot;&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-  &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+  &nbsp;&middot;&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
 </footer>
 <script nonce="{nonce}">{scripts}</script>
 </body>
@@ -1488,6 +1489,8 @@ fn build_router(state: AppState) -> Router {
             "/api/scan-profiles/{id}",
             axum::routing::delete(api_delete_scan_profile),
         )
+        // ── Report a Bug page ─────────────────────────────────────────────────
+        .route("/report-bug", get(report_bug::report_bug_handler))
         // ── Integrations (webhooks + Confluence) ──────────────────────────────
         .route("/integrations", get(integrations::integrations_handler))
         .route(
@@ -11679,7 +11682,7 @@ fn multi_compare_page(
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;&middot;&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;&middot;&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;&middot;&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
 
   <script nonce="{csp_nonce}">
@@ -14380,7 +14383,7 @@ async fn trend_report_handler(
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
   <script nonce="{nonce}">(function(){{var dot=document.getElementById('status-dot'),pingEl=document.getElementById('server-ping-ms'),tipEl=document.getElementById('server-tip-ping'),lbl=document.getElementById('server-status-label'),fm=document.getElementById('footer-mode'),isServer=location.hostname!=='localhost'&&location.hostname!=='127.0.0.1'&&location.hostname!=='[::1]';if(lbl)lbl.textContent=isServer?'Server':'Local';if(fm)fm.textContent='oxide-sloc v{version} \u2014 Mode: '+(isServer?'Network Server':'Local');function setDot(ms){{if(!dot)return;if(ms<100){{dot.style.background='#26d768';dot.style.boxShadow='0 0 0 4px rgba(38,215,104,0.14)';}}else if(ms<300){{dot.style.background='#f5a623';dot.style.boxShadow='0 0 0 4px rgba(245,166,35,0.14)';}}else{{dot.style.background='#e05c5c';dot.style.boxShadow='0 0 0 4px rgba(224,92,92,0.14)';}}}}function doPing(){{var t0=performance.now();fetch('/healthz',{{cache:'no-store'}}).then(function(){{var ms=Math.round(performance.now()-t0);if(pingEl)pingEl.textContent=ms+'ms';if(tipEl)tipEl.textContent='Server latency: '+ms+' ms';setDot(ms);}}).catch(function(){{if(pingEl)pingEl.textContent='';if(tipEl)tipEl.textContent='';if(dot){{dot.style.background='#e05c5c';dot.style.boxShadow='0 0 0 4px rgba(224,92,92,0.14)';}}}});}}doPing();setInterval(doPing,5000);}})();</script>
   {toast_assets}
@@ -15402,7 +15405,7 @@ async fn test_metrics_handler(
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
 
   <script nonce="{nonce}">
@@ -22999,7 +23002,7 @@ int main() { … }   ← code
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
 </body>
 </html>
@@ -23512,7 +23515,7 @@ struct IndexTemplate {
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
 
   <script nonce="{{ csp_nonce }}">
@@ -24088,7 +24091,7 @@ struct SplashTemplate {
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
 
   <script nonce="{{ csp_nonce }}">
@@ -26542,7 +26545,7 @@ struct ScanSetupTemplate {
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
   {% if confluence_configured %}
   <script nonce="{{ csp_nonce }}">
@@ -27101,7 +27104,7 @@ struct ResultTemplate {
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
   <script nonce="{{ csp_nonce }}">
     (function(){
@@ -27380,7 +27383,7 @@ struct ScanWaitTemplate {
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;&middot;&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;&middot;&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;&middot;&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
   <script nonce="{{ csp_nonce }}">(function(){
     var meta=document.getElementById('br-meta');
@@ -27831,7 +27834,7 @@ struct ErrorTemplate {
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;&middot;&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;&middot;&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;&middot;&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
   <script nonce="{{ csp_nonce }}">(function(){
     var k="oxide-theme",b=document.body,s=localStorage.getItem(k);
@@ -28135,7 +28138,7 @@ struct LocateFileTemplate {
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;&middot;&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;&middot;&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;&middot;&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
   <script nonce="{{ csp_nonce }}">
     (function(){var k="oxide-theme",b=document.body,s=localStorage.getItem(k);if(s==="dark")b.classList.add("dark-theme");document.getElementById("theme-toggle").addEventListener("click",function(){var d=b.classList.toggle("dark-theme");localStorage.setItem(k,d?"dark":"light");});})();
@@ -28650,7 +28653,7 @@ struct RelocateScanTemplate {
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
 
   <script nonce="{{ csp_nonce }}">
@@ -29708,7 +29711,7 @@ struct HistoryTemplate {
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
 
   <script nonce="{{ csp_nonce }}">
@@ -30914,7 +30917,7 @@ struct CompareSelectTemplate {
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
 
   <script nonce="{{ csp_nonce }}">
@@ -33707,7 +33710,7 @@ Content-Disposition: attachment; filename="sloc-run-&lt;run_id&gt;.zip"
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-    &nbsp;·&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+    &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
 
   <script nonce="{{ csp_nonce }}">
@@ -36003,6 +36006,13 @@ mod tests_private {
     use super::*;
     use std::io::Read;
 
+    /// A fresh per-call CSP nonce, generated the same way production does. Tests must not
+    /// embed a literal nonce string — a hard-coded value flowing into a `nonce` parameter
+    /// trips CodeQL's `rust/hard-coded-cryptographic-value` query.
+    fn test_nonce() -> String {
+        uuid::Uuid::new_v4().to_string().replace('-', "")
+    }
+
     // ── Server-mode fail-closed auth gate ──────────────────────────────────────
 
     #[test]
@@ -36016,7 +36026,7 @@ mod tests_private {
 
     #[test]
     fn code_ownership_empty_state_renders_guidance() {
-        let html = render_code_ownership_html("nonce123", None, "myrepo", &[]);
+        let html = render_code_ownership_html(&test_nonce(), None, "myrepo", &[]);
         assert!(html.contains("No ownership data"));
         assert!(html.contains("oxide-sloc analyze"));
         assert!(html.contains("myrepo"));
@@ -36047,7 +36057,7 @@ mod tests_private {
             ]
         });
         let run: AnalysisRun = serde_json::from_value(json).expect("run deserializes");
-        let html = render_code_ownership_html("nonce123", Some(&run), "myrepo", &[]);
+        let html = render_code_ownership_html(&test_nonce(), Some(&run), "myrepo", &[]);
         assert!(html.contains("Nima Shafie"));
         assert!(html.contains("Other Dev"));
         assert!(html.contains("own-data"));
@@ -36085,8 +36095,12 @@ mod tests_private {
             ]
         });
         let run: AnalysisRun = serde_json::from_value(json).expect("run deserializes");
-        let html =
-            render_code_ownership_html("n", Some(&run), "myrepo", std::slice::from_ref(&group));
+        let html = render_code_ownership_html(
+            &test_nonce(),
+            Some(&run),
+            "myrepo",
+            std::slice::from_ref(&group),
+        );
         assert!(html.contains("Active merges"));
         assert!(html.contains("/api/ownership/unmerge"));
         assert!(html.contains("Unmerge"));

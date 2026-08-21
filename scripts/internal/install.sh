@@ -163,6 +163,16 @@ build_with_progress() {
         total_pkgs="$(grep -c '^\[\[package\]\]' "$REPO_ROOT/Cargo.lock" 2>/dev/null)" || total_pkgs=0
     fi
 
+    # Drop a stale/broken CC (and matching CXX) that names a compiler not on PATH.
+    # Third-party C-shim crates (e.g. ring) honour $CC via cc-rs; an inherited
+    # CC=gcc.exe from another dev toolkit breaks an MSVC build and points at a tool
+    # that isn't installed. Clearing it lets cargo pick the right linker for the
+    # active target (MSVC cl.exe, MinGW gcc, or the system cc on Linux).
+    if [[ -n "${CC:-}" ]] && ! command -v "$CC" &>/dev/null; then
+        echo " [WARN] Ignoring CC='$CC' — not found on PATH; using the target's default compiler." >&2
+        unset CC CXX
+    fi
+
     printf '\n'
     cargo build --release --offline -p oxide-sloc 2>"$tmpout" &
     local cargo_pid=$!
