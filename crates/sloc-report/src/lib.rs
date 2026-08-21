@@ -700,6 +700,8 @@ struct HotspotRow {
     commit_count: u32,
     last_commit_date: String,
     score: u64,
+    /// Primary owner of the file (top blame owner). Empty unless attribution ran.
+    owner: String,
 }
 
 /// Build the git hotspots from per-file activity (only files that carry a
@@ -708,12 +710,24 @@ struct HotspotRow {
 /// client-side pagination has something to page through); the fixed-height PDF page keeps
 /// the original top-15.
 fn build_hotspot_rows(run: &AnalysisRun, limit: usize) -> Vec<HotspotRow> {
+    // Map author id → display name so each hotspot file can show its primary owner.
+    let author_names: std::collections::HashMap<u32, &str> = run
+        .authors
+        .iter()
+        .map(|a| (a.id, a.canonical_name.as_str()))
+        .collect();
     let mut rows: Vec<HotspotRow> = run
         .per_file_records
         .iter()
         .filter_map(|r| {
             let commits = r.commit_count?;
             let code = r.effective_counts.code_lines;
+            let owner = r
+                .ownership
+                .as_ref()
+                .and_then(|o| o.first())
+                .and_then(|top| author_names.get(&top.author_id))
+                .map_or_else(String::new, |name| (*name).to_string());
             Some(HotspotRow {
                 path: r.relative_path.clone(),
                 code_lines: code,
@@ -723,6 +737,7 @@ fn build_hotspot_rows(run: &AnalysisRun, limit: usize) -> Vec<HotspotRow> {
                     d.split('T').next().unwrap_or(d).to_string()
                 }),
                 score: code.saturating_mul(u64::from(commits)),
+                owner,
             })
         })
         .collect();
@@ -747,6 +762,20 @@ struct AuthorReportRow {
     code_pct_str: String,
     /// Files where this author is the single largest owner.
     files_owned: u64,
+    /// The files this author owns (top owner of), for the per-author drill-down. Ordered by
+    /// owned code lines descending.
+    files: Vec<OwnedFileRow>,
+}
+
+/// One file a contributor owns, for the Code Ownership per-author drill-down: the lines *this*
+/// author owns in the file (not the file's totals) plus its last-changed date.
+struct OwnedFileRow {
+    path: String,
+    code: u64,
+    comment: u64,
+    blank: u64,
+    total: u64,
+    last_changed: String,
 }
 
 /// Build the per-author ownership rows from `run.authors` (populated when an attribution scan
@@ -756,10 +785,27 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
         return Vec::new();
     }
     let total_code: u64 = run.authors.iter().map(|a| a.counts.code_lines).sum();
-    let mut files_owned: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+    // Collect, per author, the files they are the single largest owner of.
+    let mut owned_files: std::collections::HashMap<u32, Vec<OwnedFileRow>> =
+        std::collections::HashMap::new();
     for rec in &run.per_file_records {
         if let Some(top) = rec.ownership.as_ref().and_then(|o| o.first()) {
-            *files_owned.entry(top.author_id).or_default() += 1;
+            owned_files
+                .entry(top.author_id)
+                .or_default()
+                .push(OwnedFileRow {
+                    path: rec.relative_path.clone(),
+                    code: top.counts.code_lines,
+                    comment: top.counts.comment_lines,
+                    blank: top.counts.blank_lines,
+                    total: top.counts.total_lines,
+                    last_changed: rec
+                        .last_commit_date
+                        .as_deref()
+                        .map_or_else(String::new, |d| {
+                            d.split('T').next().unwrap_or(d).to_string()
+                        }),
+                });
         }
     }
     run.authors
@@ -770,6 +816,8 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
             } else {
                 0.0
             };
+            let mut files = owned_files.remove(&a.id).unwrap_or_default();
+            files.sort_by_key(|f| std::cmp::Reverse(f.code));
             AuthorReportRow {
                 name: a.canonical_name.clone(),
                 email: a.canonical_email.clone(),
@@ -778,7 +826,8 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
                 blank: a.counts.blank_lines,
                 total: a.counts.total_lines,
                 code_pct_str: format!("{pct:.1}"),
-                files_owned: files_owned.get(&a.id).copied().unwrap_or(0),
+                files_owned: files.len() as u64,
+                files,
             }
         })
         .collect()
@@ -5056,6 +5105,17 @@ struct WarningOpportunityRow {
     /* Hotspots table — overflow visible so header tooltips can escape the cell */
     #hotspots-table th { overflow: visible; }
     .hs-hint { color: var(--muted); font-style: italic; }
+    .section-desc { font-size:13px; color:var(--muted); line-height:1.6; margin:0 0 4px; padding:0 4px; }
+    .table-hint { font-size:12px; color:var(--muted); margin:0 0 12px; padding:0 4px; }
+    .own-files-title { font-size:14px; font-weight:800; color:var(--text); margin:22px 0 6px; }
+    .own-details { border:1px solid var(--line); border-radius:12px; margin-bottom:8px; background:var(--surface-2); overflow:hidden; }
+    .own-details > summary { cursor:pointer; padding:10px 14px; font-size:13px; list-style:none; display:flex; align-items:center; gap:10px; }
+    .own-details > summary::-webkit-details-marker { display:none; }
+    .own-details > summary::before { content:'\25B6'; color:var(--muted); font-size:9px; transition:transform .15s ease; }
+    .own-details[open] > summary::before { transform:rotate(90deg); }
+    .own-details > summary:hover { background:var(--surface-3); }
+    .own-sum-meta { color:var(--muted); font-weight:500; font-size:12px; margin-left:auto; }
+    .own-files-shell { margin:0 12px 12px; max-height:420px; }
     /* Column-header explainer tooltip (shared visual language with .stat-chip-tip) */
     .col-tip { position: absolute; top: calc(100% + 9px); left: 0; z-index: 60; width: max-content; max-width: 270px;
       background: var(--text); color: var(--bg); padding: 9px 12px; border-radius: 9px;
@@ -6387,14 +6447,16 @@ struct WarningOpportunityRow {
       {% endif %}
 
       {% if has_hotspots %}
-      <section class="panel stack" id="hotspots-section">
+      <section class="panel" id="hotspots-section">
         <div class="toolbar"><div class="toolbar-left"><h2>Git Hotspots</h2><input id="hotspots-search" class="search" type="search" placeholder="Filter files..." /><div class="page-size-row"><label class="page-size-label" for="hotspots-page-size">Show:</label><select id="hotspots-page-size" class="page-size-select"><option value="15" selected>15</option><option value="25">25</option><option value="50">50</option><option value="all">All</option></select><span id="hotspots-count-label" class="page-count-label"></span></div></div></div>
-        <p style="font-size:13px;color:var(--muted);padding:4px 4px 10px;line-height:1.6;">Files ranked by <strong>code lines &times; recent commits</strong> over the configured git activity window. Large files that change often are the strongest refactoring candidates. <span class="hs-hint">Click a column header to sort; drag its right edge to resize; hover a header for what it means.</span></p>
+        <p class="section-desc">Files ranked by <strong>code lines &times; recent commits</strong> over the configured git activity window. Large files that change often are the strongest refactoring candidates.{% if has_ownership %} The <strong>Owner</strong> column shows each file's primary author from git blame.{% endif %}</p>
+        <p class="table-hint hs-hint">Click a column header to sort; drag its right edge to resize; hover a header for what it means.</p>
         <div class="table-shell">
           <table id="hotspots-table" data-sort-table class="table-resizable hotspots-table">
-            <colgroup><col><col><col><col><col></colgroup>
+            <colgroup><col>{% if has_ownership %}<col>{% endif %}<col><col><col><col></colgroup>
             <thead><tr>
               <th data-sort-type="text">File<span class="col-tip">Repository-relative path of the file. Click to sort the list alphabetically by path.</span><div class="col-resize-handle"></div></th>
+              {% if has_ownership %}<th data-sort-type="text">Owner<span class="col-tip">Primary author of this file &mdash; the contributor who owns the most of its lines, per git blame.</span><div class="col-resize-handle"></div></th>{% endif %}
               <th data-sort-type="number" class="num-col">Code lines<span class="col-tip col-tip-r">Executable source lines in the file (blank lines and comments excluded). Bigger files are harder to change safely.</span><div class="col-resize-handle"></div></th>
               <th data-sort-type="number" class="num-col">Commits<span class="col-tip col-tip-r">How many times the file was committed within the git activity window. More commits = more churn.</span><div class="col-resize-handle"></div></th>
               <th data-sort-type="number" class="num-col">Hotspot score<span class="col-tip col-tip-r"><strong>Code lines &times; Commits.</strong> A large file that changes often scores high &mdash; it concentrates both size and churn, making it the strongest refactoring candidate. Lower is calmer.</span><div class="col-resize-handle"></div></th>
@@ -6404,6 +6466,7 @@ struct WarningOpportunityRow {
             {% for h in hotspot_rows %}
               <tr>
                 <td class="mono" title="{{ h.path }}">{{ h.path }}</td>
+                {% if has_ownership %}<td>{{ h.owner }}</td>{% endif %}
                 <td class="num-col">{{ h.code_lines|commas }}</td>
                 <td class="num-col">{{ h.commit_count }}</td>
                 <td class="num-col" style="font-weight:700;color:var(--oxide);">{{ h.score|commas }}</td>
@@ -6425,9 +6488,10 @@ struct WarningOpportunityRow {
       {% endif %}
 
       {% if has_ownership %}
-      <section class="panel stack" id="ownership-section">
+      <section class="panel" id="ownership-section">
         <div class="toolbar"><div class="toolbar-left"><h2>Code Ownership</h2><input id="ownership-search" class="search" type="search" placeholder="Filter authors..." /></div></div>
-        <p style="font-size:13px;color:var(--muted);padding:4px 4px 10px;line-height:1.6;">Per-author line ownership from <strong>git blame</strong> &mdash; each physical line is attributed to the author who last touched it (<code>-w -M -C</code>, <code>.mailmap</code> honoured), split into <strong>code / comment / blank</strong>. Same-email identities are merged automatically; cross-account merging is a later step. <span class="hs-hint">Click a column header to sort; drag its right edge to resize.</span></p>
+        <p class="section-desc">Per-author line ownership from <strong>git blame</strong> &mdash; each physical line is attributed to the author who last touched it (<code>-w -M -C</code>, <code>.mailmap</code> honoured), split into <strong>code / comment / blank</strong>. Same-email identities are merged automatically; cross-account merging is a later step.</p>
+        <p class="table-hint hs-hint">Click a column header to sort; drag its right edge to resize.</p>
         <div class="table-shell">
           <table id="ownership-table" data-sort-table class="table-resizable">
             <colgroup><col><col><col><col><col><col><col><col></colgroup>
@@ -6457,6 +6521,40 @@ struct WarningOpportunityRow {
             </tbody>
           </table>
         </div>
+        <h3 class="own-files-title">Files by contributor</h3>
+        <p class="table-hint" style="font-style:normal;">Expand a contributor to see the files they own (files where they are the top blame owner), with the lines they own in each. This ties the ownership above to the specific files &mdash; including the Git Hotspots.</p>
+        {% for a in ownership_rows %}
+        {% if !a.files.is_empty() %}
+        <details class="own-details">
+          <summary><strong>{{ a.name }}</strong><span class="own-sum-meta">{{ a.files_owned }} file{% if a.files_owned != 1 %}s{% endif %} &middot; {{ a.code|commas }} code lines owned</span></summary>
+          <div class="table-shell own-files-shell">
+            <table class="table-resizable">
+              <colgroup><col><col><col><col><col><col></colgroup>
+              <thead><tr>
+                <th data-sort-type="text">File</th>
+                <th data-sort-type="number" class="num-col">Code</th>
+                <th data-sort-type="number" class="num-col">Comment</th>
+                <th data-sort-type="number" class="num-col">Blank</th>
+                <th data-sort-type="number" class="num-col">Total</th>
+                <th data-sort-type="text" class="num-col">Last changed</th>
+              </tr></thead>
+              <tbody>
+              {% for f in a.files %}
+                <tr>
+                  <td class="mono" title="{{ f.path }}">{{ f.path }}</td>
+                  <td class="num-col">{{ f.code|commas }}</td>
+                  <td class="num-col">{{ f.comment|commas }}</td>
+                  <td class="num-col">{{ f.blank|commas }}</td>
+                  <td class="num-col">{{ f.total|commas }}</td>
+                  <td class="num-col" style="color:var(--muted);">{{ f.last_changed }}</td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </details>
+        {% endif %}
+        {% endfor %}
       </section>
       {% endif %}
 

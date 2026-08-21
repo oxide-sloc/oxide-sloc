@@ -203,6 +203,9 @@ fn make_run_with_ownership() -> AnalysisRun {
             },
         },
     ]);
+    // Give the file git activity so the Git Hotspots section (with its Owner column) renders too.
+    run.per_file_records[0].commit_count = Some(3);
+    run.per_file_records[0].last_commit_date = Some("2026-08-01T12:00:00+00:00".into());
     run
 }
 
@@ -214,6 +217,11 @@ fn html_report_includes_ownership_section() {
     assert!(html.contains("ownership-section"));
     assert!(html.contains("Nima Shafie"));
     assert!(html.contains("Other Dev"));
+    // Per-author drill-down of owned files.
+    assert!(html.contains("Files by contributor"));
+    assert!(html.contains("own-details"));
+    // Git Hotspots gains an Owner column populated with the file's primary author.
+    assert!(html.contains(">Owner<"));
 }
 
 #[test]
