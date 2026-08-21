@@ -20314,7 +20314,7 @@ int main() { … }   ← code
                     </select>
                   </div>
                   <div class="explainer-card prominent" style="margin:0;">
-                    <div class="advanced-rule-description"><strong>Purpose:</strong> When on, oxide-sloc runs <code>git blame</code> on every analyzed file and attributes each physical line to the author who last touched it, split into <strong>code / comment / blank</strong> per contributor. Results appear on the <a href="/code-ownership">Code Ownership</a> page and in the HTML/PDF/CSV reports.<br /><strong>Requires</strong> the scanned path to be a git repository. <strong>On by default</strong>; turn it off on very large repositories where the per-file blame pass is too slow. Same-email identities are merged automatically and the repo <code>.mailmap</code> is honoured.</div>
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> When on, oxide-sloc runs <code>git blame</code> on every analyzed file and attributes each physical line to the author who last touched it, split into <strong>code / comment / blank</strong> per contributor. Results appear on the Code Ownership page and in the HTML/PDF/CSV reports.<br /><strong>Requires</strong> the scanned path to be a git repository. <strong>On by default</strong>; turn it off on very large repositories where the per-file blame pass is too slow. Same-email identities are merged automatically and the repo <code>.mailmap</code> is honoured.</div>
                     <div class="code-sample" style="margin-top:10px;font-size:12px;"># On  = per-author code/comment/blank ownership (default)
 # Off = skip blame, no ownership data
 # CLI equivalent: analyze --no-attribution to disable
