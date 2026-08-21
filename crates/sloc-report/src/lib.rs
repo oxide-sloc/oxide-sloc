@@ -765,6 +765,15 @@ struct AuthorReportRow {
     /// The files this author owns (top owner of), for the per-author drill-down. Ordered by
     /// owned code lines descending.
     files: Vec<OwnedFileRow>,
+    /// Leaderboard rank among contributors who own at least one file (1 = most code owned).
+    /// `0` for contributors who own no files (they don't appear on the leaderboard).
+    rank: usize,
+    /// CSS medal class for the top three ranks (`lb-r1`/`lb-r2`/`lb-r3`), else empty.
+    rank_class: &'static str,
+    /// Up-to-two-letter initials for the leaderboard avatar (e.g. "NS").
+    initials: String,
+    /// Accent colour for this contributor's avatar/bar, from the canonical palette by rank.
+    color: &'static str,
 }
 
 /// One file a contributor owns, for the Code Ownership per-author drill-down: the lines *this*
@@ -776,6 +785,28 @@ struct OwnedFileRow {
     blank: u64,
     total: u64,
     last_changed: String,
+}
+
+/// Canonical categorical palette (shared with the web charts) used to tint leaderboard avatars.
+const REPORT_PALETTE: &[&str] = &[
+    "#C45C10", "#2A6846", "#4472C4", "#805099", "#D4A017", "#B23030", "#2E75B6", "#70AD47",
+    "#FF9900", "#9E480E", "#156082", "#5BA8A0",
+];
+
+/// Up-to-two-letter uppercase initials for a contributor's leaderboard avatar. Uses the first
+/// letter of the first and last whitespace-separated name parts (or the first two letters of a
+/// single-word name).
+fn author_initials(name: &str) -> String {
+    let parts: Vec<&str> = name.split_whitespace().collect();
+    match parts.as_slice() {
+        [] => "?".to_string(),
+        [one] => one.chars().take(2).collect::<String>().to_uppercase(),
+        [first, .., last] => {
+            let a = first.chars().next().unwrap_or('?');
+            let b = last.chars().next().unwrap_or('?');
+            format!("{a}{b}").to_uppercase()
+        }
+    }
 }
 
 /// Build the per-author ownership rows from `run.authors` (populated when an attribution scan
@@ -808,7 +839,8 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
                 });
         }
     }
-    run.authors
+    let mut rows: Vec<AuthorReportRow> = run
+        .authors
         .iter()
         .map(|a| {
             let pct = if total_code > 0 {
@@ -828,9 +860,31 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
                 code_pct_str: format!("{pct:.1}"),
                 files_owned: files.len() as u64,
                 files,
+                rank: 0,
+                rank_class: "",
+                initials: author_initials(&a.canonical_name),
+                color: REPORT_PALETTE[0],
             }
         })
-        .collect()
+        .collect();
+    // Assign leaderboard rank + medal class + accent colour among file-owning contributors
+    // (already ordered by code lines owned).
+    let mut rank = 0usize;
+    for row in &mut rows {
+        if row.files.is_empty() {
+            continue;
+        }
+        rank += 1;
+        row.rank = rank;
+        row.rank_class = match rank {
+            1 => "lb-r1",
+            2 => "lb-r2",
+            3 => "lb-r3",
+            _ => "",
+        };
+        row.color = REPORT_PALETTE[(rank - 1) % REPORT_PALETTE.len()];
+    }
+    rows
 }
 
 /// Render an HTML report and write it to `output_path`.
@@ -5107,15 +5161,26 @@ struct WarningOpportunityRow {
     .hs-hint { color: var(--muted); font-style: italic; }
     .section-desc { font-size:13px; color:var(--muted); line-height:1.6; margin:0 0 4px; padding:0 4px; }
     .table-hint { font-size:12px; color:var(--muted); margin:0 0 12px; padding:0 4px; }
-    .own-files-title { font-size:14px; font-weight:800; color:var(--text); margin:22px 0 6px; }
-    .own-details { border:1px solid var(--line); border-radius:12px; margin-bottom:8px; background:var(--surface-2); overflow:hidden; }
-    .own-details > summary { cursor:pointer; padding:10px 14px; font-size:13px; list-style:none; display:flex; align-items:center; gap:10px; }
+    .own-files-title { font-size:18px; font-weight:850; letter-spacing:-0.02em; color:var(--text); margin:26px 0 4px; }
+    .own-files-sub { font-size:13px; color:var(--muted); line-height:1.55; margin:0 0 16px; padding:0 2px; }
+    .own-details { border:1px solid var(--line); border-radius:14px; margin-bottom:10px; background:var(--surface-2); overflow:hidden; transition:box-shadow .2s ease, transform .2s ease; }
+    .own-details:hover { box-shadow:0 8px 24px rgba(77,44,20,0.13); transform:translateY(-1px); }
+    .own-details > summary { cursor:pointer; padding:14px 18px; list-style:none; display:flex; align-items:center; gap:14px; }
     .own-details > summary::-webkit-details-marker { display:none; }
-    .own-details > summary::before { content:'\25B6'; color:var(--muted); font-size:9px; transition:transform .15s ease; }
+    .own-details > summary::before { content:'\25B6'; color:var(--muted); font-size:10px; transition:transform .15s ease; flex:0 0 auto; }
     .own-details[open] > summary::before { transform:rotate(90deg); }
-    .own-details > summary:hover { background:var(--surface-3); }
-    .own-sum-meta { color:var(--muted); font-weight:500; font-size:12px; margin-left:auto; }
-    .own-files-shell { margin:0 12px 12px; max-height:420px; }
+    .lb-rank { flex:0 0 auto; min-width:30px; height:30px; padding:0 6px; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; font-weight:800; font-size:14px; color:var(--muted); background:var(--surface-3); border:1px solid var(--line); font-variant-numeric:tabular-nums; }
+    .lb-r1 { background:linear-gradient(135deg,#f7d774,#e0a92e); color:#5a3d00; border-color:#e0a92e; box-shadow:0 3px 10px rgba(224,169,46,0.45); }
+    .lb-r2 { background:linear-gradient(135deg,#e6e7ea,#b9bcc4); color:#3d4048; border-color:#b9bcc4; box-shadow:0 3px 10px rgba(150,153,160,0.35); }
+    .lb-r3 { background:linear-gradient(135deg,#eabd92,#cd7f4c); color:#4d2a0e; border-color:#cd7f4c; box-shadow:0 3px 10px rgba(205,127,76,0.35); }
+    .lb-avatar { flex:0 0 auto; width:36px; height:36px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:14px; text-shadow:0 1px 2px rgba(0,0,0,0.25); }
+    .lb-name { flex:0 0 210px; font-size:16px; font-weight:800; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .lb-bar-wrap { flex:1 1 auto; height:12px; min-width:60px; background:var(--surface-3); border-radius:7px; overflow:hidden; box-shadow:inset 0 1px 2px rgba(0,0,0,0.08); }
+    .lb-bar { display:block; height:100%; border-radius:7px; transition:width .5s cubic-bezier(.16,1,.3,1); }
+    .lb-stats { flex:0 0 auto; font-size:13px; color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .lb-stats strong { color:var(--oxide); font-size:16px; font-weight:900; }
+    .own-files-shell { margin:2px 14px 14px; max-height:420px; }
+    @media (max-width:760px) { .lb-name { flex-basis:120px; font-size:14px; } .lb-bar-wrap { display:none; } .lb-stats { font-size:12px; } }
     /* Column-header explainer tooltip (shared visual language with .stat-chip-tip) */
     .col-tip { position: absolute; top: calc(100% + 9px); left: 0; z-index: 60; width: max-content; max-width: 270px;
       background: var(--text); color: var(--bg); padding: 9px 12px; border-radius: 9px;
@@ -6449,14 +6514,14 @@ struct WarningOpportunityRow {
       {% if has_hotspots %}
       <section class="panel" id="hotspots-section">
         <div class="toolbar"><div class="toolbar-left"><h2>Git Hotspots</h2><input id="hotspots-search" class="search" type="search" placeholder="Filter files..." /><div class="page-size-row"><label class="page-size-label" for="hotspots-page-size">Show:</label><select id="hotspots-page-size" class="page-size-select"><option value="15" selected>15</option><option value="25">25</option><option value="50">50</option><option value="all">All</option></select><span id="hotspots-count-label" class="page-count-label"></span></div></div></div>
-        <p class="section-desc">Files ranked by <strong>code lines &times; recent commits</strong> over the configured git activity window. Large files that change often are the strongest refactoring candidates.{% if has_ownership %} The <strong>Owner</strong> column shows each file's primary author from git blame.{% endif %}</p>
+        <p class="section-desc">Files ranked by <strong>code lines &times; recent commits</strong> over the configured git activity window. Large files that change often are the strongest refactoring candidates.{% if has_ownership %} The <strong>Author</strong> column shows each file's primary author from git blame (only shown when code-ownership attribution ran).{% endif %}</p>
         <p class="table-hint hs-hint">Click a column header to sort; drag its right edge to resize; hover a header for what it means.</p>
         <div class="table-shell">
           <table id="hotspots-table" data-sort-table class="table-resizable hotspots-table">
             <colgroup><col>{% if has_ownership %}<col>{% endif %}<col><col><col><col></colgroup>
             <thead><tr>
               <th data-sort-type="text">File<span class="col-tip">Repository-relative path of the file. Click to sort the list alphabetically by path.</span><div class="col-resize-handle"></div></th>
-              {% if has_ownership %}<th data-sort-type="text">Owner<span class="col-tip">Primary author of this file &mdash; the contributor who owns the most of its lines, per git blame.</span><div class="col-resize-handle"></div></th>{% endif %}
+              {% if has_ownership %}<th data-sort-type="text">Author<span class="col-tip">Primary author of this file &mdash; the contributor who owns the most of its lines, per git blame.</span><div class="col-resize-handle"></div></th>{% endif %}
               <th data-sort-type="number" class="num-col">Code lines<span class="col-tip col-tip-r">Executable source lines in the file (blank lines and comments excluded). Bigger files are harder to change safely.</span><div class="col-resize-handle"></div></th>
               <th data-sort-type="number" class="num-col">Commits<span class="col-tip col-tip-r">How many times the file was committed within the git activity window. More commits = more churn.</span><div class="col-resize-handle"></div></th>
               <th data-sort-type="number" class="num-col">Hotspot score<span class="col-tip col-tip-r"><strong>Code lines &times; Commits.</strong> A large file that changes often scores high &mdash; it concentrates both size and churn, making it the strongest refactoring candidate. Lower is calmer.</span><div class="col-resize-handle"></div></th>
@@ -6521,12 +6586,18 @@ struct WarningOpportunityRow {
             </tbody>
           </table>
         </div>
-        <h3 class="own-files-title">Files by contributor</h3>
-        <p class="table-hint" style="font-style:normal;">Expand a contributor to see the files they own (files where they are the top blame owner), with the lines they own in each. This ties the ownership above to the specific files &mdash; including the Git Hotspots.</p>
+        <h3 class="own-files-title">&#127942; Contributor Leaderboard</h3>
+        <p class="own-files-sub">Ranked by <strong>code lines owned</strong>. Expand a contributor to see the files they own (files where they are the top blame owner), with the lines they own in each &mdash; tying ownership to the specific files, including the Git Hotspots.</p>
         {% for a in ownership_rows %}
         {% if !a.files.is_empty() %}
         <details class="own-details">
-          <summary><strong>{{ a.name }}</strong><span class="own-sum-meta">{{ a.files_owned }} file{% if a.files_owned != 1 %}s{% endif %} &middot; {{ a.code|commas }} code lines owned</span></summary>
+          <summary>
+            <span class="lb-rank {{ a.rank_class }}">{{ a.rank }}</span>
+            <span class="lb-avatar" style="background:{{ a.color }};">{{ a.initials }}</span>
+            <span class="lb-name">{{ a.name }}</span>
+            <span class="lb-bar-wrap"><span class="lb-bar" style="width:{{ a.code_pct_str }}%;background:{{ a.color }};"></span></span>
+            <span class="lb-stats"><strong>{{ a.code|commas }}</strong> code lines &middot; {{ a.files_owned }} file{% if a.files_owned != 1 %}s{% endif %} &middot; {{ a.code_pct_str }}%</span>
+          </summary>
           <div class="table-shell own-files-shell">
             <table class="table-resizable">
               <colgroup><col><col><col><col><col><col></colgroup>

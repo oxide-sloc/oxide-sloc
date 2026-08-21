@@ -217,11 +217,14 @@ fn html_report_includes_ownership_section() {
     assert!(html.contains("ownership-section"));
     assert!(html.contains("Nima Shafie"));
     assert!(html.contains("Other Dev"));
-    // Per-author drill-down of owned files.
-    assert!(html.contains("Files by contributor"));
+    // Per-author drill-down of owned files, presented as a gamified leaderboard.
+    assert!(html.contains("Contributor Leaderboard"));
     assert!(html.contains("own-details"));
-    // Git Hotspots gains an Owner column populated with the file's primary author.
-    assert!(html.contains(">Owner<"));
+    assert!(html.contains("lb-rank"));
+    assert!(html.contains("lb-avatar"));
+    assert!(html.contains("lb-r1")); // top contributor gets the gold medal class
+    // Git Hotspots gains an Author column populated with the file's primary author.
+    assert!(html.contains(">Author<"));
 }
 
 #[test]
