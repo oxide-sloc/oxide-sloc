@@ -4014,6 +4014,9 @@ async fn stage_decoded_entry(
 /// Write a batch of uploaded files into `staging`, enforcing the total-bytes cap
 /// and path-traversal guard. Returns `(file_count, project_root)` on success or
 /// an error `Response` on failure (staging dir is cleaned up before returning).
+// The Err type is a fully-rendered axum `Response`, the crate-wide handler error
+// convention; boxing it here to satisfy result_large_err would break that pattern.
+#[allow(clippy::result_large_err)]
 async fn write_upload_files(
     files: &[UploadedFile],
     staging: &Path,
@@ -8356,6 +8359,9 @@ async fn resolve_artifact_set(
 ///
 /// Returns `Ok(path)` when the PDF is known (it may still be generating).
 /// Returns `Err(response)` when there is no JSON source to regenerate from.
+// The Err type is a fully-rendered axum `Response`, the crate-wide handler error
+// convention; boxing it here to satisfy result_large_err would break that pattern.
+#[allow(clippy::result_large_err)]
 async fn resolve_or_queue_pdf(
     state: &AppState,
     pdf_path: Option<PathBuf>,
