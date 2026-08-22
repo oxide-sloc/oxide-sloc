@@ -14,6 +14,24 @@
 # archive is split into 45 MB parts so no single file exceeds GitHub's 100 MB limit.
 #
 # Usage: bash scripts/internal/update-vendor.sh
+#
+# Verifying the offline build — ALWAYS start from a clean extraction, never a pre-existing
+# vendor/ directory. Both /vendor/ and /.cargo/config.toml are gitignored (regenerated per
+# checkout), so they are NOT the source of truth and a fresh `git clone` contains neither.
+# The only committed vendor source is vendor.tar.gz.* + vendor.checksums.sha256. Therefore:
+#   * `git show HEAD:vendor/<crate>/Cargo.toml` prints NOTHING (vendor/ is untracked) — it is
+#     not a valid acceptance check. Inspect the archive instead:
+#         cat vendor.tar.gz.* | tar -xzO vendor/<crate>/Cargo.toml | grep '^version'
+#   * A stale vendor/ left over from an earlier checkout (or a local overlay) can make a
+#     `cargo … --offline` build resolve an OLD crate version and report a bogus "wrong version"
+#     failure that does not reflect the committed archive. Wipe and re-extract before trusting
+#     any offline-build check:
+#         git clean -xfd vendor/ .cargo/config.toml   # or: rm -rf vendor/ .cargo/config.toml
+#         sha256sum -c vendor.checksums.sha256
+#         cat vendor.tar.gz.* | tar -xzf -
+#         cargo check --workspace --all-features --offline
+#     Correct acceptance: checksums verify, the extracted vendor/<crate>/Cargo.toml shows the
+#     version locked in Cargo.lock, and the offline check exits 0.
 set -euo pipefail
 
 CHECKSUMS_FILE=vendor.checksums.sha256
