@@ -41,6 +41,23 @@ spec:
     activity-window:
       default: "90"
       description: "Git Hotspots window in days (0 disables)."
+    attribution:
+      type: boolean
+      default: true
+      description: "Per-author code-ownership attribution via git blame (on by default; false emits --no-attribution)."
+    style-col-threshold:
+      default: "80"
+      description: "Column-width threshold for style N-col compliance (80, 100, 120)."
+    max-complexity:
+      default: ""
+      description: "Complexity gate: fail (exit 6) if any file cyclomatic complexity exceeds N (blank = off)."
+    no-duplicates:
+      type: boolean
+      default: false
+      description: "Exclude duplicate (identical-content) files from SLOC totals (groups still reported)."
+    coverage-file:
+      default: ""
+      description: "Path to a coverage report (LCOV/Cobertura/JaCoCo/coverage.py/Istanbul, auto-detected; blank = none)."
     generate-html:
       type: boolean
       default: true
@@ -91,11 +108,22 @@ sloc-analysis:
       args=(analyze "$[[ inputs.scan-path ]]")
       args+=(--json-out "${OUT_DIR}/result.json")
       args+=(--csv-out  "${OUT_DIR}/report.csv")
+      args+=(--xlsx-out "${OUT_DIR}/report.xlsx")
       [ "$[[ inputs.generate-html ]]" = "true" ] && args+=(--html-out "${OUT_DIR}/report.html")
       [ "$[[ inputs.generate-pdf ]]"  = "true" ] && args+=(--pdf-out  "${OUT_DIR}/report.pdf")
       [ "$[[ inputs.preset ]]" != "none" ] && args+=(--config "ci/sloc-ci-$[[ inputs.preset ]].toml")
       [ -n "$[[ inputs.mixed-line-policy ]]" ] && args+=(--mixed-line-policy "$[[ inputs.mixed-line-policy ]]")
       [ -n "$[[ inputs.activity-window ]]" ] && args+=(--activity-window "$[[ inputs.activity-window ]]")
+      # Attribution is on by default in the binary; only emit a flag to turn it OFF.
+      [ "$[[ inputs.attribution ]]" = "false" ] && args+=(--no-attribution)
+      # Style N-col threshold: only when non-default.
+      [ -n "$[[ inputs.style-col-threshold ]]" ] && [ "$[[ inputs.style-col-threshold ]]" != "80" ] && args+=(--style-col-threshold "$[[ inputs.style-col-threshold ]]")
+      # Complexity gate (CLI-only): only when set.
+      [ -n "$[[ inputs.max-complexity ]]" ] && args+=(--max-complexity "$[[ inputs.max-complexity ]]")
+      # Exclude duplicate files (CLI-only).
+      [ "$[[ inputs.no-duplicates ]]" = "true" ] && args+=(--no-duplicates)
+      # Coverage import: only when a path is provided.
+      [ -n "$[[ inputs.coverage-file ]]" ] && args+=(--coverage-file "$[[ inputs.coverage-file ]]")
       [ -n "${CI_COMMIT_REF_NAME}" ] && args+=(--git-branch "${CI_COMMIT_REF_NAME}")
       echo "+ oxide-sloc ${args[*]}"
       oxide-sloc "${args[@]}"
@@ -133,7 +161,7 @@ sloc-analysis:
         ARTIFACT_REPO_URL="${REPO_URL}" \
         ARTIFACT_REPO_PATH="oxide-sloc/${CI_PROJECT_PATH}/${CI_PIPELINE_ID}" \
         ARTIFACT_DIR="${OUT_DIR}" \
-        ARTIFACT_FILES="result.json report.html report.csv" \
+        ARTIFACT_FILES="result.json report.html report.csv report.xlsx" \
         bash ci/artifact-push.sh || echo "artifact-push failed (non-fatal)."
       else
         echo "artifact-repo-type not set — skipping artifact push."

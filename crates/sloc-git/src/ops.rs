@@ -26,6 +26,14 @@ fn git_host_allowlist() -> &'static [String] {
     })
 }
 
+/// True when `SLOC_GIT_HOST_ALLOWLIST` names at least one host. Callers use this to decide
+/// whether network operations that fetch attacker-influenced URLs (e.g. submodule population
+/// on a network-facing server) may proceed under the positive allowlist.
+#[must_use]
+pub fn host_allowlist_configured() -> bool {
+    !git_host_allowlist().is_empty()
+}
+
 /// When `SLOC_GIT_REQUIRE_ALLOWLIST` is truthy, clones are refused unless
 /// `SLOC_GIT_HOST_ALLOWLIST` names the target host. This lets internet-facing or
 /// multi-tenant deployments run allowlist-only (fail closed): only explicitly listed
@@ -937,6 +945,127 @@ fn clone_or_fetch_local(url: &str, dest: &Path, source: &GitSource) -> Result<()
     Ok(())
 }
 
+/// Publish the contents of `src_dir` into `repo_url` on `branch`, under `subdir`, as a single
+/// commit, then push. `work_dir` is a caller-owned empty scratch directory used as the clone
+/// working tree.
+///
+/// Reuses the exact same SSRF validation, host-allowlist, per-host credential injection, and
+/// network-hardening (`http.followRedirects=false`, low-speed abort) as [`clone_or_fetch`], so
+/// it is safe to point at a corporate host over a VPN or at an air-gapped local mirror (the
+/// latter behind `SLOC_GIT_ALLOW_LOCAL` / `SLOC_GIT_LOCAL_ROOT`). Appends to the branch's
+/// existing history when it exists, creates it (even from an empty repo's unborn HEAD)
+/// otherwise. Returns `Ok(())` without pushing when nothing changed since the last publish.
+///
+/// # Errors
+/// Propagates clone/commit/push failures and URL-validation / local-gate rejections.
+pub fn publish_dir(
+    repo_url: &str,
+    branch: &str,
+    subdir: &str,
+    src_dir: &Path,
+    message: &str,
+    work_dir: &Path,
+) -> Result<()> {
+    let normalized = normalize_git_url(repo_url);
+    let url = normalized.as_str();
+
+    // Resolve git config + credential env exactly as a clone would, honoring the source gates.
+    let (cfg, env_owned): (Vec<String>, Vec<(String, String)>) = match classify_source(url) {
+        GitSource::Remote => {
+            validate_clone_url(url)?;
+            let mut cfg = network_git_config();
+            let inj = host_of_git_url(url)
+                .map(|h| cred_injection(&h, explicit_port_of_git_url(url)))
+                .unwrap_or_default();
+            cfg.extend(inj.config.iter().cloned());
+            (cfg, inj.env)
+        }
+        source => {
+            validate_local_source(url, &source)?;
+            (network_git_config(), Vec::new())
+        }
+    };
+    let env: Vec<(&str, &str)> = env_owned
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    std::fs::create_dir_all(work_dir).context("failed to create publish work dir")?;
+    let dest_str = work_dir
+        .to_str()
+        .context("publish work dir path is not valid UTF-8")?;
+    let parent = work_dir.parent().unwrap_or(work_dir);
+
+    // Full checkout clone: we need a working tree to add files onto the existing history.
+    let clone_args = with_config(&cfg, &["clone", url, dest_str]);
+    run_git_env(parent, &clone_args, &env)?;
+    persist_repo_config(work_dir, &cfg);
+
+    // Land on the target branch: base on its remote head when present (append), else create
+    // it fresh — including from an empty repo's unborn HEAD.
+    let origin_ref = format!("origin/{branch}");
+    if run_git(work_dir, &["rev-parse", "--verify", "--quiet", &origin_ref]).is_ok() {
+        run_git(work_dir, &["checkout", "-B", branch, &origin_ref])?;
+    } else {
+        run_git(work_dir, &["checkout", "-B", branch])?;
+    }
+
+    // Replace the destination subdir with the fresh artifacts.
+    let target = if subdir.is_empty() {
+        work_dir.to_path_buf()
+    } else {
+        work_dir.join(subdir)
+    };
+    if target != work_dir && target.exists() {
+        std::fs::remove_dir_all(&target).ok();
+    }
+    copy_dir_all(src_dir, &target)?;
+
+    run_git(work_dir, &["add", "-A"])?;
+    if run_git(work_dir, &["status", "--porcelain"])?
+        .trim()
+        .is_empty()
+    {
+        return Ok(()); // nothing changed since the last publish — skip the empty commit/push
+    }
+    run_git(
+        work_dir,
+        &[
+            "-c",
+            "user.email=oxide-sloc@localhost",
+            "-c",
+            "user.name=oxide-sloc",
+            "commit",
+            "-m",
+            message,
+        ],
+    )?;
+    let refspec = format!("HEAD:refs/heads/{branch}");
+    let push_args = with_config(&cfg, &["push", "origin", &refspec]);
+    run_git_env(work_dir, &push_args, &env)?;
+    Ok(())
+}
+
+/// Recursively copy a directory tree (files + subdirs), skipping symlinks so a link inside a
+/// scanned/uploaded artifact tree cannot redirect the copy or loop. Local to `sloc-git` so
+/// [`publish_dir`] needs no dependency on `sloc-core`.
+fn copy_dir_all(src: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)?.flatten() {
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue;
+        }
+        let to = dest.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir_all(&entry.path(), &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(entry.path(), &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Validate a local/offline source against the fail-closed gate and return the filesystem
 /// path git should clone from. Enforces: `SLOC_GIT_ALLOW_LOCAL` on; `SLOC_GIT_LOCAL_ROOT`
 /// set; `file://` has no host authority; no UNC (SMB is a network fetch, not local); and the
@@ -1014,6 +1143,58 @@ fn deverbatim(p: &Path) -> String {
 /// Returns an error if `git rev-parse` fails (e.g. the ref does not exist).
 pub fn get_sha(repo: &Path, ref_name: &str) -> Result<String> {
     run_git(repo, &["rev-parse", ref_name])
+}
+
+// ── local repository detection ────────────────────────────────────────────────
+
+/// True when `s` points at an existing local git repository — a directory containing a
+/// `.git` entry (working tree or worktree/submodule pointer) or a bare repository dir.
+///
+/// This is a cheap filesystem check (no subprocess, no network) used to branch the Git
+/// Browser between the local flow (operate on the repo in place) and the remote flow (clone
+/// the URL). Anything that looks like a remote URL scheme is deliberately rejected so a
+/// `file://`, `https://`, or `git@` string is never mistaken for a local path.
+#[must_use]
+pub fn is_local_repo_path(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let lower = t.to_lowercase();
+    if lower.starts_with("https://")
+        || lower.starts_with("http://")
+        || lower.starts_with("git://")
+        || lower.starts_with("ssh://")
+        || lower.starts_with("file://")
+        || t.starts_with("git@")
+    {
+        return false;
+    }
+    let p = Path::new(t);
+    if !p.is_dir() {
+        return false;
+    }
+    // Non-bare repo (or a linked worktree / submodule): a `.git` dir or `.git` file.
+    // Bare repo: has `HEAD` plus an `objects/` directory at the top level.
+    p.join(".git").exists() || (p.join("HEAD").is_file() && p.join("objects").is_dir())
+}
+
+/// Verify that `path` is inside a git repository and return the canonical repository root
+/// (the working-tree top level, or the given path for a bare repo). Runs no network I/O.
+///
+/// # Errors
+/// Returns an error if `path` is not a git repository.
+pub fn open_local_repo(path: &Path) -> Result<PathBuf> {
+    // `--show-toplevel` yields the working-tree root for a normal repo; it fails for a bare
+    // repo, in which case the path itself is the repository.
+    if let Ok(top) = run_git(path, &["rev-parse", "--show-toplevel"])
+        && !top.trim().is_empty()
+    {
+        return Ok(PathBuf::from(top.trim()));
+    }
+    // Bare repo (or worktree without a toplevel): confirm it really is a git dir.
+    run_git(path, &["rev-parse", "--git-dir"]).context("not a git repository")?;
+    Ok(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
 }
 
 // ── worktree helpers ──────────────────────────────────────────────────────────
@@ -1096,6 +1277,115 @@ pub fn destroy_worktree(repo: &Path, worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
+// ── submodule population ───────────────────────────────────────────────────────
+
+/// Recursively check out a super-repo's submodules inside `worktree` so their files are
+/// present for analysis. Best-effort: a repo with no `.gitmodules` is a no-op, and a
+/// submodule whose fetch fails simply stays empty (its per-submodule breakdown is then blank)
+/// rather than failing the whole scan.
+///
+/// Security: `git submodule update` would clone whatever URLs `.gitmodules` records, which
+/// bypasses the SSRF gate that guards the top-level clone. Every recorded submodule URL is
+/// therefore validated with the same [`validate_clone_url`] check first; a submodule whose URL
+/// is rejected is skipped (and its name returned) instead of being fetched. Relative submodule
+/// URLs resolve against the superproject origin and cannot target a new host, so they are
+/// allowed; absolute local/`file://` submodule references are refused (a legitimate local
+/// super-repo references its submodules by relative path).
+///
+/// Returns the names of submodules that were skipped as unsafe.
+///
+/// # Errors
+/// Returns an error only if the working tree cannot be inspected; a failed submodule fetch is
+/// swallowed (best-effort).
+pub fn populate_submodules(worktree: &Path) -> Result<Vec<String>> {
+    if !worktree.join(".gitmodules").is_file() {
+        return Ok(Vec::new());
+    }
+    let mut safe_paths: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for name in submodule_names(worktree) {
+        let url = gitmodules_value(worktree, &name, "url");
+        let path = gitmodules_value(worktree, &name, "path");
+        if url.trim().is_empty() || path.trim().is_empty() {
+            continue;
+        }
+        if submodule_url_is_safe(url.trim()) {
+            safe_paths.push(path.trim().to_owned());
+        } else {
+            skipped.push(name);
+        }
+    }
+    if safe_paths.is_empty() {
+        return Ok(skipped);
+    }
+    // Update only the vetted submodule paths, recursively. `network_git_config()` carries the
+    // same redirect/low-speed/TLS hardening the clone used. Nested submodules are a documented
+    // residual: only the top-level URLs are validated here.
+    let cfg = network_git_config();
+    let mut tail: Vec<&str> = vec!["submodule", "update", "--init", "--recursive", "--"];
+    tail.extend(safe_paths.iter().map(String::as_str));
+    let args = with_config(&cfg, &tail);
+    let _ = run_git(worktree, &args); // best-effort: leave any failing submodule empty
+    Ok(skipped)
+}
+
+/// Names of the submodules declared in `<worktree>/.gitmodules`.
+fn submodule_names(worktree: &Path) -> Vec<String> {
+    let out = run_git(
+        worktree,
+        &[
+            "config",
+            "-f",
+            ".gitmodules",
+            "--name-only",
+            "--get-regexp",
+            r"^submodule\..*\.path$",
+        ],
+    )
+    .unwrap_or_default();
+    out.lines()
+        .filter_map(|l| {
+            l.trim()
+                .strip_prefix("submodule.")
+                .and_then(|s| s.strip_suffix(".path"))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Read `submodule.<name>.<key>` from the worktree's `.gitmodules`.
+fn gitmodules_value(worktree: &Path, name: &str, key: &str) -> String {
+    run_git(
+        worktree,
+        &[
+            "config",
+            "-f",
+            ".gitmodules",
+            "--get",
+            &format!("submodule.{name}.{key}"),
+        ],
+    )
+    .unwrap_or_default()
+}
+
+/// Whether a `.gitmodules` submodule URL is safe to fetch. Relative URLs (same origin host)
+/// are allowed; remote URLs go through the SSRF gate; absolute local/`file://`/bundle URLs are
+/// refused.
+fn submodule_url_is_safe(url: &str) -> bool {
+    let u = url.trim();
+    if u.is_empty() {
+        return false;
+    }
+    if u.starts_with('.') {
+        return true;
+    }
+    let norm = normalize_git_url(u);
+    match classify_source(&norm) {
+        GitSource::Remote => validate_clone_url(&norm).is_ok(),
+        _ => false,
+    }
+}
+
 // ── ref listing ───────────────────────────────────────────────────────────────
 
 /// Return all branches, tags, and recent commits for `repo`.
@@ -1108,6 +1398,32 @@ pub fn list_refs(repo: &Path) -> Result<RepoRefs> {
         tags: list_tags(repo)?,
         recent_commits: list_commits(repo, "HEAD", 40)?,
     })
+}
+
+/// Like [`list_refs`], but for a repository operated on **in place** (a local checkout the
+/// user pointed us at). It lists the repo's *local* branch heads (`git branch`) rather than
+/// remote-tracking refs (`git branch -r`), because a working repo's branches of interest are
+/// its local heads. Tags and recent commits are listed identically to [`list_refs`].
+///
+/// # Errors
+/// Returns an error if any underlying git command fails.
+pub fn list_refs_local(repo: &Path) -> Result<RepoRefs> {
+    Ok(RepoRefs {
+        branches: list_branches_local(repo)?,
+        tags: list_tags(repo)?,
+        recent_commits: list_commits(repo, "HEAD", 40)?,
+    })
+}
+
+/// List the local branch heads of `repo` (no remote-tracking refs, no `origin/` prefix).
+fn list_branches_local(repo: &Path) -> Result<Vec<GitRef>> {
+    let fmt = "%(refname:short)|%(objectname:short)|%(creatordate:iso-strict)|%(subject)";
+    let out = run_git(repo, &["branch", &format!("--format={fmt}")])?;
+    Ok(out
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| parse_ref_line(l, GitRefKind::Branch))
+        .collect())
 }
 
 fn list_branches(repo: &Path) -> Result<Vec<GitRef>> {
@@ -2567,5 +2883,121 @@ mod git_integration {
         assert_eq!(sha.len(), 40, "must resolve to a full SHA: {sha}");
         // A genuinely absent ref is an error, not a silent empty string.
         assert!(resolve_committish(&dest, "no-such-branch").is_err());
+    }
+
+    // ── local-repo detection ──────────────────────────────────────────────────
+
+    #[test]
+    fn is_local_repo_path_true_for_repo_dir() {
+        let dir = tempdir().unwrap();
+        make_repo(dir.path());
+        assert!(is_local_repo_path(dir.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn is_local_repo_path_false_for_plain_dir() {
+        let dir = tempdir().unwrap();
+        assert!(!is_local_repo_path(dir.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn is_local_repo_path_false_for_remote_or_url_forms() {
+        assert!(!is_local_repo_path("https://github.com/owner/repo.git"));
+        assert!(!is_local_repo_path("git@github.com:owner/repo.git"));
+        assert!(!is_local_repo_path("ssh://git@host/repo.git"));
+        assert!(!is_local_repo_path("file:///tmp/repo"));
+        assert!(!is_local_repo_path(""));
+    }
+
+    #[test]
+    fn open_local_repo_returns_toplevel() {
+        let dir = tempdir().unwrap();
+        make_repo(dir.path());
+        let root = open_local_repo(dir.path()).unwrap();
+        // `--show-toplevel` and the temp dir may differ only by symlink normalisation
+        // (e.g. /var → /private/var on macOS); compare by a marker file both must contain.
+        assert!(
+            root.join("hello.txt").exists(),
+            "toplevel must be the repo root: {root:?}"
+        );
+    }
+
+    #[test]
+    fn open_local_repo_errs_on_non_repo() {
+        let dir = tempdir().unwrap();
+        assert!(open_local_repo(dir.path()).is_err());
+    }
+
+    // ── list_refs_local (local heads, not remote-tracking) ────────────────────
+
+    #[test]
+    fn list_refs_local_lists_local_branches_and_tags() {
+        let dir = tempdir().unwrap();
+        make_repo(dir.path());
+        git(dir.path(), &["branch", "feature-x"]);
+        git(dir.path(), &["tag", "v1.0.0"]);
+
+        let refs = list_refs_local(dir.path()).unwrap();
+        let branches: Vec<&str> = refs.branches.iter().map(|b| b.name.as_str()).collect();
+        assert!(
+            branches.contains(&"main"),
+            "local heads must include main: {branches:?}"
+        );
+        assert!(
+            branches.contains(&"feature-x"),
+            "local heads must include feature-x (no clone/origin needed): {branches:?}"
+        );
+        let tags: Vec<&str> = refs.tags.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            tags.contains(&"v1.0.0"),
+            "tags must include v1.0.0: {tags:?}"
+        );
+        assert!(
+            !refs.recent_commits.is_empty(),
+            "recent commits must be listed"
+        );
+    }
+
+    // ── submodule population + SSRF gate ──────────────────────────────────────
+
+    #[test]
+    fn submodule_url_is_safe_classification() {
+        // Relative URLs resolve against the superproject origin — always allowed.
+        assert!(submodule_url_is_safe("../sibling.git"));
+        assert!(submodule_url_is_safe("./nested/mod.git"));
+        // Absolute local / file references are refused (a local super-repo uses relative URLs).
+        assert!(!submodule_url_is_safe("/etc/passwd"));
+        assert!(!submodule_url_is_safe("file:///etc/shadow"));
+        // SSRF-sensitive remotes are refused by the shared clone gate.
+        assert!(!submodule_url_is_safe("https://169.254.169.254/x.git"));
+        assert!(!submodule_url_is_safe(
+            "http://metadata.google.internal/x.git"
+        ));
+        // A normal public remote passes.
+        assert!(submodule_url_is_safe("https://github.com/owner/repo.git"));
+    }
+
+    #[test]
+    fn populate_submodules_noop_without_gitmodules() {
+        let dir = tempdir().unwrap();
+        make_repo(dir.path());
+        assert!(populate_submodules(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn populate_submodules_skips_ssrf_submodule() {
+        // A .gitmodules that points a submodule at a metadata/loopback host must be skipped, not
+        // fetched — the whole point of validating submodule URLs against the SSRF gate.
+        let dir = tempdir().unwrap();
+        make_repo(dir.path());
+        let gitmodules =
+            "[submodule \"evil\"]\n\tpath = evil\n\turl = https://169.254.169.254/x.git\n";
+        std::fs::write(dir.path().join(".gitmodules"), gitmodules).unwrap();
+        let skipped = populate_submodules(dir.path()).unwrap();
+        assert_eq!(
+            skipped,
+            vec!["evil".to_string()],
+            "the unsafe submodule must be reported skipped"
+        );
     }
 }

@@ -36,7 +36,7 @@ use std::{
     collections::{HashMap, VecDeque},
     fmt::Write,
     fs,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, OnceLock},
@@ -68,6 +68,8 @@ use sloc_git::ScheduleStore;
 pub(crate) struct CspNonce(pub(crate) String);
 
 static CHART_JS: &[u8] = include_bytes!("../static/chart.umd.min.js");
+static APP_CSS: &str = include_str!("../static/app.css");
+static APP_JS: &str = include_str!("../static/app.js");
 static REPORT_CHART_JS: &[u8] = include_bytes!("../static/chart.min.js");
 
 use sloc_core::{
@@ -135,6 +137,9 @@ mod win_dialog_focus {
         ) -> BOOL;
         fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: *mut DWORD) -> DWORD;
         fn AttachThreadInput(idAttach: DWORD, idAttachTo: DWORD, fAttach: BOOL) -> BOOL;
+        // Synthesises a keystroke. We tap ALT to mark our process as the last to
+        // receive input, which lifts Windows' foreground lock (see bring_to_front).
+        fn keybd_event(bVk: u8, bScan: u8, dwFlags: DWORD, dwExtraInfo: usize);
         #[cfg(feature = "native-dialog")]
         fn FlashWindowEx(pfwi: *const FLASHWINFO) -> BOOL;
         fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> HWND;
@@ -266,6 +271,17 @@ mod win_dialog_focus {
             };
             let attached =
                 fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, 1) != 0;
+
+            // Windows 10/11 hardened the foreground lock so that AttachThreadInput
+            // alone no longer reliably activates a window owned by another process
+            // (Explorer) — SetForegroundWindow silently fails and only the taskbar
+            // button flashes.  Synthesising a tap of the ALT key marks *our* process
+            // as the one that received the last input event, which is one of the
+            // documented conditions under which the lock is lifted, so the
+            // SetForegroundWindow below actually activates the window.
+            // VK_MENU = 0x12; KEYEVENTF_KEYUP = 0x0002.
+            keybd_event(0x12, 0, 0, 0);
+            keybd_event(0x12, 0, 0x0002, 0);
 
             // SW_RESTORE = 9 — un-minimise the Explorer window (it may have opened
             // as a taskbar button) without forcing a full-screen maximise.
@@ -819,15 +835,15 @@ fn ownership_page_nav() -> &'static str {
       <a class="nav-pill" href="/compare-scans">Compare Scans</a>
       <a class="nav-pill" href="/test-metrics">Test Metrics</a>
       <div class="nav-dropdown">
-        <a href="/git-browser" class="nav-dropdown-btn" style="background:rgba(255,255,255,0.22);">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
+        <a href="/git-browser" class="nav-dropdown-btn sx-8c38ef73" >Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
         <div class="nav-dropdown-menu">
-          <a href="/code-ownership" style="background:rgba(255,255,255,0.14);"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
+          <a class="sx-ee1cc7d2" href="/code-ownership" ><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
           <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
         </div>
       </div>
       <div class="server-status-wrap" id="server-status-wrap">
-        <div class="nav-pill server-online-pill" id="server-status-pill"><span class="status-dot" id="status-dot"></span><span id="server-status-label">Server</span><span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span></div>
-        <div class="server-status-tip">OxideSLOC is running &mdash; accessible on your network.<span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span></div>
+        <div class="nav-pill server-online-pill" id="server-status-pill"><span class="status-dot" id="status-dot"></span><span id="server-status-label">Server</span><span class="sx-d60f2ef3" id="server-ping-ms" ></span></div>
+        <div class="server-status-tip">OxideSLOC is running &mdash; accessible on your network.<span class="sx-238af6bc" id="server-tip-ping" ></span></div>
       </div>
       <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></button>
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme"><svg class="icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg><svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg></button>
@@ -890,7 +906,7 @@ fn ownership_page_scripts() -> &'static str {
     var max=1;data.forEach(function(d){if(d[metric]>max)max=d[metric];});
     var rows=data.slice().sort(function(x,y){return y[metric]-x[metric];});
     var html='';
-    rows.forEach(function(d){var pct=Math.round(d[metric]/max*100);html+='<div class="own-bar-row"><div class="own-bar-name" title="'+esc(d.email)+'">'+esc(d.name)+'</div><div class="own-bar-track"><div class="own-bar-fill" style="width:'+pct+'%;background:'+d.color+';"></div></div><div class="own-bar-val">'+fmt(d[metric])+'</div></div>';});
+    rows.forEach(function(d){var pct=Math.round(d[metric]/max*100);html+='<div class="own-bar-row"><div class="own-bar-name" title="'+esc(d.email)+'">'+esc(d.name)+'</div><div class="own-bar-track"><div class="own-bar-fill" data-sx-style="width:'+pct+'%;background:'+d.color+';"></div></div><div class="own-bar-val">'+fmt(d[metric])+'</div></div>';});
     wrap.innerHTML=html;
   }
   btns.forEach(function(bn){bn.addEventListener('click',function(){btns.forEach(function(x){x.classList.remove('active');});bn.classList.add('active');render(bn.getAttribute('data-metric'));});});
@@ -1100,6 +1116,8 @@ fn render_code_ownership_html(
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OxideSLOC | Code Ownership</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{nonce}">{css}</style>
 </head>
 <body>
@@ -1268,13 +1286,13 @@ fn render_ownership_empty(project_label: &str) -> String {
         r#"<div class="panel own-empty">
   <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
   <div class="own-empty-title">No ownership data for the latest scan</div>
-  <p class="muted" style="max-width:560px;text-align:center;">
+  <p class="muted sx-3ce1b575" >
     Code ownership is computed from <strong>git blame</strong> and is <strong>on by default</strong>.
     This scan has none &mdash; the scanned path is likely not a git repository, or attribution was
     turned off for this run. Re-scan a git repo with attribution on to populate this page:
   </p>
   <pre class="own-code">oxide-sloc analyze {project}</pre>
-  <p class="muted" style="max-width:560px;text-align:center;">
+  <p class="muted sx-3ce1b575" >
     The scan root must be a git repository. Same-email identities are merged automatically;
     cross-account merges are a later step.
   </p>
@@ -1291,7 +1309,7 @@ fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) 
     for r in rows {
         let _ = write!(
             merge_checks,
-            r#"<label class="merge-opt"><input type="checkbox" name="email" value="{email}"><span class="merge-opt-dot" style="background:{color};"></span><span class="merge-opt-name">{name}</span><span class="merge-opt-email">{email}</span></label>"#,
+            r#"<label class="merge-opt"><input type="checkbox" name="email" value="{email}"><span class="merge-opt-dot" data-sx-style="background:{color};"></span><span class="merge-opt-name">{name}</span><span class="merge-opt-email">{email}</span></label>"#,
             email = own_esc(&r.email),
             color = r.color,
             name = own_esc(&r.name),
@@ -1311,7 +1329,7 @@ fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) 
                 .join(", ");
             let _ = write!(
                 merge_existing,
-                r#"<div class="merge-chip"><span class="merge-chip-text"><strong>{name}</strong> &nbsp;{count} emails &middot; {members}</span><form method="POST" action="/api/ownership/unmerge" style="display:inline;margin:0;"><input type="hidden" name="canonical_email" value="{cemail}"><button type="submit" class="merge-unmerge">Unmerge</button></form></div>"#,
+                r#"<div class="merge-chip"><span class="merge-chip-text"><strong>{name}</strong> &nbsp;{count} emails &middot; {members}</span><form class="sx-5add8e44" method="POST" action="/api/ownership/unmerge" ><input type="hidden" name="canonical_email" value="{cemail}"><button type="submit" class="merge-unmerge">Unmerge</button></form></div>"#,
                 name = own_esc(&g.canonical_name),
                 count = g.members.len(),
                 members = members,
@@ -1323,7 +1341,7 @@ fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) 
     format!(
         r#"<div class="section-header">Combine contributors</div>
 <div class="panel">
-  <p class="muted" style="margin-bottom:14px;">Same person committing under different names or emails? Select two or more contributors and merge them into a single identity. This is applied on top of the scan &mdash; <strong>no re-scan needed</strong> &mdash; and can be exported as a git <code>.mailmap</code> so the merge carries into git itself and future scans.</p>
+  <p class="muted sx-16dbf2a3" >Same person committing under different names or emails? Select two or more contributors and merge them into a single identity. This is applied on top of the scan &mdash; <strong>no re-scan needed</strong> &mdash; and can be exported as a git <code>.mailmap</code> so the merge carries into git itself and future scans.</p>
   <form method="POST" action="/api/ownership/merge">
     <div class="merge-grid">{merge_checks}</div>
     <div class="merge-controls">
@@ -1364,7 +1382,7 @@ fn render_ownership_populated(
         let pct = (r.code as f64 / max_code as f64 * 100.0).round() as u64;
         let _ = write!(
             bars,
-            r#"<div class="own-bar-row"><div class="own-bar-name" title="{email}">{name}</div><div class="own-bar-track"><div class="own-bar-fill" style="width:{pct}%;background:{color};"></div></div><div class="own-bar-val">{val}</div></div>"#,
+            r#"<div class="own-bar-row"><div class="own-bar-name" title="{email}">{name}</div><div class="own-bar-track"><div class="own-bar-fill" data-sx-style="width:{pct}%;background:{color};"></div></div><div class="own-bar-val">{val}</div></div>"#,
             email = own_esc(&r.email),
             name = own_esc(&r.name),
             pct = pct,
@@ -1377,7 +1395,7 @@ fn render_ownership_populated(
     for r in rows {
         let _ = write!(
             author_table,
-            r#"<tr><td><span class="own-dot" style="background:{color};"></span>{name}</td><td class="own-email">{email}</td><td class="num">{code}</td><td class="num">{comment}</td><td class="num">{blank}</td><td class="num">{total}</td><td class="num">{pct:.1}%</td><td class="num">{files}</td><td class="num">{aliases}</td></tr>"#,
+            r#"<tr><td><span class="own-dot" data-sx-style="background:{color};"></span>{name}</td><td class="own-email">{email}</td><td class="num">{code}</td><td class="num">{comment}</td><td class="num">{blank}</td><td class="num">{total}</td><td class="num">{pct:.1}%</td><td class="num">{files}</td><td class="num">{aliases}</td></tr>"#,
             color = r.color,
             name = own_esc(&r.name),
             email = own_esc(&r.email),
@@ -1427,7 +1445,7 @@ fn render_ownership_populated(
 </div>
 
 <div class="section-header">Contributors</div>
-<div class="panel" style="padding:0;overflow:auto;">
+<div class="panel sx-e6a29e9c" >
   <table class="data-table">
     <thead><tr><th>Author</th><th>Email</th><th class="num">Code</th><th class="num">Comment</th><th class="num">Blank</th><th class="num">Total</th><th class="num">Code %</th><th class="num">Files Owned</th><th class="num">Aliases</th></tr></thead>
     <tbody>{author_table}</tbody>
@@ -1435,7 +1453,7 @@ fn render_ownership_populated(
 </div>
 
 <div class="section-header">Ownership by language</div>
-<div class="panel" style="padding:0;overflow:auto;">
+<div class="panel sx-e6a29e9c" >
   <table class="data-table">
     <thead><tr><th>Language</th><th class="num">Code Lines</th><th>Top Owner</th><th class="num">Owner %</th></tr></thead>
     <tbody>{lang_table}</tbody>
@@ -1443,7 +1461,7 @@ fn render_ownership_populated(
 </div>
 
 {merge_panel}
-<p class="muted" style="margin-top:14px;">Ownership reflects the author who last touched each physical line (<code>git blame -w -M -C</code>, <code>.mailmap</code> honoured). Counts are physical lines and sum to the file's line total; they can differ slightly from the policy-adjusted SLOC totals elsewhere. Same-email identities are auto-merged; use <strong>Combine contributors</strong> above to merge across different emails.</p>
+<p class="muted sx-8d842990" >Ownership reflects the author who last touched each physical line (<code>git blame -w -M -C</code>, <code>.mailmap</code> honoured). Counts are physical lines and sum to the file's line total; they can differ slightly from the policy-adjusted SLOC totals elsewhere. Same-email identities are auto-merged; use <strong>Combine contributors</strong> above to merge across different emails.</p>
 
 <script id="own-data" type="application/json" nonce="{nonce}">{data_json}</script>"#,
         contributors = rows.len(),
@@ -1583,6 +1601,7 @@ fn build_router(state: AppState) -> Router {
         )
         // ── Run lifecycle: bundle download + delete + cleanup ─────────────────
         .route("/api/runs/{run_id}/bundle", get(download_bundle_handler))
+        .route("/api/runs/{run_id}/export", post(export_run_handler))
         .route(
             "/api/runs/{run_id}",
             axum::routing::delete(delete_run_handler),
@@ -1596,6 +1615,8 @@ fn build_router(state: AppState) -> Router {
                 .delete(api_delete_cleanup_policy),
         )
         .route("/api/cleanup-policy/run-now", post(api_run_cleanup_now))
+        // ── Operator-only effective-config view ────────────────────────────────
+        .route("/api/admin/config", get(api_admin_config))
         // ── REST API reference page ────────────────────────────────────────────
         .route("/api-docs", get(api_docs_handler))
         // ── Prometheus metrics — behind API-key auth ───────────────────────────
@@ -1616,6 +1637,8 @@ fn build_router(state: AppState) -> Router {
         .route("/badge/{metric}", get(badge_handler))
         .route("/static/chart.js", get(chart_js_handler))
         .route("/static/chart-report.js", get(report_chart_js_handler))
+        .route("/static/app.css", get(app_css_handler))
+        .route("/static/app.js", get(app_js_handler))
         .route("/auth/login", get(auth::auth_login_get))
         .route("/auth/login", post(auth::auth_login_post))
         .route("/auth/logout", post(auth::auth_logout))
@@ -1644,6 +1667,10 @@ fn build_router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .layer(middleware::from_fn(consent_gate))
         .layer(middleware::from_fn(csrf_protect))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            host_allowlist_guard,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             add_security_headers,
@@ -1954,6 +1981,30 @@ fn refuse_unauthenticated_server(server_mode: bool, has_api_keys: bool) -> bool 
     server_mode && !has_api_keys && !allow_unauthenticated_server_mode()
 }
 
+/// Whether a bind address exposes the server beyond the local host (i.e. is not a
+/// loopback address). Binding to a non-loopback address (`0.0.0.0`, `::`, a concrete
+/// LAN IP, or a hostname) makes the UI reachable by other machines, so the full set
+/// of server-mode protections must apply even if `--server` was not passed.
+///
+/// Fail safe: anything that does not *prove* it is loopback is treated as
+/// network-facing. A bare hostname or an unparseable address therefore promotes to
+/// server mode rather than silently running open.
+fn bind_is_network_facing(bind_address: &str) -> bool {
+    if let Ok(addr) = bind_address.parse::<SocketAddr>() {
+        return !addr.ip().is_loopback();
+    }
+    // Not a concrete `ip:port`. Strip the port and any IPv6 brackets, then only
+    // treat the well-known loopback spellings as local; everything else is remote.
+    let host = bind_address
+        .rsplit_once(':')
+        .map_or(bind_address, |(h, _)| h)
+        .trim_matches(|c| c == '[' || c == ']');
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return !ip.is_loopback();
+    }
+    !host.eq_ignore_ascii_case("localhost")
+}
+
 /// Umbrella strict-posture switch (`SLOC_HARDENED=1`). When set, opt-in hardening
 /// defaults take effect: transport encryption is required on non-loopback binds and
 /// the auth-lockout threshold tightens. Off by default so existing deployments are
@@ -2060,8 +2111,13 @@ async fn consent_gate(req: Request<Body>, next: Next) -> Response {
     if !consent_gate_applies(&req) || request_has_consent(&req) {
         return next.run(req).await;
     }
+    let nonce = req
+        .extensions()
+        .get::<CspNonce>()
+        .map(|c| c.0.clone())
+        .unwrap_or_default();
     let next_path = req.uri().path_and_query().map_or("/", |pq| pq.as_str());
-    render_consent_page(&text, next_path)
+    render_consent_page(&text, next_path, &nonce)
 }
 
 /// Minimal escaping for embedding operator/config text into the banner HTML.
@@ -2074,7 +2130,7 @@ fn html_escape_consent(s: &str) -> String {
 
 /// Render the consent interstitial with an "I Agree" action that records
 /// acknowledgement and returns the user to where they were headed.
-fn render_consent_page(text: &str, next_path: &str) -> Response {
+fn render_consent_page(text: &str, next_path: &str, nonce: &str) -> Response {
     // Only accept a safe same-origin relative path as the return target.
     let safe_next = if next_path.starts_with('/')
         && !next_path.starts_with("//")
@@ -2090,7 +2146,7 @@ fn render_consent_page(text: &str, next_path: &str) -> Response {
         r#"<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Notice and Consent — OxideSLOC</title>
-<style>body{{font-family:system-ui,sans-serif;max-width:560px;margin:64px auto;padding:0 24px;color:#2f241c}}
+<style nonce="{nonce}">body{{font-family:system-ui,sans-serif;max-width:560px;margin:64px auto;padding:0 24px;color:#2f241c}}
 h1{{color:#b85d33;font-size:20px}}.notice{{line-height:1.65;background:#f7efe7;border:1px solid #e2d2c2;border-radius:10px;padding:18px 20px;white-space:pre-wrap}}
 .agree{{display:inline-block;margin-top:20px;background:#b85d33;color:#fff;text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:700}}
 .agree:hover{{background:#a04d27}}</style>
@@ -2100,9 +2156,122 @@ h1{{color:#b85d33;font-size:20px}}.notice{{line-height:1.65;background:#f7efe7;b
 <a class="agree" href="{}">I Agree</a>
 </body></html>"#,
         html_escape_consent(text),
-        accept_url
+        accept_url,
+        nonce = nonce
     );
     (StatusCode::OK, Html(body)).into_response()
+}
+
+// ── Host-header allowlist (anti DNS-rebinding / Host injection) ────────────────
+
+/// Extract the host authority (scheme-less `host` or `host:port`) from a URL string,
+/// lowercased. Returns `None` when the input has no parseable host.
+fn host_of_url(url: &str) -> Option<String> {
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    // Strip any userinfo (`user@host`) but keep an IPv6 literal's own colons intact.
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    (!authority.is_empty()).then(|| authority.to_ascii_lowercase())
+}
+
+/// Parse `SLOC_ALLOWED_HOSTS` (comma- or whitespace-separated) into a normalized list
+/// of allowed host authorities. Each entry is `host` or `host:port`, lowercased.
+fn parse_allowed_hosts(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .flat_map(str::split_whitespace)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Whether a request `Host` header value matches the allowlist. An allowlist entry
+/// without a port matches the request host regardless of its port; an entry with a
+/// port must match exactly. Case-insensitive.
+fn host_is_allowed(host_header: &str, allowed: &[String]) -> bool {
+    let h = host_header.trim().to_ascii_lowercase();
+    if h.is_empty() {
+        return false;
+    }
+    // Host without the port, being careful not to strip the colons of an IPv6 literal.
+    let h_noport = if h.starts_with('[') {
+        h.split(']')
+            .next()
+            .map_or(h.as_str(), |b| b)
+            .trim_start_matches('[')
+    } else {
+        h.rsplit_once(':').map_or(h.as_str(), |(host, _)| host)
+    };
+    allowed
+        .iter()
+        .any(|a| a == &h || a == h_noport || a.trim_matches(|c| c == '[' || c == ']') == h_noport)
+}
+
+/// Paths always answered regardless of the Host allowlist so load-balancer / uptime
+/// probes (which often hit the raw IP) and HMAC-authenticated webhooks keep working.
+fn host_check_exempt(path: &str) -> bool {
+    matches!(path, "/healthz" | "/readyz" | "/metrics") || path.starts_with("/webhooks/")
+}
+
+/// Resolve the effective Host allowlist for server mode: the explicit
+/// `SLOC_ALLOWED_HOSTS` entries, plus the host of `SLOC_PUBLIC_URL` when set (so the
+/// canonical hostname is implicitly trusted). Returns `None` when `SLOC_ALLOWED_HOSTS`
+/// is unset/empty — enforcement is strictly opt-in, so IP-based access is never broken
+/// by accident. Setting only `SLOC_PUBLIC_URL` does not, by itself, turn enforcement on.
+fn effective_allowed_hosts() -> Option<Vec<String>> {
+    let raw = std::env::var("SLOC_ALLOWED_HOSTS").ok()?;
+    let mut allowed = parse_allowed_hosts(&raw);
+    if allowed.is_empty() {
+        return None;
+    }
+    if let Some(host) = std::env::var("SLOC_PUBLIC_URL")
+        .ok()
+        .as_deref()
+        .and_then(host_of_url)
+        && !allowed.contains(&host)
+    {
+        allowed.push(host);
+    }
+    Some(allowed)
+}
+
+/// Middleware: in server mode, reject requests whose `Host` header is not on the
+/// allowlist (`SLOC_ALLOWED_HOSTS`). This blocks DNS-rebinding and Host-header
+/// injection against a network-facing deployment. A no-op when the allowlist is unset
+/// or in desktop mode, so default deployments and IP access are unaffected.
+async fn host_allowlist_guard(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if !state.server_mode || host_check_exempt(req.uri().path()) {
+        return next.run(req).await;
+    }
+    let Some(allowed) = effective_allowed_hosts() else {
+        return next.run(req).await;
+    };
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if host_is_allowed(host, &allowed) {
+        return next.run(req).await;
+    }
+    audit::record("host_rejected", "denied", &[("host", host)]);
+    tracing::warn!(
+        event = "host_rejected",
+        host,
+        "Host header not in SLOC_ALLOWED_HOSTS"
+    );
+    (
+        StatusCode::MISDIRECTED_REQUEST,
+        "421 Misdirected Request — this host is not served here\n",
+    )
+        .into_response()
 }
 
 /// Emit operator-facing warnings for insecure server-mode configurations.
@@ -2256,11 +2425,32 @@ fn load_runtime_security_config(server_mode: bool) -> RuntimeSecurityConfig {
 ///
 /// Panics if the Axum router fails to build (only occurs on misconfigured routes).
 #[allow(clippy::too_many_lines)]
-pub async fn serve(config: AppConfig) -> Result<()> {
+pub async fn serve(mut config: AppConfig) -> Result<()> {
     // Anchor the uptime clock at launch so /api/health reports true process uptime.
     process_start();
     let bind_address = config.web.bind_address.clone();
-    let server_mode = config.web.server_mode;
+    // A network-facing (non-loopback) bind is treated as server mode regardless of the
+    // `--server` flag: the fail-closed auth gate, the scan-path allowlist, disabled
+    // desktop-only routes, tighter rate limits, and restricted CORS must all apply the
+    // moment the UI is reachable off-box. Without this, `SLOC_BIND=0.0.0.0:4317` (or
+    // `--bind`) with no `--server` would expose an open, allowlist-free filesystem-read
+    // surface to the whole LAN. Loopback binds keep the open single-user desktop model.
+    let mut server_mode = config.web.server_mode;
+    if !server_mode && bind_is_network_facing(&bind_address) {
+        server_mode = true;
+        config.web.server_mode = true;
+        println!(
+            "NOTE: bind address {bind_address} is network-facing (non-loopback), so \
+             server-mode protections are being enforced automatically: authentication is \
+             required, server-side scanning is limited to SLOC_ALLOWED_ROOTS, and \
+             desktop-only routes are disabled. Pass --server to make this explicit."
+        );
+        audit::record(
+            "server_mode_auto_enabled",
+            "info",
+            &[("bind", bind_address.as_str())],
+        );
+    }
     let output_root = resolve_output_root(None);
     // SLOC_REGISTRY_PATH overrides the registry location — useful for shared drives/mounts.
     let registry_path = std::env::var("SLOC_REGISTRY_PATH")
@@ -2361,6 +2551,12 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         }
     }
 
+    // Server-mode disk guard: independently enforce the total-size ceiling so a burst
+    // of uploads/scans can never fill the host disk between age/count policy passes.
+    if server_mode {
+        spawn_disk_guard(state.clone());
+    }
+
     let app = build_router(state.clone());
 
     // Try the configured port first, then step up through a few alternatives.
@@ -2435,6 +2631,9 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         if let Some(lan) = wildcard_lan_url(&url) {
             println!("  Reachable on the LAN at {lan} (sign in at {lan}auth/login)");
         }
+        if server_mode {
+            emit_hostname_guidance(addr);
+        }
         println!("Use Ctrl+C to stop.");
 
         return serve_tls(listener, app, acceptor, server_mode).await;
@@ -2442,6 +2641,9 @@ pub async fn serve(config: AppConfig) -> Result<()> {
 
     let url = format!("http://{addr}/");
     log_startup_url(&url, server_mode);
+    if server_mode {
+        emit_hostname_guidance(addr);
+    }
 
     axum::serve(
         listener,
@@ -2493,6 +2695,90 @@ fn log_startup_url(url: &str, server_mode: bool) {
         println!("Press Ctrl+C to stop the server.");
         let open_url = url.to_owned();
         tokio::task::spawn_blocking(move || open_browser_tab(&open_url));
+    }
+}
+
+/// Split a host authority into `(host, optional port)`, keeping an IPv6 literal's
+/// bracketed colons intact. `"[::1]:80"` → `("[::1]", Some("80"))`, `"h:80"` →
+/// `("h", Some("80"))`, `"h"` → `("h", None)`.
+fn split_host_port(authority: &str) -> (&str, Option<&str>) {
+    if let Some(rest) = authority.strip_prefix('[') {
+        // IPv6 literal: host ends at the closing bracket.
+        if let Some((host, tail)) = rest.split_once(']') {
+            let port = tail.strip_prefix(':').filter(|p| !p.is_empty());
+            return (host, port);
+        }
+    }
+    match authority.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() => (h, Some(p)),
+        _ => (authority, None),
+    }
+}
+
+/// Best-effort startup guidance for a configured canonical hostname (`SLOC_PUBLIC_URL`).
+/// Prints the canonical URL and performs a DNS-resolution sanity check so the operator
+/// learns immediately whether LAN clients can reach the server by name. When the name
+/// does not resolve to an address on this host, it prints the exact `hosts` file line
+/// and a DNS A-record hint. A no-op when `SLOC_PUBLIC_URL` is unset. Never fails the
+/// server start — purely advisory.
+fn emit_hostname_guidance(bound: SocketAddr) {
+    let Ok(public_url) = std::env::var("SLOC_PUBLIC_URL") else {
+        return;
+    };
+    let public_url = public_url.trim();
+    if public_url.is_empty() {
+        return;
+    }
+    let Some(authority) = host_of_url(public_url) else {
+        println!("WARNING: SLOC_PUBLIC_URL='{public_url}' has no parseable host; ignoring it.");
+        return;
+    };
+    let (host, _) = split_host_port(&authority);
+    println!("Canonical URL: {public_url}");
+
+    // Resolve the name and decide whether it points at this machine.
+    let resolved: Vec<IpAddr> = format!("{host}:{}", bound.port())
+        .to_socket_addrs()
+        .map(|it| it.map(|sa| sa.ip()).collect())
+        .unwrap_or_default();
+    let local_ips: Vec<IpAddr> = primary_lan_ip()
+        .and_then(|s| s.parse().ok())
+        .into_iter()
+        .chain([
+            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        ])
+        .chain((!bound.ip().is_unspecified()).then_some(bound.ip()))
+        .collect();
+
+    if resolved.is_empty() {
+        let ip_hint = primary_lan_ip().unwrap_or_else(|| "<this-host-IP>".to_string());
+        println!(
+            "  NOTE: '{host}' does not resolve yet. To let LAN clients use the name, either:\n    \
+             • add a DNS A record:  {host}  ->  {ip_hint}   (on your DNS server), or\n    \
+             • add a hosts-file line on each client:  {ip_hint}  {host}\n      \
+             (Windows: C:\\Windows\\System32\\drivers\\etc\\hosts, Linux/macOS: /etc/hosts)"
+        );
+    } else if resolved.iter().any(|ip| local_ips.contains(ip)) {
+        println!("  '{host}' resolves to this host — LAN clients can use the canonical URL.");
+    } else {
+        let resolved_list = resolved
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!(
+            "  WARNING: '{host}' resolves to {resolved_list}, which is not an address on this \
+             host. Point the DNS record / hosts entry at this machine or clients will reach the \
+             wrong server."
+        );
+    }
+
+    if effective_allowed_hosts().is_none() {
+        println!(
+            "  TIP: set SLOC_ALLOWED_HOSTS={host} to reject requests with any other Host header \
+             (blocks DNS-rebinding / Host-header injection)."
+        );
     }
 }
 
@@ -2732,7 +3018,7 @@ async fn add_security_headers(
         "default-src 'self'; \
          base-uri 'self'; \
          form-action 'self'; \
-         style-src 'self' 'unsafe-inline'; \
+         style-src 'self' 'nonce-{nonce}'; \
          img-src 'self' data: blob:; \
          script-src 'self' 'nonce-{nonce}'; \
          font-src 'self' data:; \
@@ -2869,12 +3155,12 @@ fn page_fade_html(nonce: &str) -> String {
     // through the entire body parse, which reads as a delay before navigation "begins"
     // and then a blink. Without a fill-mode the animation starts at first paint and plays
     // 0 -> 1 cleanly, with no pre-paint hold.
-    const STYLE: &str = r"<style>
+    const STYLE: &str = r"
 @keyframes sloc-page-fade-in{from{opacity:0;}to{opacity:1;}}
 .page,.site-footer{animation:sloc-page-fade-in .3s ease-out;}
 body.sloc-leaving .page,body.sloc-leaving .site-footer{opacity:0;transition:opacity .16s ease-in;animation:none;}
 @media (prefers-reduced-motion:reduce){.page,.site-footer{animation:none;}body.sloc-leaving .page,body.sloc-leaving .site-footer{opacity:1;transition:none;}}
-</style>";
+";
     // `dark`: apply the saved dark theme before paint to avoid a light flash.
     // The click handler gives immediate feedback by fading the *content* out the moment a
     // same-origin nav link is clicked, while the top nav stays put. It does NOT call
@@ -2884,7 +3170,7 @@ body.sloc-leaving .page,body.sloc-leaving .site-footer{opacity:0;transition:opac
     // links. A safety timer + `pageshow` clear the class so content can't get stuck hidden
     // if the click was actually a download (no unload) or the page is restored from bfcache.
     const JS: &str = r"(function(){try{if(localStorage.getItem('sloc-dark')==='1'&&document.body)document.body.classList.add('dark-theme');}catch(e){}function leave(e){if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(!a)return;if(a.target&&a.target!=='_self')return;if(a.hasAttribute('download'))return;var href=a.getAttribute('href');if(!href||href.charAt(0)==='#')return;if(/^(mailto:|tel:|javascript:)/i.test(href))return;var u;try{u=new URL(a.href,location.href);}catch(_){return;}if(u.origin!==location.origin)return;if(u.pathname===location.pathname&&u.search===location.search)return;var b=document.body;if(!b)return;b.classList.add('sloc-leaving');setTimeout(function(){b.classList.remove('sloc-leaving');},1400);}document.addEventListener('click',leave);window.addEventListener('pageshow',function(){if(document.body)document.body.classList.remove('sloc-leaving');});})();";
-    format!("{STYLE}<script nonce=\"{nonce}\">{JS}</script>")
+    format!("<style nonce=\"{nonce}\">{STYLE}</style><script nonce=\"{nonce}\">{JS}</script>")
 }
 
 /// Self-contained branded loading overlay for the heavy comparison pages (Scan
@@ -3583,6 +3869,35 @@ async fn chart_js_handler() -> impl IntoResponse {
     )
 }
 
+/// Shared utility stylesheet (`/static/app.css`). Served same-origin so it is
+/// permitted by `style-src 'self'` without a nonce — part of migrating inline
+/// `style="…"` attributes off the CSP's `'unsafe-inline'` allowance.
+async fn app_css_handler() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        APP_CSS,
+    )
+}
+
+/// Shared applier script (`/static/app.js`). Applies `data-sx-style` declarations
+/// via the CSSOM (not governed by CSP style-src), so data-driven styles need no
+/// inline `style="…"`. Same-origin, so permitted by `script-src 'self'`.
+async fn app_js_handler() -> impl IntoResponse {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        APP_JS,
+    )
+}
+
 async fn report_chart_js_handler() -> impl IntoResponse {
     (
         [
@@ -3767,6 +4082,9 @@ struct ArtifactQuery {
 struct PickDirectoryResponse {
     selected_path: Option<String>,
     cancelled: bool,
+    /// True when the picked folder is itself a local git repository, so the UI can offer a
+    /// "Browse branches" shortcut into the Git Browser for it. Always false for file picks.
+    is_git_repo: bool,
 }
 
 #[cfg(feature = "native-dialog")]
@@ -3832,9 +4150,15 @@ async fn pick_directory_handler(
     .await
     .unwrap_or(None);
 
+    // Offer the "Browse branches" shortcut only for a picked project folder that is a git repo.
+    let is_git_repo = !is_coverage
+        && picked
+            .as_ref()
+            .is_some_and(|p| sloc_git::is_local_repo_path(&display_path(p)));
     Json(PickDirectoryResponse {
         selected_path: picked.as_ref().map(|p| display_path(p)),
         cancelled: picked.is_none(),
+        is_git_repo,
     })
     .into_response()
 }
@@ -3877,6 +4201,7 @@ async fn pick_file_handler(State(state): State<AppState>) -> Response {
     Json(PickDirectoryResponse {
         selected_path: picked.as_ref().map(|p| display_path(p)),
         cancelled: picked.is_none(),
+        is_git_repo: false,
     })
     .into_response()
 }
@@ -4272,6 +4597,14 @@ async fn upload_directory_handler(
     if let Err(resp) = validate_upload_dir_request(&body) {
         return resp;
     }
+    // Disk-cap preflight for the first batch of a new upload (continuation batches
+    // reuse an existing staging dir and are allowed to finish so no partial upload is
+    // stranded; the periodic disk guard reclaims anything that overruns).
+    if body.upload_id.is_none()
+        && let Some(resp) = reject_when_staging_full(&upload_base_dir()).await
+    {
+        return resp;
+    }
     // Reuse an existing staging dir when the client sends a continuation batch,
     // otherwise create a fresh one. Validate the id to prevent path traversal.
     let (upload_id, staging) = resolve_or_create_staging(body.upload_id.as_deref());
@@ -4337,6 +4670,10 @@ async fn upload_file_handler(
         .file_name()
         .map_or_else(|| "upload".to_owned(), |n| n.to_string_lossy().into_owned());
 
+    if let Some(resp) = reject_when_staging_full(&upload_base_dir()).await {
+        return resp;
+    }
+
     let upload_id = uuid::Uuid::new_v4();
     let staging = std::env::temp_dir()
         .join("oxide-sloc-uploads")
@@ -4380,6 +4717,36 @@ async fn upload_file_handler(
 /// cap during decompression. The browser-side JS creates the archive one file at a time using
 /// the native `CompressionStream('gzip')` API so browser RAM usage stays bounded regardless of
 /// project size.
+/// Upload disk-cap preflight. Returns `Some(507)` when the upload staging area at
+/// `upload_base` already meets or exceeds the operator disk ceiling (`SLOC_MAX_DISK_MB`),
+/// so a new upload should be refused before any bytes are written. Returns `None` when
+/// no ceiling is configured or there is still headroom.
+async fn reject_when_staging_full(upload_base: &Path) -> Option<Response> {
+    let cap = disk_cap_bytes(None)?;
+    let base = upload_base.to_path_buf();
+    let used = tokio::task::spawn_blocking(move || dir_size_bytes(&base))
+        .await
+        .unwrap_or(0);
+    if used >= cap {
+        tracing::warn!(
+            event = "upload_rejected_disk_cap",
+            used,
+            cap,
+            "upload staging area is at the disk ceiling; rejecting upload"
+        );
+        return Some(
+            (
+                StatusCode::INSUFFICIENT_STORAGE,
+                Json(serde_json::json!({
+                    "error": "Server upload storage is full. Retry after old runs are cleaned up."
+                })),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
 /// Guards against zip-bomb archives: errors once more than `remaining` bytes have been
 /// decompressed. Wraps any `std::io::Read` source.
 struct SizeLimitReader<R> {
@@ -4421,6 +4788,15 @@ async fn upload_tarball_handler(
             Json(serde_json::json!({"error": "Upload initialization failed"})),
         )
             .into_response();
+    }
+
+    // ── 0. Disk-cap preflight ────────────────────────────────────────────────
+    // Reject a new upload outright when the staging area already sits at or above the
+    // operator disk ceiling (`SLOC_MAX_DISK_MB`). Combined with the per-request body
+    // and decompression caps, this bounds how much a client can make the host write.
+    if let Some(resp) = reject_when_staging_full(&upload_base).await {
+        let _ = tokio::fs::remove_file(&tarball_path).await;
+        return resp;
     }
 
     // ── 1. Stream the request body to a temp file (bounded RAM) ──────────────
@@ -4539,9 +4915,28 @@ pub(crate) async fn register_artifacts_in_registry(
     };
     let mut entry = registry_entry_from_run(run, json_path, html_path);
     entry.project_label = label.to_owned();
-    let mut reg = state.registry.lock().await;
-    reg.add_entry(entry);
-    let _ = reg.save(&state.registry_path);
+    {
+        let mut reg = state.registry.lock().await;
+        reg.add_entry(entry);
+        let _ = reg.save(&state.registry_path);
+    }
+    maybe_auto_export(artifacts).await;
+}
+
+/// If the operator enabled auto-export (`SLOC_EXPORT_AUTO=1`) and a share target is
+/// configured (`SLOC_EXPORT_DIR`), publish this run's artifacts to it. Best-effort:
+/// errors are logged inside the export routine and swallowed here so a failed export
+/// never breaks scan completion.
+async fn maybe_auto_export(artifacts: &RunArtifacts) {
+    if !export_auto_enabled() || export_share_dir().is_none() {
+        return;
+    }
+    let output_dir = artifacts.output_dir.clone();
+    if output_dir.as_os_str().is_empty() || !output_dir.exists() {
+        return;
+    }
+    // Fire-and-forget: reuse the manual share-export routine and discard its HTTP body.
+    let _ = export_run_to_share(output_dir).await;
 }
 
 fn is_html_report_file(p: &Path) -> bool {
@@ -5652,11 +6047,7 @@ fn authorize_preview_path(state: &AppState, resolved: &Path) -> Result<(), Html<
             r#"<div class="preview-error">Preview rejected: this server has no scan roots configured. Set SLOC_ALLOWED_ROOTS (colon-separated paths) to enable server-side path scanning; the Browse / upload flow works without it.</div>"#.to_string()
         ));
     }
-    let allowed = config.discovery.allowed_scan_roots.iter().any(|root| {
-        fs::canonicalize(root)
-            .ok()
-            .is_some_and(|r| canonical.starts_with(&r))
-    });
+    let allowed = path_within_allowed_roots(&canonical, &config.discovery.allowed_scan_roots);
     if !allowed {
         return Err(Html(
             r#"<div class="preview-error">Preview rejected: path is not within an allowed scan directory.</div>"#.to_string()
@@ -5772,6 +6163,18 @@ fn detect_coverage_tool(root: &Path) -> (Option<&'static str>, Option<&'static s
     (None, None)
 }
 
+/// True when `canonical` (an already-canonicalized path) resolves under one of
+/// `allowed_scan_roots`. Each root is canonicalized before the prefix check so `..`/symlink
+/// tricks in either the path or a configured root cannot slip through. Shared by the
+/// server-mode scan-path gate, the preview gate, and the Git Browser's local-repo gate.
+pub(crate) fn path_within_allowed_roots(canonical: &Path, allowed_roots: &[PathBuf]) -> bool {
+    allowed_roots.iter().any(|root| {
+        fs::canonicalize(root)
+            .ok()
+            .is_some_and(|r| canonical.starts_with(&r))
+    })
+}
+
 /// Validate a scan path in server mode. Returns `Err(response)` if rejected.
 #[allow(clippy::result_large_err)]
 fn validate_server_scan_path(
@@ -5831,11 +6234,7 @@ fn validate_server_scan_path(
         )
             .into_response());
     };
-    let allowed = config.discovery.allowed_scan_roots.iter().any(|root| {
-        fs::canonicalize(root)
-            .ok()
-            .is_some_and(|r| canonical.starts_with(&r))
-    });
+    let allowed = path_within_allowed_roots(&canonical, &config.discovery.allowed_scan_roots);
     if !allowed {
         tracing::warn!(event = "path_rejected", path = %canonical.display(),
             "Scan path not in allowed_scan_roots");
@@ -7805,6 +8204,215 @@ async fn delete_run_handler(
     StatusCode::NO_CONTENT.into_response()
 }
 
+// ── Export / publish ───────────────────────────────────────────────────────────
+
+/// Operator-configured export destination directory (a mounted network/share drive or
+/// any local path). From `SLOC_EXPORT_DIR`. `None` when unset/empty. This is set by the
+/// host operator via environment/systemd — never by a web client — so the destination is
+/// trusted and not subject to the scan-path allowlist.
+fn export_share_dir() -> Option<PathBuf> {
+    std::env::var("SLOC_EXPORT_DIR")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Whether a finished scan should be auto-published to the configured export target.
+/// From `SLOC_EXPORT_AUTO`. Off by default — export is a manual, admin-triggered action
+/// unless the operator opts in.
+fn export_auto_enabled() -> bool {
+    matches!(
+        std::env::var("SLOC_EXPORT_AUTO").as_deref(),
+        Ok("1" | "true" | "TRUE")
+    )
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ExportQuery {
+    /// Export target: `share` (default) copies artifacts to `SLOC_EXPORT_DIR`.
+    target: Option<String>,
+}
+
+/// Resolve a run's on-disk artifact directory from the in-memory cache or the registry.
+/// Returns an empty path when the run is unknown (callers treat that as 404).
+async fn resolve_run_output_dir(state: &AppState, run_id: &str) -> PathBuf {
+    if let Some(d) = state
+        .artifacts
+        .lock()
+        .await
+        .get(run_id)
+        .map(|a| a.output_dir.clone())
+    {
+        return d;
+    }
+    let reg = state.registry.lock().await;
+    reg.find_by_run_id(run_id)
+        .map(|e| recover_artifacts_from_registry(e).output_dir)
+        .unwrap_or_default()
+}
+
+/// Copy a run's artifact directory into the configured share drive, under a subdirectory
+/// named after the run's output folder. Returns the JSON response describing the result.
+async fn export_run_to_share(output_dir: PathBuf) -> Response {
+    let Some(dest_root) = export_share_dir() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "Share export is not configured. Set SLOC_EXPORT_DIR to a destination \
+                          directory (e.g. a mounted network share) and restart."
+            })),
+        )
+            .into_response();
+    };
+    let sub = output_dir
+        .file_name()
+        .map_or_else(|| "export".into(), std::ffi::OsStr::to_os_string);
+    let dest = dest_root.join(&sub);
+    let src = output_dir.clone();
+    let dest_for_task = dest.clone();
+    match tokio::task::spawn_blocking(move || sloc_core::copy_tree(&src, &dest_for_task)).await {
+        Ok(Ok((files, bytes))) => {
+            audit::record(
+                "run_exported",
+                "success",
+                &[
+                    ("target", "share"),
+                    ("dest", &dest.display().to_string()),
+                    ("files", &files.to_string()),
+                ],
+            );
+            Json(serde_json::json!({
+                "target": "share",
+                "dest": dest.display().to_string(),
+                "files": files,
+                "bytes": bytes,
+            }))
+            .into_response()
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(event = "export_error", "share export failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Export failed: {e}")})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(event = "export_task_panic", "export task panicked: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal server error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /api/runs/{run_id}/export
+///
+/// Publish a completed run's artifacts to an operator-configured export target. The only
+/// target so far is `share` (copy to `SLOC_EXPORT_DIR`). Auth-gated like the other
+/// `/api/runs/*` mutating routes; a read-only key cannot invoke it (it is a POST).
+async fn export_run_handler(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+    Query(query): Query<ExportQuery>,
+) -> Response {
+    let output_dir = resolve_run_output_dir(&state, &run_id).await;
+    if output_dir.as_os_str().is_empty() || !output_dir.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Unknown run or its artifacts are gone"})),
+        )
+            .into_response();
+    }
+    match query.target.as_deref().unwrap_or("share") {
+        "share" => export_run_to_share(output_dir).await,
+        "confluence" => {
+            // Reuse the shared Confluence publish flow; derive a stable page title from
+            // the run's project label so re-exports update the same page.
+            let title = {
+                let reg = state.registry.lock().await;
+                reg.find_by_run_id(&run_id)
+                    .map(|e| format!("oxide-sloc — {}", e.project_label))
+            }
+            .unwrap_or_else(|| "oxide-sloc SLOC report".to_string());
+            confluence::publish_run(&state, &run_id, &title, None).await
+        }
+        other => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "Unsupported export target '{other}'. Supported: share, confluence"
+                )
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/admin/config
+///
+/// Operator-only, read-only view of the effective server configuration: which security
+/// controls are active, the disk ceiling, the export target, and the hostname settings.
+/// When `SLOC_ADMIN_KEY` is configured this endpoint requires it specifically (a plain
+/// user key is not enough); when it is unset, the surrounding API-key gate applies.
+/// Never returns secret values — only whether each is set.
+async fn api_admin_config(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if auth::admin_key_configured() && !auth::is_admin_request(&headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "This endpoint requires the operator admin key (SLOC_ADMIN_KEY)."
+            })),
+        )
+            .into_response();
+    }
+    let policy_mb = {
+        let store = state.cleanup_policy.lock().await;
+        store.policy.as_ref().and_then(|p| p.max_total_mb)
+    };
+    let env_disk_mb = std::env::var("SLOC_MAX_DISK_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    let scan_roots: Vec<String> = state
+        .base_config
+        .discovery
+        .allowed_scan_roots
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    Json(serde_json::json!({
+        "server_mode": state.server_mode,
+        "auth": {
+            "api_keys_configured": !state.api_keys.is_empty(),
+            "readonly_keys_configured": !state.readonly_api_keys.is_empty(),
+            "admin_key_configured": auth::admin_key_configured(),
+            "allow_unauthenticated": state.allow_unauthenticated,
+        },
+        "tls_enabled": state.tls_enabled,
+        "disk_cap": {
+            "env_max_disk_mb": env_disk_mb,
+            "policy_max_total_mb": policy_mb,
+            "effective_bytes": disk_cap_bytes(policy_mb),
+        },
+        "export": {
+            "share_dir": export_share_dir().map(|p| p.display().to_string()),
+            "auto": export_auto_enabled(),
+        },
+        "hostname": {
+            "public_url": std::env::var("SLOC_PUBLIC_URL").ok().filter(|s| !s.trim().is_empty()),
+            "allowed_hosts": effective_allowed_hosts(),
+        },
+        "allowed_scan_roots": scan_roots,
+    }))
+    .into_response()
+}
+
 /// POST /api/runs/cleanup
 ///
 /// Deletes all runs older than `older_than_days` days (default 30). Removes on-disk artifacts and
@@ -7906,6 +8514,125 @@ fn collect_runs_to_delete(
     to_delete
 }
 
+/// Given `(run_id, size_bytes)` pairs ordered newest-first, return the set of run IDs
+/// that must be deleted to bring the retained total at or under `cap_bytes`. The newest
+/// runs that collectively fit are kept; everything past the cap (the oldest) is dropped.
+/// A `cap_bytes` of 0 selects every run.
+fn select_runs_over_size_cap(
+    sized_newest_first: &[(String, u64)],
+    cap_bytes: u64,
+) -> std::collections::HashSet<String> {
+    let mut to_delete = std::collections::HashSet::new();
+    let mut running: u64 = 0;
+    for (run_id, size) in sized_newest_first {
+        running = running.saturating_add(*size);
+        if running > cap_bytes {
+            to_delete.insert(run_id.clone());
+        }
+    }
+    to_delete
+}
+
+/// Resolve the effective total-disk cap in bytes from the operator env ceiling
+/// (`SLOC_MAX_DISK_MB`) and the UI cleanup policy (`max_total_mb`). When both are set
+/// the smaller wins (the operator ceiling can only tighten, never loosen, the policy).
+/// Returns `None` when neither is configured.
+fn disk_cap_bytes(policy_max_total_mb: Option<u64>) -> Option<u64> {
+    let env_mb = std::env::var("SLOC_MAX_DISK_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    combine_disk_caps_mb(env_mb, policy_max_total_mb).map(|mb| mb.saturating_mul(1024 * 1024))
+}
+
+/// Pure combining rule for the two disk-cap sources: the smaller of the operator env
+/// ceiling and the UI policy value, treating `0`/absent as "unset". Split out so the
+/// selection logic is unit-testable without mutating process environment.
+fn combine_disk_caps_mb(env_mb: Option<u64>, policy_mb: Option<u64>) -> Option<u64> {
+    match (env_mb.filter(|&mb| mb > 0), policy_mb.filter(|&mb| mb > 0)) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// Delete the oldest runs until the retained artifact tree fits under the effective
+/// disk cap. Runs regardless of whether the age/count policy is enabled, so the
+/// operator `SLOC_MAX_DISK_MB` ceiling is honoured even with no UI policy configured.
+/// Returns the number of runs deleted.
+async fn enforce_disk_cap(state: &AppState) -> u32 {
+    let policy_mb = {
+        let store = state.cleanup_policy.lock().await;
+        store.policy.as_ref().and_then(|p| p.max_total_mb)
+    };
+    let Some(cap_bytes) = disk_cap_bytes(policy_mb) else {
+        return 0;
+    };
+
+    // Snapshot (run_id, output_dir) newest-first, then size each dir off the async
+    // executor so the recursive walk never blocks the runtime.
+    let dirs: Vec<(String, PathBuf)> = {
+        let reg = state.registry.lock().await;
+        reg.entries
+            .iter()
+            .map(|e| {
+                (
+                    e.run_id.clone(),
+                    recover_artifacts_from_registry(e).output_dir,
+                )
+            })
+            .collect()
+    };
+    if dirs.is_empty() {
+        return 0;
+    }
+    let sized = tokio::task::spawn_blocking(move || {
+        dirs.into_iter()
+            .map(|(id, dir)| (id, dir_size_bytes(&dir)))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+
+    let to_delete = select_runs_over_size_cap(&sized, cap_bytes);
+    if to_delete.is_empty() {
+        return 0;
+    }
+    for run_id in &to_delete {
+        delete_run_artifacts(state, run_id).await;
+    }
+    {
+        let mut reg = state.registry.lock().await;
+        reg.entries.retain(|e| !to_delete.contains(&e.run_id));
+        let _ = reg.save(&state.registry_path);
+    }
+    tracing::warn!(
+        event = "disk_cap_enforced",
+        deleted = to_delete.len(),
+        cap_bytes,
+        "artifact tree exceeded disk cap; deleted oldest runs"
+    );
+    u32::try_from(to_delete.len()).unwrap_or(u32::MAX)
+}
+
+/// Background watchdog that enforces the `SLOC_MAX_DISK_MB` operator ceiling (and any
+/// UI `max_total_mb`) on a fixed short interval, independent of the age/count policy
+/// task. Spawned in server mode so a flood of uploads/scans can never fill the host
+/// disk between the (possibly daily) policy passes. A no-op when no cap is configured.
+fn spawn_disk_guard(state: AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_mins(10));
+        interval.tick().await; // consume the immediate first tick
+        loop {
+            interval.tick().await;
+            let n = enforce_disk_cap(&state).await;
+            if n > 0 {
+                tracing::info!("[disk-guard] enforced disk cap: deleted {n} runs");
+            }
+        }
+    });
+}
+
 async fn delete_run_artifacts(state: &AppState, run_id: &str) {
     let output_dir = {
         let mut cache = state.artifacts.lock().await;
@@ -7934,7 +8661,9 @@ async fn run_auto_cleanup(state: &AppState) -> u32 {
         let store = state.cleanup_policy.lock().await;
         match &store.policy {
             Some(p) if p.enabled => (p.max_age_days, p.max_run_count),
-            _ => return 0,
+            // Age/count cleanup is disabled, but a disk-size ceiling may still apply
+            // (operator SLOC_MAX_DISK_MB or a size-only policy), so fall through to it.
+            _ => (None, None),
         }
     };
 
@@ -7954,7 +8683,13 @@ async fn run_auto_cleanup(state: &AppState) -> u32 {
         let _ = reg.save(&state.registry_path);
     }
 
-    let deleted = u32::try_from(to_delete.len()).unwrap_or(u32::MAX);
+    // Enforce the total-disk-size ceiling last, after the age/count deletions have
+    // already freed what they can.
+    let size_deleted = enforce_disk_cap(state).await;
+
+    let deleted = u32::try_from(to_delete.len())
+        .unwrap_or(u32::MAX)
+        .saturating_add(size_deleted);
     {
         let mut store = state.cleanup_policy.lock().await;
         store.last_run_at = Some(chrono::Utc::now());
@@ -7980,8 +8715,15 @@ async fn api_get_cleanup_policy(State(state): State<AppState>) -> Response {
 /// POST /api/cleanup-policy — save a new policy and (re)start the background task.
 async fn api_save_cleanup_policy(
     State(state): State<AppState>,
-    Json(body): Json<CleanupPolicy>,
+    Json(mut body): Json<CleanupPolicy>,
 ) -> Response {
+    // "The UI can only tighten": clamp the requested size cap to the operator env
+    // ceiling (`SLOC_MAX_DISK_MB`) so a web user can lower it but never raise it above
+    // what the host operator set. A policy that omits the cap inherits the ceiling.
+    let env_mb = std::env::var("SLOC_MAX_DISK_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    body.max_total_mb = combine_disk_caps_mb(env_mb, body.max_total_mb);
     // Abort any running task so the new interval takes effect immediately.
     {
         let mut handle = state.cleanup_task_handle.lock().await;
@@ -11309,6 +12051,8 @@ fn multi_compare_page(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Multi-Scan Timeline — {project_label}</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{csp_nonce}">
     :root{{--radius:18px;--bg:#f5efe8;--surface:rgba(255,255,255,0.86);--surface-2:#fbf7f2;--line:#e6d0bf;--line-strong:#d8bfad;--text:#43342d;--muted:#7b675b;--muted-2:#a08777;--nav:#283790;--nav-2:#013e6b;--accent:#6f9bff;--oxide:#d37a4c;--oxide-2:#b35428;--shadow:0 18px 42px rgba(77,44,20,0.12);--pos:#1a8f47;--pos-bg:#e8f5ed;--neg:#b33b3b;--neg-bg:#fcd6d6;}}
     *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0;}}
@@ -11576,11 +12320,11 @@ fn multi_compare_page(
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running &mdash; accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -11603,7 +12347,7 @@ fn multi_compare_page(
           <p class="mc-desc">Side-by-side metric comparison across multiple scans &mdash; code line progression, file changes, and language breakdown.</p>
           <div class="mc-subtitle">{scope_label}{n} scans &middot; project: <strong>{project_label}</strong></div>
         </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex-shrink:0;">
+        <div class="sx-9ca10e51" >
           <a class="btn-back" href="/compare-scans"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg> Compare Scans</a>
           <div class="export-group" id="mc-top-export-group">
             <button type="button" class="export-btn" id="mc-top-export-html-btn" title="Export this page as a standalone HTML report"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export HTML</button>
@@ -11629,13 +12373,13 @@ fn multi_compare_page(
 
     <!-- Scan Charts -->
     <div class="panel" id="mc-charts-panel">
-      <div class="panel-title" style="margin-bottom:14px;">Scan Delta Charts</div>
+      <div class="panel-title sx-16dbf2a3" >Scan Delta Charts</div>
       <div class="ic-grid">
         <!-- Timeline line chart — spans full width -->
-        <div class="ic-card" style="grid-column:span 2">
+        <div class="ic-card sx-aeb7cdee" >
           <div class="ic-card-h2-row">
             <span class="ic-card-h2">Timeline</span>
-            <div class="chart-toolbar" style="margin:0">
+            <div class="chart-toolbar sx-ab79ea2b" >
               <button class="chart-metric-btn active" data-metric="code">Code Lines</button>
               <button class="chart-metric-btn" data-metric="files">Files</button>
               <button class="chart-metric-btn" data-metric="comments">Comments</button>
@@ -11648,13 +12392,13 @@ fn multi_compare_page(
         <!-- Code Metrics: Scan 1 vs Latest -->
         <div class="ic-card">
           <div class="ic-chart-hdr"><span class="ic-card-h2">Code Metrics &mdash; Scan 1 vs Latest</span><button class="ic-expand-btn" data-expand-src="mc-ic-c1" data-expand-title="Code Metrics — Scan 1 vs Latest">&#x2922; Full View</button></div>
-          <div class="ic-leg"><span class="ic-leg-item" data-highlight="Code Lines"><span class="ic-dot" style="background:#E3A876"></span><span style="color:#C45C10;font-weight:600">Code Lines</span></span><span class="ic-leg-item" data-highlight="Files"><span class="ic-dot" style="background:#9FC3AE"></span><span style="color:#2A6846;font-weight:600">Files</span></span><span class="ic-leg-item" data-highlight="Comments"><span class="ic-dot" style="background:#E0C58A"></span><span style="color:#BE8A2E;font-weight:600">Comments</span></span><span style="font-size:10px;color:var(--muted)">(faded&nbsp;=&nbsp;scan&nbsp;1)</span></div>
+          <div class="ic-leg"><span class="ic-leg-item" data-highlight="Code Lines"><span class="ic-dot sx-618fd811" ></span><span class="sx-d50d9131" >Code Lines</span></span><span class="ic-leg-item" data-highlight="Files"><span class="ic-dot sx-d94e9768" ></span><span class="sx-f6800712" >Files</span></span><span class="ic-leg-item" data-highlight="Comments"><span class="ic-dot sx-38f87134" ></span><span class="sx-c64494ae" >Comments</span></span><span class="sx-53b2a74a" >(faded&nbsp;=&nbsp;scan&nbsp;1)</span></div>
           <div id="mc-ic-c1"></div>
         </div>
         <!-- Language Code Delta -->
         <div class="ic-card" id="mc-ic-lang-card">
           <div class="ic-chart-hdr"><span class="ic-card-h2">Language Code Delta</span><button class="ic-expand-btn" data-expand-src="mc-ic-c3" data-expand-title="Language Code Delta">&#x2922; Full View</button></div>
-          <div style="font-size:10.5px;color:var(--muted);margin:-4px 0 12px;line-height:1.45;">Net change in <strong>code lines</strong> per language from the first to the latest scan (<strong>+0</strong> means that language is unchanged). The count on the right is how many <strong>files</strong> of that language were scanned.</div>
+          <div class="sx-a89fa233" >Net change in <strong>code lines</strong> per language from the first to the latest scan (<strong>+0</strong> means that language is unchanged). The count on the right is how many <strong>files</strong> of that language were scanned.</div>
           <div id="mc-ic-c3"></div>
         </div>
         <!-- Delta by Metric -->
@@ -11672,16 +12416,16 @@ fn multi_compare_page(
 
     <!-- File matrix table -->
     <div class="panel">
-      <div class="panel-title">File Matrix <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px;text-transform:none;letter-spacing:0;">{total_files} files</span></div>
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
-        <div class="filter-tabs-row" style="margin-bottom:0;gap:6px;">
+      <div class="panel-title">File Matrix <span class="sx-8bdabd9b" >{total_files} files</span></div>
+      <div class="sx-a86a62cc" >
+        <div class="filter-tabs-row sx-ce1e99f1" >
           <button class="tab-btn tab-all active" data-status="">All ({total_files})</button>
           <button class="tab-btn tab-modified" data-status="modified">Modified ({files_modified})</button>
           <button class="tab-btn tab-added" data-status="added">Added ({files_added})</button>
           <button class="tab-btn tab-removed" data-status="removed">Removed ({files_removed})</button>
           <button class="tab-btn tab-unchanged" data-status="unchanged">Unchanged ({files_unchanged})</button>
         </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex-shrink:0;">
+        <div class="sx-9ca10e51" >
           <span class="delta-note">* &#916; = delta (change from scan 1 &rarr; latest)</span>
           <div class="export-group">
           <button type="button" class="export-btn" id="mc-file-reset-btn">&#8635; Reset</button>
@@ -11713,8 +12457,8 @@ fn multi_compare_page(
       <div class="pagination">
         <span class="pagination-info" id="pg-info"></span>
         <div class="pagination-btns" id="pg-btns"></div>
-        <div style="display:flex;align-items:center;gap:6px;">
-          <span style="font-size:12px;color:var(--muted)">Show</span>
+        <div class="sx-047507c3" >
+          <span class="sx-14f170bb" >Show</span>
           <select class="per-page" id="per-page-sel">
             <option value="25" selected>25 per page</option>
             <option value="50">50 per page</option>
@@ -11795,7 +12539,7 @@ fn multi_compare_page(
       function init(){{
         var btn=document.getElementById('settings-btn');if(!btn)return;
         var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-        m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close-btn" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+        m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close-btn" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
         document.body.appendChild(m);
         var g=document.getElementById('scheme-grid');
         if(g)S.forEach(function(s){{var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}}catch(e){{}}el.addEventListener('click',function(){{ap(s);}});g.appendChild(el);}});
@@ -11872,7 +12616,7 @@ fn multi_compare_page(
         var hasTag=p.tags&&p.tags.length>0;
         // Permanent Y-value label above the dot
         parts.push('<text x="'+cx.toFixed(1)+'" y="'+(cy-11).toFixed(1)+'" text-anchor="middle" font-size="11" font-weight="600" fill="'+textColor+'">'+fmtFull(pts[i])+'</text>');
-        parts.push('<circle cx="'+cx.toFixed(1)+'" cy="'+cy.toFixed(1)+'" r="'+(hasTag?5.5:4)+'" fill="'+(hasTag?'#6f9bff':dotColor)+'" stroke="'+(dark?'#241a12':'#fbf7f2')+'" stroke-width="1.5" style="cursor:pointer" data-run-id="'+p.run_id+'"/>');
+        parts.push('<circle class="sx-9463ff47" cx="'+cx.toFixed(1)+'" cy="'+cy.toFixed(1)+'" r="'+(hasTag?5.5:4)+'" fill="'+(hasTag?'#6f9bff':dotColor)+'" stroke="'+(dark?'#241a12':'#fbf7f2')+'" stroke-width="1.5"  data-run-id="'+p.run_id+'"/>');
         var xanchor=i===0?'start':i===N-1?'end':'middle';
         // X-axis label at 2× the original size (18 px)
         parts.push('<text x="'+cx.toFixed(1)+'" y="'+(H-pad.b+22)+'" text-anchor="'+xanchor+'" font-size="18" fill="'+textColor+'" font-family="ui-monospace,monospace">'+escHtml(lbl)+'</text>');
@@ -11895,7 +12639,7 @@ fn multi_compare_page(
         xhair.innerHTML='<line x1="'+nc.toFixed(1)+'" y1="'+pad.t+'" x2="'+nc.toFixed(1)+'" y2="'+(pad.t+plotH)+'" stroke="rgba(211,122,76,0.55)" stroke-width="1.5" stroke-dasharray="4,3" pointer-events="none"/>';
         var tt=document.getElementById('mc-ic-tt');if(!tt)return;
         var pp=POINTS[nearest];var clbl=(pp.commit||'').substring(0,7)||(nearest+1)+'';
-        tt.innerHTML='<strong>Scan '+(nearest+1)+'</strong> <span style="font-family:monospace;font-size:11px;opacity:.75">'+escHtml(clbl)+'</span><br>'+escHtml(metricLabel[metric]||metric)+': <strong>'+fmtFull(pts[nearest])+'</strong>';
+        tt.innerHTML='<strong>Scan '+(nearest+1)+'</strong> <span class="sx-0819fd61" >'+escHtml(clbl)+'</span><br>'+escHtml(metricLabel[metric]||metric)+': <strong>'+fmtFull(pts[nearest])+'</strong>';
         var bx=rect.left+(nc/W*rect.width)+18;
         if(bx+220>window.innerWidth-8)bx=rect.left+(nc/W*rect.width)-228;
         tt.style.left=bx+'px';tt.style.top=(e.clientY-38)+'px';tt.style.display='block';
@@ -11986,9 +12730,9 @@ fn multi_compare_page(
       btns.push(mkBtn('&#8249;',currentPage-1,false,currentPage<=1));
       var s=Math.max(1,currentPage-2),e=Math.min(totalPages,currentPage+2);
       if(s>1)btns.push(mkBtn('1',1,false,false));
-      if(s>2)btns.push('<span class="pg-btn" style="pointer-events:none">&hellip;</span>');
+      if(s>2)btns.push('<span class="pg-btn sx-d4e8f245" >&hellip;</span>');
       for(var p=s;p<=e;p++)btns.push(mkBtn(p,p,p===currentPage,false));
-      if(e<totalPages-1)btns.push('<span class="pg-btn" style="pointer-events:none">&hellip;</span>');
+      if(e<totalPages-1)btns.push('<span class="pg-btn sx-d4e8f245" >&hellip;</span>');
       if(e<totalPages)btns.push(mkBtn(totalPages,totalPages,false,false));
       btns.push(mkBtn('&#8250;',currentPage+1,false,currentPage>=totalPages));
       wrap.innerHTML=btns.join('');
@@ -12353,9 +13097,9 @@ fn multi_compare_page(
           var cx=px(c1ml+i*c1gW+c1gW/2),c1x0=px(cx-c1gap/2-c1bw),c1x1=px(cx+c1gap/2);
           var bh0=Math.max(c1ph*m.b/maxV1,2),bh1=Math.max(c1ph*m.c/maxV1,2);
           c1+='<text x="'+cx+'" y="18" text-anchor="middle" font-family="'+FONT+'" font-size="13" font-weight="700" fill="'+textCol+'">'+esc(m.l)+'</text>';
-          c1+='<rect'+btt(m.l,'Scan 1: '+fmt2(m.b))+' x="'+c1x0+'" y="'+px(c1mt+c1ph-bh0)+'" width="'+c1bw+'" height="'+px(bh0)+'" fill="'+m.bc+'" rx="5" style="cursor:pointer;"/>';
+          c1+='<rect class="sx-83ac1cee"'+btt(m.l,'Scan 1: '+fmt2(m.b))+' x="'+c1x0+'" y="'+px(c1mt+c1ph-bh0)+'" width="'+c1bw+'" height="'+px(bh0)+'" fill="'+m.bc+'" rx="5" />';
           c1+='<text x="'+px(c1x0+c1bw/2)+'" y="'+px(c1mt+c1ph-bh0-5)+'" text-anchor="middle" font-family="'+FONT+'" font-size="10" font-weight="700" fill="'+textCol+'">'+fmt2(m.b)+'</text>';
-          c1+='<rect'+btt(m.l,'Latest (Scan '+N+'): '+fmt2(m.c))+' x="'+c1x1+'" y="'+px(c1mt+c1ph-bh1)+'" width="'+c1bw+'" height="'+px(bh1)+'" fill="'+m.cc+'" rx="5" style="cursor:pointer;"/>';
+          c1+='<rect class="sx-83ac1cee"'+btt(m.l,'Latest (Scan '+N+'): '+fmt2(m.c))+' x="'+c1x1+'" y="'+px(c1mt+c1ph-bh1)+'" width="'+c1bw+'" height="'+px(bh1)+'" fill="'+m.cc+'" rx="5" />';
           c1+='<text x="'+px(c1x1+c1bw/2)+'" y="'+px(c1mt+c1ph-bh1-5)+'" text-anchor="middle" font-family="'+FONT+'" font-size="10" font-weight="700" fill="'+textCol+'">'+fmt2(m.c)+'</text>';
           c1+='<text x="'+px(c1x0+c1bw/2)+'" y="'+px(c1mt+c1ph+18)+'" text-anchor="middle" font-family="'+FONT+'" font-size="11" fill="'+textCol+'">Scan 1</text>';
           c1+='<text x="'+px(c1x1+c1bw/2)+'" y="'+px(c1mt+c1ph+18)+'" text-anchor="middle" font-family="'+FONT+'" font-size="11" fill="'+textCol+'">Latest</text>';
@@ -12376,7 +13120,7 @@ fn multi_compare_page(
       mets.forEach(function(m,i){{
         var y=16+i*rH,bw=(m.v===0?0:Math.max(Math.abs(m.v)/maxD*maxBW,2)),col=m.v>=0?GN:RD,vcol=(m.v===0?textCol:col),bx=m.v>=0?cx2:cx2-bw,sign=m.v>=0?'+':'',vStr=sign+fmt2(m.v);
         c2+='<text x="'+(c2LW-8)+'" y="'+(y+22)+'" text-anchor="end" font-family="'+FONT+'" font-size="11" font-weight="600" fill="'+textCol+'">'+esc(m.l)+'</text>';
-        c2+='<rect'+btt(m.l,'Net delta: '+vStr)+' x="'+px(bx)+'" y="'+(y+5)+'" width="'+px(bw)+'" height="32" fill="'+col+'" rx="3" style="cursor:pointer;"/>';
+        c2+='<rect class="sx-83ac1cee"'+btt(m.l,'Net delta: '+vStr)+' x="'+px(bx)+'" y="'+(y+5)+'" width="'+px(bw)+'" height="32" fill="'+col+'" rx="3" />';
         if(bw>=52){{c2+='<text x="'+px(bx+bw/2)+'" y="'+(y+26)+'" text-anchor="middle" font-family="'+FONT+'" font-size="12" font-weight="700" fill="white">'+esc(vStr)+'</text>';}}
         else{{var vx2=m.v>=0?px(bx+bw)+6:px(bx)-6,anc2=m.v>=0?'start':'end';c2+='<text x="'+vx2+'" y="'+(y+26)+'" text-anchor="'+anc2+'" font-family="'+FONT+'" font-size="12" font-weight="700" fill="'+vcol+'">'+esc(vStr)+'</text>';}}
       }});
@@ -12419,7 +13163,7 @@ fn multi_compare_page(
       var tot4=segs.reduce(function(a,s){{return a+s.v;}},0)||1;
       var C4W=380,C4H=210,cx4=104,cy4=105,Ro=80,Ri=50;
       function pctFill(c){{return c===FADE?textCol:'#ffffff';}}
-      var c4='<svg viewBox="0 0 '+C4W+' '+C4H+'" width="100%" style="max-width:440px;display:block;margin:0 auto;" xmlns="http://www.w3.org/2000/svg">',ang4=-Math.PI/2;
+      var c4='<svg class="sx-b5aafb81" viewBox="0 0 '+C4W+' '+C4H+'" width="100%"  xmlns="http://www.w3.org/2000/svg">',ang4=-Math.PI/2;
       if(segs.length===1){{
         c4+='<circle'+btt(segs[0].l,fmt2(segs[0].v)+' files • 100%')+' cx="'+cx4+'" cy="'+cy4+'" r="'+Ro+'" fill="'+segs[0].c+'" stroke="'+surfCol+'" stroke-width="2.5"/>';
         c4+='<circle cx="'+cx4+'" cy="'+cy4+'" r="'+Ri+'" fill="'+surfCol+'"/>';
@@ -12439,8 +13183,8 @@ fn multi_compare_page(
       var legX=212,legRowH=26,legBlockH=segs.length*legRowH,legStartY=cy4-legBlockH/2+legRowH/2;
       segs.forEach(function(s,i){{
         var ly=legStartY+i*legRowH,pct=px(s.v/tot4*100);
-        c4+='<rect'+btt(s.l,fmt2(s.v)+' files • '+pct+'%')+' x="'+legX+'" y="'+px(ly-10)+'" width="13" height="13" fill="'+s.c+'" rx="2" style="cursor:pointer;"/>';
-        c4+='<text'+btt(s.l,fmt2(s.v)+' files • '+pct+'%')+' x="'+(legX+20)+'" y="'+px(ly+1)+'" font-family="'+FONT+'" font-size="12" font-weight="600" fill="'+textCol+'" style="cursor:pointer;">'+esc(s.l)+'</text>';
+        c4+='<rect class="sx-83ac1cee"'+btt(s.l,fmt2(s.v)+' files • '+pct+'%')+' x="'+legX+'" y="'+px(ly-10)+'" width="13" height="13" fill="'+s.c+'" rx="2" />';
+        c4+='<text class="sx-83ac1cee"'+btt(s.l,fmt2(s.v)+' files • '+pct+'%')+' x="'+(legX+20)+'" y="'+px(ly+1)+'" font-family="'+FONT+'" font-size="12" font-weight="600" fill="'+textCol+'" >'+esc(s.l)+'</text>';
         c4+='<text x="'+(legX+20)+'" y="'+px(ly+15)+'" font-family="'+FONT+'" font-size="10" fill="'+mutedCol+'">'+fmt2(s.v)+' files • '+pct+'%</text>';
       }});
       c4+='</svg>';
@@ -12452,7 +13196,7 @@ fn multi_compare_page(
       var e2=document.getElementById('mc-ic-c2');if(e2)e2.innerHTML=c2;
       var e4=document.getElementById('mc-ic-c4');if(e4)e4.innerHTML=c4;
       var e1=document.getElementById('mc-ic-c1');if(e1)e1.innerHTML=drawC1();
-      var e3=document.getElementById('mc-ic-c3');if(e3)e3.innerHTML=langs.length?drawC3():'<p style="color:var(--muted);font-size:13px;padding:8px 0 0;">No language delta.</p>';
+      var e3=document.getElementById('mc-ic-c3');if(e3)e3.innerHTML=langs.length?drawC3():'<p class="sx-90171b6d" >No language delta.</p>';
       if(e1)e1.innerHTML=drawC1();
       }}
       buildCharts();
@@ -12470,7 +13214,7 @@ fn multi_compare_page(
           ttl.textContent=title||'';
           var card=src.closest('.ic-card');
           var legHtml='';
-          if(card){{var leg=card.querySelector('.ic-leg');if(leg)legHtml='<div class="ic-leg" style="margin-bottom:14px;">'+leg.innerHTML+'</div>';}}
+          if(card){{var leg=card.querySelector('.ic-leg');if(leg)legHtml='<div class="ic-leg sx-16dbf2a3" >'+leg.innerHTML+'</div>';}}
           body.innerHTML=legHtml+src.innerHTML;
           var svg=body.querySelector('svg');
           if(svg){{svg.removeAttribute('width');svg.removeAttribute('height');svg.style.width='100%';svg.style.height='auto';svg.style.maxWidth='none';}}
@@ -12530,7 +13274,7 @@ fn multi_compare_page(
       function mcRawHtml(pdfMode){{
         if(pdfMode)document.body.classList.add('pdf-mode');
         var s=perPage,p=currentPage;perPage=FILES.length||999999;currentPage=1;renderFilePage();
-        var html=document.documentElement.outerHTML;
+        var html=window.sxSelfContain(document.documentElement.outerHTML);
         perPage=s;currentPage=p;renderFilePage();
         if(pdfMode)document.body.classList.remove('pdf-mode');
         return html;
@@ -12551,7 +13295,7 @@ fn multi_compare_page(
         function esc(s){{return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}}
         function full(n){{if(n==null||n===''||isNaN(Number(n)))return'\u2014';return Number(n).toLocaleString();}}
         function dStr(v){{return Number(v)>0?'+'+Number(v).toLocaleString():Number(v).toLocaleString();}}
-        function dHtml(v){{var s=dStr(v);return Number(v)>0?'<span style="color:#2a6846;font-weight:700">'+s+'</span>':Number(v)<0?'<span style="color:#b23030;font-weight:700">'+s+'</span>':'<span>'+s+'</span>';}}
+        function dHtml(v){{var s=dStr(v);return Number(v)>0?'<span class="sx-e46b3d3d" >'+s+'</span>':Number(v)<0?'<span class="sx-4e307fd5" >'+s+'</span>':'<span>'+s+'</span>';}}
         var tz;try{{tz=localStorage.getItem('sloc-tz')||'America/Los_Angeles';}}catch(e){{tz='America/Los_Angeles';}}
         var now=(window.fmtTz?window.fmtTz(Date.now(),tz):new Date().toISOString().replace('T',' ').slice(0,16)+' UTC');
         function ptRef(pt,i){{return pt.tags||(pt.branch?(pt.commit?pt.branch+' @ '+pt.commit.slice(0,7):pt.branch):(pt.commit?pt.commit.slice(0,12):'Scan '+(i+1)));}}
@@ -12589,18 +13333,18 @@ fn multi_compare_page(
         // ── Metric Progression ────────────────────────────────────────────────
         var hasTests=POINTS.some(function(pt){{return pt.tests!=null&&Number(pt.tests)>0;}});
         var hasCov=POINTS.some(function(pt){{return pt.cov!=null;}});
-        var progHdr='<th>#</th><th>Scan Ref</th><th style="text-align:right">Code Lines</th><th style="text-align:right">Comments</th><th style="text-align:right">Blank Lines</th><th style="text-align:right">Files</th>';
-        if(hasTests)progHdr+='<th style="text-align:right">Tests</th>';
-        if(hasCov)progHdr+='<th style="text-align:right">Coverage</th>';
+        var progHdr='<th>#</th><th>Scan Ref</th><th class="sx-5f326564" >Code Lines</th><th class="sx-5f326564" >Comments</th><th class="sx-5f326564" >Blank Lines</th><th class="sx-5f326564" >Files</th>';
+        if(hasTests)progHdr+='<th class="sx-5f326564" >Tests</th>';
+        if(hasCov)progHdr+='<th class="sx-5f326564" >Coverage</th>';
         var progRows=POINTS.map(function(pt,i){{
           var lbl=pt.tags||(pt.branch?(pt.commit?pt.branch+' @ '+pt.commit.slice(0,8):pt.branch):(pt.commit?pt.commit.slice(0,12):'Scan '+(i+1)));
-          var r='<tr><td style="text-align:center;font-weight:700">'+(i+1)+'</td><td>'+esc(lbl)+'</td>'+
-            '<td style="text-align:right">'+full(pt.code)+'</td>'+
-            '<td style="text-align:right">'+full(pt.comments)+'</td>'+
-            '<td style="text-align:right">'+full(pt.blank)+'</td>'+
-            '<td style="text-align:right">'+full(pt.files)+'</td>';
-          if(hasTests)r+='<td style="text-align:right">'+(pt.tests!=null&&Number(pt.tests)>0?full(pt.tests):'&mdash;')+'</td>';
-          if(hasCov)r+='<td style="text-align:right">'+(pt.cov!=null?Number(pt.cov).toFixed(1)+'%':'&mdash;')+'</td>';
+          var r='<tr><td class="sx-bee502d4" >'+(i+1)+'</td><td>'+esc(lbl)+'</td>'+
+            '<td class="sx-5f326564" >'+full(pt.code)+'</td>'+
+            '<td class="sx-5f326564" >'+full(pt.comments)+'</td>'+
+            '<td class="sx-5f326564" >'+full(pt.blank)+'</td>'+
+            '<td class="sx-5f326564" >'+full(pt.files)+'</td>';
+          if(hasTests)r+='<td class="sx-5f326564" >'+(pt.tests!=null&&Number(pt.tests)>0?full(pt.tests):'&mdash;')+'</td>';
+          if(hasCov)r+='<td class="sx-5f326564" >'+(pt.cov!=null?Number(pt.cov).toFixed(1)+'%':'&mdash;')+'</td>';
           return r+'</tr>';
         }}).join('');
         // ── Scan-to-scan changes ──────────────────────────────────────────────
@@ -12608,11 +13352,11 @@ fn multi_compare_page(
           var prev=POINTS[i];
           var cd=Number(pt.code)-Number(prev.code),cm=Number(pt.comments)-Number(prev.comments);
           var bl=Number(pt.blank)-Number(prev.blank),fd=Number(pt.files)-Number(prev.files);
-          return '<tr><td style="font-weight:700;white-space:nowrap">'+esc(ptRef(prev,i))+' \u2192 '+esc(ptRef(pt,i+1))+'</td>'+
-            '<td style="text-align:right">'+dHtml(cd)+'</td>'+
-            '<td style="text-align:right">'+dHtml(cm)+'</td>'+
-            '<td style="text-align:right">'+dHtml(bl)+'</td>'+
-            '<td style="text-align:right">'+dHtml(fd)+'</td></tr>';
+          return '<tr><td class="sx-eb985bc3" >'+esc(ptRef(prev,i))+' \u2192 '+esc(ptRef(pt,i+1))+'</td>'+
+            '<td class="sx-5f326564" >'+dHtml(cd)+'</td>'+
+            '<td class="sx-5f326564" >'+dHtml(cm)+'</td>'+
+            '<td class="sx-5f326564" >'+dHtml(bl)+'</td>'+
+            '<td class="sx-5f326564" >'+dHtml(fd)+'</td></tr>';
         }}).join(''):'';
         // ── File matrix (top 50 by |total delta|) ────────────────────────────
         var fmSection='';
@@ -12621,14 +13365,14 @@ fn multi_compare_page(
           var MAXC=6;var startIdx=N>MAXC?N-MAXC:0;
           var topFiles=FILES.slice().sort(function(a,b){{return Math.abs(Number(b.t))-Math.abs(Number(a.t));}});
           var fmHdr='<th>File</th><th>Language</th><th>Status</th>';
-          for(var fi=startIdx;fi<N;fi++)fmHdr+='<th style="text-align:right">Scan '+(fi+1)+'</th>';
-          fmHdr+='<th style="text-align:right">Total \u0394</th>';
+          for(var fi=startIdx;fi<N;fi++)fmHdr+='<th class="sx-5f326564" >Scan '+(fi+1)+'</th>';
+          fmHdr+='<th class="sx-5f326564" >Total \u0394</th>';
           var fmRows=topFiles.map(function(f){{
-            var ss=f.s==='added'?'style="color:#2a6846;font-weight:700"':f.s==='removed'?'style="color:#b23030;font-weight:700"':'';
-            var cols='';for(var fi=startIdx;fi<N;fi++)cols+='<td style="text-align:right">'+(f.c[fi]!=null?Number(f.c[fi]).toLocaleString():'&mdash;')+'</td>';
-            cols+='<td style="text-align:right">'+dHtml(Number(f.t))+'</td>';
+            var ss=f.s==='added'?'data-sx-style="color:#2a6846;font-weight:700"':f.s==='removed'?'data-sx-style="color:#b23030;font-weight:700"':'';
+            var cols='';for(var fi=startIdx;fi<N;fi++)cols+='<td class="sx-5f326564" >'+(f.c[fi]!=null?Number(f.c[fi]).toLocaleString():'&mdash;')+'</td>';
+            cols+='<td class="sx-5f326564" >'+dHtml(Number(f.t))+'</td>';
             var sp=f.p.length>55?'\u2026'+f.p.slice(-53):f.p;
-            return '<tr><td style="font-family:monospace;font-size:10px;word-break:break-all">'+esc(sp)+'</td><td>'+esc(f.l||'')+'</td><td '+ss+'>'+esc(f.s||'')+'</td>'+cols+'</tr>';
+            return '<tr><td class="sx-e22f660d" >'+esc(sp)+'</td><td>'+esc(f.l||'')+'</td><td '+ss+'>'+esc(f.s||'')+'</td>'+cols+'</tr>';
           }}).join('');
           var colNote=N>MAXC?' (latest '+MAXC+' scans shown)':'';
           fmSection='<div class="sec"><p class="sh">File Matrix \u2014 All '+FILES.length+' Files'+colNote+'</p>'+
@@ -12644,16 +13388,16 @@ fn multi_compare_page(
             '<div class="sc"><div class="sv">&mdash;</div><div class="sl">Latest Code Lines</div></div>')+
           (pLast?'<div class="sc"><div class="sv">'+full(pLast.files)+'</div><div class="sl">Latest Files</div></div>':
             '<div class="sc"><div class="sv">&mdash;</div><div class="sl">Latest Files</div></div>')+
-          (codeDelta!==null?'<div class="sc"><div class="sv" style="'+(codeDelta>0?'color:#2a6846':codeDelta<0?'color:#b23030':'color:#555')+';font-weight:900">'+dStr(codeDelta)+'</div><div class="sl">Net Code Change</div></div>':
+          (codeDelta!==null?'<div class="sc"><div class="sv" data-sx-style="'+(codeDelta>0?'color:#2a6846':codeDelta<0?'color:#b23030':'color:#555')+';font-weight:900">'+dStr(codeDelta)+'</div><div class="sl">Net Code Change</div></div>':
             '<div class="sc"><div class="sv">&mdash;</div><div class="sl">Net Code Change</div></div>')+
-          '<div class="sc"><div class="sv" style="color:#111">{n}</div><div class="sl">Scans Compared</div></div>'+
+          '<div class="sc"><div class="sv sx-55aba240" >{n}</div><div class="sl">Scans Compared</div></div>'+
           '</div>'+
           '<div class="sec"><p class="sh">Metric Progression</p>'+
           '<table><thead><tr>'+progHdr+'</tr></thead><tbody>'+progRows+'</tbody></table></div>'+
           (N>1?'<div class="sec"><p class="sh">Scan-to-Scan Changes</p>'+
-          '<table><thead><tr><th style="text-align:center">Scans</th>'+
-          '<th style="text-align:right">Code \u0394</th><th style="text-align:right">Comments \u0394</th>'+
-          '<th style="text-align:right">Blank \u0394</th><th style="text-align:right">Files \u0394</th>'+
+          '<table><thead><tr><th class="sx-90500853" >Scans</th>'+
+          '<th class="sx-5f326564" >Code \u0394</th><th class="sx-5f326564" >Comments \u0394</th>'+
+          '<th class="sx-5f326564" >Blank \u0394</th><th class="sx-5f326564" >Files \u0394</th>'+
           '</tr></thead><tbody>'+deltaRows+'</tbody></table></div>':'')+
           fmSection+
           '</div>'+
@@ -12715,9 +13459,9 @@ fn multi_compare_page(
           var prev=POINTS[idx-1];
           var cd=Number(pt.code)-Number(prev.code),fd=Number(pt.files)-Number(prev.files),cm=Number(pt.comments)-Number(prev.comments);
           dHtml='<div class="mc-modal-sec"><div class="mc-modal-sec-title">Change vs Scan '+idx+'</div><div class="mc-modal-stats">'+
-            '<div class="mc-modal-stat" data-tip="Net change in code lines compared with the previous scan in this timeline. Green is an increase, red a decrease."><div class="mc-modal-stat-val" style="'+dSt(cd)+'">'+dS(cd)+'</div><div class="mc-modal-stat-lbl">Code \u0394</div></div>'+
-            '<div class="mc-modal-stat" data-tip="Net change in the number of analyzed files compared with the previous scan."><div class="mc-modal-stat-val" style="'+dSt(fd)+'">'+dS(fd)+'</div><div class="mc-modal-stat-lbl">Files \u0394</div></div>'+
-            '<div class="mc-modal-stat" data-tip="Net change in comment lines compared with the previous scan."><div class="mc-modal-stat-val" style="'+dSt(cm)+'">'+dS(cm)+'</div><div class="mc-modal-stat-lbl">Comments \u0394</div></div>'+
+            '<div class="mc-modal-stat" data-tip="Net change in code lines compared with the previous scan in this timeline. Green is an increase, red a decrease."><div class="mc-modal-stat-val" data-sx-style="'+dSt(cd)+'">'+dS(cd)+'</div><div class="mc-modal-stat-lbl">Code \u0394</div></div>'+
+            '<div class="mc-modal-stat" data-tip="Net change in the number of analyzed files compared with the previous scan."><div class="mc-modal-stat-val" data-sx-style="'+dSt(fd)+'">'+dS(fd)+'</div><div class="mc-modal-stat-lbl">Files \u0394</div></div>'+
+            '<div class="mc-modal-stat" data-tip="Net change in comment lines compared with the previous scan."><div class="mc-modal-stat-val" data-sx-style="'+dSt(cm)+'">'+dS(cm)+'</div><div class="mc-modal-stat-lbl">Comments \u0394</div></div>'+
             '</div></div>';
         }}
         bodyEl.innerHTML=sHtml+iHtml+dHtml;
@@ -12846,13 +13590,13 @@ async fn trend_report_handler(
                         d.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;");
                     write!(
                         s,
-                        r#"<span class="watched-chip"><span class="watched-chip-path" title="{escaped}">{escaped}</span><form method="POST" action="/watched-dirs/remove" style="display:contents"><input type="hidden" name="folder_path" value="{escaped}"><input type="hidden" name="redirect_to" value="/trend-reports"><button type="submit" class="watched-chip-rm" title="Remove folder">&#x2715;</button></form></span>"#
+                        r#"<span class="watched-chip"><span class="watched-chip-path" title="{escaped}">{escaped}</span><form class="sx-043808a9" method="POST" action="/watched-dirs/remove" ><input type="hidden" name="folder_path" value="{escaped}"><input type="hidden" name="redirect_to" value="/trend-reports"><button type="submit" class="watched-chip-rm" title="Remove folder">&#x2715;</button></form></span>"#
                     ).expect("write to String is infallible");
                     s
                 })
         };
         format!(
-            r#"<div class="watched-bar" id="watched-bar"><div class="watched-bar-left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg><span class="watched-label">Watched Folders</span><div class="watched-chips">{watched_dirs_chips}</div></div><div class="watched-bar-right"><button type="button" class="btn" id="add-watched-btn"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Choose</button><form method="POST" action="/watched-dirs/refresh" style="display:contents"><input type="hidden" name="redirect_to" value="/trend-reports"><button type="submit" class="btn">&#8635; Refresh</button></form></div></div>"#
+            r#"<div class="watched-bar" id="watched-bar"><div class="watched-bar-left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg><span class="watched-label">Watched Folders</span><div class="watched-chips">{watched_dirs_chips}</div></div><div class="watched-bar-right"><button type="button" class="btn" id="add-watched-btn"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Choose</button><form class="sx-043808a9" method="POST" action="/watched-dirs/refresh" ><input type="hidden" name="redirect_to" value="/trend-reports"><button type="submit" class="btn">&#8635; Refresh</button></form></div></div>"#
         )
     };
 
@@ -12864,6 +13608,8 @@ async fn trend_report_handler(
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OxideSLOC | Trend Reports</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{nonce}">
     :root {{
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.82); --surface-2:#fbf7f2;
@@ -13060,7 +13806,7 @@ async fn trend_report_handler(
       <div class="nav-right">
         <a class="nav-pill" href="/">Home</a>
         <div class="nav-dropdown">
-          <a href="/view-reports" class="nav-dropdown-btn" style="background:rgba(255,255,255,0.22);">View Reports <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
+          <a href="/view-reports" class="nav-dropdown-btn sx-8c38ef73" >View Reports <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
             <a href="/trend-reports"><svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>Trend Reports</a>
           </div>
@@ -13078,11 +13824,11 @@ async fn trend_report_handler(
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -13105,7 +13851,7 @@ async fn trend_report_handler(
         <div class="scan-overlay-sub">Reading reports and building metrics — this can take a moment for large folders.</div>
       </div>
     </div>
-    <style>
+    <style nonce="{nonce}">
     .scan-overlay{{position:fixed;inset:0;z-index:12000;display:none;align-items:center;justify-content:center;background:rgba(20,12,8,0.5);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);}}
     .scan-overlay.active{{display:flex;}}
     .scan-overlay-card{{background:var(--surface);border:1px solid var(--line-strong);border-radius:16px;padding:26px 38px;display:flex;flex-direction:column;align-items:center;gap:12px;box-shadow:0 24px 60px rgba(0,0,0,0.35);max-width:340px;text-align:center;}}
@@ -13122,7 +13868,7 @@ async fn trend_report_handler(
           <p class="muted">Plot any SLOC metric over time. Each data point is a saved scan. Select a project root,<br>choose a metric and X-axis mode, then explore how your codebase has changed across commits, tags, or time.</p>
           <span class="chart-hint-inline">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-            Click a dot or row to view its full report &nbsp;·&nbsp; <span class="dot" style="background:#C45C10;"></span>&thinsp;regular scan &nbsp;<span class="dot" style="background:#4472C4;"></span>&thinsp;tagged / release scan
+            Click a dot or row to view its full report &nbsp;·&nbsp; <span class="dot sx-52f7d121" ></span>&thinsp;regular scan &nbsp;<span class="dot sx-728e7e7c" ></span>&thinsp;tagged / release scan
           </span>
         </div>
         <div class="chart-actions">
@@ -13172,7 +13918,7 @@ async fn trend_report_handler(
             <option value="tag">Tagged Commits</option>
           </select>
         </label>
-        <label id="submodule-label" style="display:none;">Submodule:
+        <label class="sx-d0466aa3" id="submodule-label" >Submodule:
           <select class="chart-select" id="sub-sel">
             <option value="">All (project total)</option>
           </select>
@@ -13188,7 +13934,7 @@ async fn trend_report_handler(
       </div>
 
       <div id="chart-wrap" class="chart-wrap"><div class="loading-state"><div class="loading-spinner"></div>Loading scan history…</div></div>
-      <div id="data-table-wrap" style="overflow-x:auto;"></div>
+      <div class="sx-fbff25e9" id="data-table-wrap" ></div>
     </div>
   </div>
 
@@ -13270,7 +14016,7 @@ async fn trend_report_handler(
         try{{var sv=JSON.parse(localStorage.getItem('sloc-ns'));if(sv&&sv.a){{ap(sv);}}else{{ap(S[0]);}}}}catch(e){{ap(S[0]);}}
         var btn=document.getElementById('settings-btn');if(!btn)return;
         var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-        m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+        m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
         document.body.appendChild(m);
         var g=document.getElementById('scheme-grid');
         if(g)S.forEach(function(s){{var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}}catch(e){{}}el.addEventListener('click',function(){{ap(s);}});g.appendChild(el);}});
@@ -13412,7 +14158,7 @@ async fn trend_report_handler(
 
       var Y_LABELS={{code_lines:'Code Lines',comment_lines:'Comment Lines',blank_lines:'Blank Lines',physical_lines:'Physical Lines',files_analyzed:'Files Analyzed'}};
 
-      var svg='<svg viewBox="0 0 '+W+' '+H+'" width="'+W+'" height="'+H+'" style="display:block;overflow:visible;max-width:100%;cursor:default;" xmlns="http://www.w3.org/2000/svg">';
+      var svg='<svg class="sx-c0edbe3d" viewBox="0 0 '+W+' '+H+'" width="'+W+'" height="'+H+'"  xmlns="http://www.w3.org/2000/svg">';
       svg+='<defs><linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#C45C10" stop-opacity="0.18"/><stop offset="100%" stop-color="#C45C10" stop-opacity="0"/></linearGradient></defs>';
 
       var fs=Math.round(10*sc),fsS=Math.round(9*sc),fsL=Math.round(11*sc);
@@ -13462,7 +14208,7 @@ async fn trend_report_handler(
         var hasTags=d.tags&&d.tags.length>0;
         var isReleasePoint=hasTags||(xMode==='release'&&d.nearest_tag);
         var r=Math.round((hasTags?7:5)*Math.sqrt(sc));
-        svg+='<circle class="trend-pt" cx="'+x+'" cy="'+y+'" r="'+r+'" fill="'+(isReleasePoint?'#4472C4':'#C45C10')+'" stroke="white" stroke-width="2" style="cursor:pointer;" data-idx="'+i+'"/>';
+        svg+='<circle class="trend-pt sx-83ac1cee" cx="'+x+'" cy="'+y+'" r="'+r+'" fill="'+(isReleasePoint?'#4472C4':'#C45C10')+'" stroke="white" stroke-width="2"  data-idx="'+i+'"/>';
         if(showLabels && i%labelEveryN===0){{
           var lx=x, ly=y-r-5;
           svg+='<text x="'+lx+'" y="'+ly+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+fs+'" font-weight="700" fill="#7b675b" pointer-events="none">'+fmtFull(Number(d[yKey]))+'</text>';
@@ -13506,9 +14252,9 @@ async fn trend_report_handler(
           var val=Number(d[yKey]);
           var lbl=xMode==='commit'&&d.commit?d.commit.substring(0,7):d.timestamp.substring(0,10);
           showTT(e,
-            '<strong style="display:block;font-size:13px;margin-bottom:3px;">'+esc(lbl)+'</strong>'+
+            '<strong class="sx-b907acdf" >'+esc(lbl)+'</strong>'+
             (Y_LABELS[yKey]||yKey)+': <strong>'+fmtFull(val)+'</strong>'+
-            '<br><span style="font-size:11px;color:var(--muted);">'+d.timestamp.substring(0,10)+'</span>'
+            '<br><span class="sx-1603cce1" >'+d.timestamp.substring(0,10)+'</span>'
           );
         }});
         svgEl.addEventListener('mouseleave',function(){{hideTT();svgEl.style.cursor='default';}});
@@ -13518,10 +14264,10 @@ async fn trend_report_handler(
       wrap.querySelectorAll('.trend-pt').forEach(function(c){{
         c.addEventListener('mouseover',function(e){{
           var d=pts[parseInt(this.dataset.idx)];
-          var tagsHtml=d.tags&&d.tags.length?'<br>Tags: '+d.tags.map(function(t){{return'<span style="background:var(--info-bg);color:var(--info-text);padding:1px 6px;border-radius:999px;font-size:10px;margin-right:3px;">'+esc(t)+'</span>';}}).join(''):'';
-          var nearestHtml=d.nearest_tag?'<br>Nearest release: <span style="background:var(--info-bg);color:var(--info-text);padding:1px 6px;border-radius:999px;font-size:10px;">'+esc(d.nearest_tag)+'</span>':'';
+          var tagsHtml=d.tags&&d.tags.length?'<br>Tags: '+d.tags.map(function(t){{return'<span class="sx-40777e33" >'+esc(t)+'</span>';}}).join(''):'';
+          var nearestHtml=d.nearest_tag?'<br>Nearest release: <span class="sx-89081a19" >'+esc(d.nearest_tag)+'</span>':'';
           showTT(e,
-            '<strong style="display:block;font-size:13px;margin-bottom:3px;">'+esc(d.project_label)+'</strong>'+
+            '<strong class="sx-b907acdf" >'+esc(d.project_label)+'</strong>'+
             (Y_LABELS[yKey]||yKey)+': <strong>'+fmtFull(Number(d[yKey]))+'</strong><br>'+
             'Date: '+d.timestamp.substring(0,10)+(d.commit?'<br>Commit: <code>'+esc(d.commit.substring(0,12))+'</code>':'')+
             (d.branch?'<br>Branch: '+esc(d.branch):'')+tagsHtml+nearestHtml
@@ -13588,9 +14334,9 @@ async fn trend_report_handler(
       if(!tbody)return;
       tbody.innerHTML=visible.map(function(d){{
         var tsHtml=esc(fmtPST(d.timestamp));
-        var tags=(d.tags&&d.tags.length)?d.tags.map(function(t){{return'<span class="tag-chip">'+esc(t)+'</span>';}}).join(''):'<span style="color:var(--muted)">&#8212;</span>';
-        var commitHtml=d.commit?'<span class="git-chip" title="'+esc(d.commit)+'">'+esc(d.commit.substring(0,7))+'</span>':'<span style="color:var(--muted)">&#8212;</span>';
-        var branchHtml=d.branch?'<span class="git-chip">'+esc(d.branch)+'</span>':'<span style="color:var(--muted)">&#8212;</span>';
+        var tags=(d.tags&&d.tags.length)?d.tags.map(function(t){{return'<span class="tag-chip">'+esc(t)+'</span>';}}).join(''):'<span class="sx-eac76940" >&#8212;</span>';
+        var commitHtml=d.commit?'<span class="git-chip" title="'+esc(d.commit)+'">'+esc(d.commit.substring(0,7))+'</span>':'<span class="sx-eac76940" >&#8212;</span>';
+        var branchHtml=d.branch?'<span class="git-chip">'+esc(d.branch)+'</span>':'<span class="sx-eac76940" >&#8212;</span>';
         var runIdHtml=d.run_id_short?'<span class="run-id-chip">'+esc(d.run_id_short)+'</span>':'&#8212;';
         var metricHtml='<span class="metric-num">'+fmtFull(d._metricVal)+'</span>';
         var reportCell='';
@@ -13598,7 +14344,7 @@ async fn trend_report_handler(
           reportCell+='<div class="actions-cell"><a class="btn primary rpt-btn" href="'+esc(d.html_url)+'" target="_blank" rel="noopener">View</a>';
           if(d.has_pdf){{var pdfUrl=d.html_url.replace(/\/html$/,'/pdf');reportCell+='<a class="btn primary rpt-btn" href="'+esc(pdfUrl)+'" target="_blank" rel="noopener">PDF</a>';}}
           reportCell+='</div>';
-        }}else{{reportCell='<span style="color:var(--muted);font-size:11px;font-style:italic;">&#8212;</span>';}}
+        }}else{{reportCell='<span class="sx-e7c11689" >&#8212;</span>';}}
         if(d.submodule_links&&d.submodule_links.length){{
           reportCell+='<details class="submod-details"><summary>&#8627; '+d.submodule_links.length+' submodule(s)</summary><div class="submod-link-list">';
           d.submodule_links.forEach(function(s){{reportCell+='<a href="'+esc(s.url)+'" target="_blank" rel="noopener" class="submod-view-btn">'+esc(s.name)+'</a>';}});
@@ -13719,15 +14465,15 @@ async fn trend_report_handler(
         '<div class="pagination">'+
           '<span class="pagination-info" id="sh-pg-info"></span>'+
           '<div class="pagination-btns" id="sh-pg-btns"></div>'+
-          '<div style="display:flex;align-items:center;gap:8px;">'+
-            '<span style="font-size:13px;color:var(--muted);">Show</span>'+
+          '<div class="sx-68443324" >'+
+            '<span class="sx-68694475" >Show</span>'+
             '<select class="filter-select" id="sh-per-page">'+
               '<option value="10">10 per page</option>'+
               '<option value="25" selected>25 per page</option>'+
               '<option value="50">50 per page</option>'+
               '<option value="100">100 per page</option>'+
             '</select>'+
-            '<span style="font-size:13px;color:var(--muted);" id="sh-pg-range"></span>'+
+            '<span class="sx-68694475"  id="sh-pg-range"></span>'+
           '</div>'+
         '</div>';
       wireTableBehavior();
@@ -14079,8 +14825,8 @@ async fn trend_report_handler(
       var yLabels={{code_lines:'Code Lines',comment_lines:'Comment Lines',blank_lines:'Blank Lines',physical_lines:'Physical Lines',files_analyzed:'Files Analyzed'}};
       var yL=yLabels[yK]||yK;
       var rowsDesc=allData.slice().sort(function(a,b){{return b.timestamp.localeCompare(a.timestamp);}});
-      var tableHtml='<div class="chart-section-header">SCAN HISTORY</div><table><thead><tr><th>Scan Date</th><th>Project</th><th>Commit</th><th>Branch</th><th>Tags</th><th style="text-align:right">'+esc(yL)+'</th></tr></thead><tbody>';
-      rowsDesc.forEach(function(d){{tableHtml+='<tr><td>'+esc(d.timestamp.substring(0,16).replace('T',' '))+'</td><td>'+esc(d.project_label||'')+'</td><td>'+esc((d.commit||'').substring(0,7))+'</td><td>'+esc(d.branch||'')+'</td><td>'+esc((d.tags||[]).join(', '))+'</td><td style="text-align:right">'+fmtFull(Number(d[yK])||0)+'</td></tr>';}});
+      var tableHtml='<div class="chart-section-header">SCAN HISTORY</div><table><thead><tr><th>Scan Date</th><th>Project</th><th>Commit</th><th>Branch</th><th>Tags</th><th class="sx-5f326564" >'+esc(yL)+'</th></tr></thead><tbody>';
+      rowsDesc.forEach(function(d){{tableHtml+='<tr><td>'+esc(d.timestamp.substring(0,16).replace('T',' '))+'</td><td>'+esc(d.project_label||'')+'</td><td>'+esc((d.commit||'').substring(0,7))+'</td><td>'+esc(d.branch||'')+'</td><td>'+esc((d.tags||[]).join(', '))+'</td><td class="sx-5f326564" >'+fmtFull(Number(d[yK])||0)+'</td></tr>';}});
       tableHtml+='</tbody></table>';
       var css='<style>'
         +'*{{box-sizing:border-box;}}'
@@ -14167,10 +14913,10 @@ async fn trend_report_handler(
         var ov=document.createElement('div');
         ov.className='tr-chart-full-modal';
         ov.innerHTML='<div class="tr-chart-full-inner">'
-          +'<button type="button" class="settings-close" style="position:absolute;top:16px;right:18px;" aria-label="Close">'
+          +'<button type="button" class="settings-close sx-6681bcb5"  aria-label="Close">'
           +'<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>'
-          +'<div style="font-size:18px;font-weight:900;color:var(--oxide);margin:0 40px 2px 0;">'+esc(tp.title)+'</div>'
-          +'<div style="font-size:12.5px;color:var(--muted);margin-bottom:16px;">'+esc(tp.sub)+'</div>'
+          +'<div class="sx-d6594fa1" >'+esc(tp.title)+'</div>'
+          +'<div class="sx-6193e2c8" >'+esc(tp.sub)+'</div>'
           +'<div id="tr-fv-chart-wrap" class="chart-wrap"></div></div>';
         document.body.appendChild(ov);
         var fvWrap=ov.querySelector('#tr-fv-chart-wrap');
@@ -14194,18 +14940,18 @@ async fn trend_report_handler(
       if(!triggerBtn)return;
       var modal=document.createElement('div');
       modal.className='tr-modal-backdrop';
-      modal.innerHTML='<div class="tr-modal" style="max-width:520px;">'
+      modal.innerHTML='<div class="tr-modal sx-82c06388" >'
         +'<div class="tr-modal-head">'
         +'<div class="tr-modal-icon danger"><svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></div>'
         +'<div><h2 class="tr-modal-title">Clean up old runs</h2><p class="tr-modal-sub">One-shot deletion of older scan artifacts</p></div>'
         +'</div>'
         +'<div class="tr-modal-body">'
-        +'<p style="font-size:13.5px;color:var(--text);margin:0 0 18px;line-height:1.5;">Delete all scan artifacts older than the chosen number of days. This removes files from disk and clears the registry. <strong>This cannot be undone.</strong></p>'
-        +'<label style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Delete runs older than</label>'
-        +'<div style="display:flex;align-items:center;gap:8px;margin:8px 0 4px;">'
-        +'<input type="number" id="cleanup-days-input" value="30" min="1" max="3650" style="width:90px;padding:9px 12px;border-radius:9px;border:1.5px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:14px;font-weight:700;">'
-        +'<span style="font-size:13px;color:var(--muted);">days</span></div>'
-        +'<div id="cleanup-status" style="display:none;padding:10px 14px;border-radius:9px;font-size:13px;font-weight:600;margin-top:16px;"></div>'
+        +'<p class="sx-06c7d19c" >Delete all scan artifacts older than the chosen number of days. This removes files from disk and clears the registry. <strong>This cannot be undone.</strong></p>'
+        +'<label class="sx-c1c2b975" >Delete runs older than</label>'
+        +'<div class="sx-2412f486" >'
+        +'<input class="sx-46963105" type="number" id="cleanup-days-input" value="30" min="1" max="3650" >'
+        +'<span class="sx-68694475" >days</span></div>'
+        +'<div class="sx-aa34377b" id="cleanup-status" ></div>'
         +'</div>'
         +'<div class="tr-modal-foot">'
         +'<button class="tr-btn tr-btn-secondary" id="cleanup-cancel-btn" type="button">Cancel</button>'
@@ -14256,32 +15002,37 @@ async fn trend_report_handler(
       modal.className='tr-modal-backdrop';
       modal.style.zIndex='9001';
       modal.innerHTML=''
-        +'<div class="tr-modal" style="max-width:640px;">'
+        +'<div class="tr-modal sx-6bb239c6" >'
         +'<div class="tr-modal-head">'
         +'<div class="tr-modal-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg></div>'
         +'<div><h2 class="tr-modal-title">Retention Policy</h2><p class="tr-modal-sub">Scheduled automatic cleanup of old scan runs</p></div>'
         +'</div>'
         +'<div class="tr-modal-body">'
-        +'<p style="font-size:13px;color:var(--muted);margin:0 0 22px;">Automatically clean up old scan runs on a schedule. Both rules apply when set \u2014 a run is deleted if it exceeds the age limit <em>or</em> falls outside the count limit.</p>'
-        +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:22px;">'
-        +'<input type="checkbox" id="rp-enabled" style="width:16px;height:16px;cursor:pointer;accent-color:var(--oxide);">'
-        +'<label for="rp-enabled" style="font-size:14px;font-weight:700;cursor:pointer;">Enable auto-cleanup</label>'
+        +'<p class="sx-e0c3d11f" >Automatically clean up old scan runs on a schedule. Both rules apply when set \u2014 a run is deleted if it exceeds the age limit <em>or</em> falls outside the count limit.</p>'
+        +'<div class="sx-62b3da63" >'
+        +'<input class="sx-d08cd3b7" type="checkbox" id="rp-enabled" >'
+        +'<label class="sx-4c8da600" for="rp-enabled" >Enable auto-cleanup</label>'
         +'</div>'
-        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:20px;">'
+        +'<div class="sx-1641a130" >'
         +'<div>'
-        +'<label style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:6px;">Max age (days)</label>'
-        +'<input type="number" id="rp-max-age" min="1" max="3650" placeholder="No limit" style="width:100%;padding:9px 12px;border-radius:8px;border:1.5px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:14px;box-sizing:border-box;">'
-        +'<div style="font-size:11px;color:var(--muted);margin-top:4px;">Delete runs older than N days</div>'
+        +'<label class="sx-64dbe608" >Max age (days)</label>'
+        +'<input class="sx-18abc423" type="number" id="rp-max-age" min="1" max="3650" placeholder="No limit" >'
+        +'<div class="sx-1214055e" >Delete runs older than N days</div>'
         +'</div>'
         +'<div>'
-        +'<label style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:6px;">Max runs kept</label>'
-        +'<input type="number" id="rp-max-count" min="1" max="10000" placeholder="No limit" style="width:100%;padding:9px 12px;border-radius:8px;border:1.5px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:14px;box-sizing:border-box;">'
-        +'<div style="font-size:11px;color:var(--muted);margin-top:4px;">Keep only the N most recent runs</div>'
+        +'<label class="sx-64dbe608" >Max runs kept</label>'
+        +'<input class="sx-18abc423" type="number" id="rp-max-count" min="1" max="10000" placeholder="No limit" >'
+        +'<div class="sx-1214055e" >Keep only the N most recent runs</div>'
+        +'</div>'
+        +'<div>'
+        +'<label class="sx-64dbe608" >Max total size (MB)</label>'
+        +'<input class="sx-18abc423" type="number" id="rp-max-total" min="1" max="10000000" placeholder="No limit" >'
+        +'<div class="sx-1214055e" >Delete oldest runs when the artifact tree exceeds this. Capped by the host SLOC_MAX_DISK_MB ceiling.</div>'
         +'</div>'
         +'</div>'
-        +'<div style="margin-bottom:20px;">'
-        +'<label style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:6px;">Check interval</label>'
-        +'<select id="rp-interval" style="padding:9px 12px;border-radius:8px;border:1.5px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:14px;min-width:180px;">'
+        +'<div class="sx-3c4a3d44" >'
+        +'<label class="sx-64dbe608" >Check interval</label>'
+        +'<select class="sx-163c74e0" id="rp-interval" >'
         +'<option value="1">Every hour</option>'
         +'<option value="6">Every 6 hours</option>'
         +'<option value="12">Every 12 hours</option>'
@@ -14291,8 +15042,8 @@ async fn trend_report_handler(
         +'<option value="168">Every week</option>'
         +'</select>'
         +'</div>'
-        +'<div id="rp-last-run" style="padding:10px 14px;border-radius:8px;background:var(--surface-2);font-size:12px;color:var(--muted);margin-bottom:20px;">\u2014</div>'
-        +'<div id="rp-status" style="display:none;padding:9px 13px;border-radius:8px;font-size:13px;font-weight:600;margin-bottom:18px;"></div>'
+        +'<div class="sx-6e3619f2" id="rp-last-run" >\u2014</div>'
+        +'<div class="sx-ef999f9b" id="rp-status" ></div>'
         +'</div>'
         +'<div class="tr-modal-foot">'
         +'<button class="tr-btn tr-btn-secondary" id="rp-close-btn" type="button">Close</button>'
@@ -14325,6 +15076,7 @@ async fn trend_report_handler(
             document.getElementById('rp-enabled').checked=p?p.enabled:false;
             document.getElementById('rp-max-age').value=(p&&p.max_age_days!=null)?p.max_age_days:'';
             document.getElementById('rp-max-count').value=(p&&p.max_run_count!=null)?p.max_run_count:'';
+            document.getElementById('rp-max-total').value=(p&&p.max_total_mb!=null)?p.max_total_mb:'';
             var sel=document.getElementById('rp-interval');
             if(p){{var iv=String(p.interval_hours||24);for(var i=0;i<sel.options.length;i++){{if(sel.options[i].value===iv){{sel.selectedIndex=i;break;}}}}}}
             var lr=document.getElementById('rp-last-run');
@@ -14349,12 +15101,13 @@ async fn trend_report_handler(
         var enabled=document.getElementById('rp-enabled').checked;
         var ageVal=document.getElementById('rp-max-age').value.trim();
         var countVal=document.getElementById('rp-max-count').value.trim();
+        var totalVal=document.getElementById('rp-max-total').value.trim();
         var intervalHours=parseInt(document.getElementById('rp-interval').value,10)||24;
-        if(enabled&&!ageVal&&!countVal){{
-          rpShowStatus('Set at least one rule (max age or max count) before enabling.',false);
+        if(enabled&&!ageVal&&!countVal&&!totalVal){{
+          rpShowStatus('Set at least one rule (max age, max count, or max total size) before enabling.',false);
           return;
         }}
-        var body={{enabled:enabled,max_age_days:ageVal?parseInt(ageVal,10):null,max_run_count:countVal?parseInt(countVal,10):null,interval_hours:intervalHours}};
+        var body={{enabled:enabled,max_age_days:ageVal?parseInt(ageVal,10):null,max_run_count:countVal?parseInt(countVal,10):null,max_total_mb:totalVal?parseInt(totalVal,10):null,interval_hours:intervalHours}};
         var saveBtn=document.getElementById('rp-save-btn');
         saveBtn.disabled=true;
         fetch('/api/cleanup-policy',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}})
@@ -14439,7 +15192,7 @@ async fn trend_report_handler(
   </script>
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{version} — Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{version} — Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -14950,21 +15703,21 @@ async fn test_metrics_handler(
         String::new()
     } else {
         String::from(
-            r#"<div class="empty-state" style="margin-bottom:18px;padding:20px 24px;">
-<div style="margin-bottom:10px;font-size:14px;">No code coverage data found for the latest scan. Re-run with a coverage file to enable line, function, and branch coverage metrics.</div>
-<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:6px 4px;margin-bottom:10px;">
-  <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-right:4px;">Supported formats</span>
-  <span style="background:var(--surface-2);border:1px solid var(--line-strong);border-radius:6px;padding:3px 9px;font-size:12px;white-space:nowrap;"><strong>LCOV</strong> <code>.info</code></span>
-  <span style="color:var(--muted);font-size:12px;">&middot;</span>
-  <span style="background:var(--surface-2);border:1px solid var(--line-strong);border-radius:6px;padding:3px 9px;font-size:12px;white-space:nowrap;"><strong>Cobertura XML</strong></span>
-  <span style="color:var(--muted);font-size:12px;">&middot;</span>
-  <span style="background:var(--surface-2);border:1px solid var(--line-strong);border-radius:6px;padding:3px 9px;font-size:12px;white-space:nowrap;"><strong>JaCoCo XML</strong></span>
-  <span style="color:var(--muted);font-size:12px;">&middot;</span>
-  <span style="background:var(--surface-2);border:1px solid var(--line-strong);border-radius:6px;padding:3px 9px;font-size:12px;white-space:nowrap;"><strong>coverage.py JSON</strong></span>
-  <span style="color:var(--muted);font-size:12px;">&middot;</span>
-  <span style="background:var(--surface-2);border:1px solid var(--line-strong);border-radius:6px;padding:3px 9px;font-size:12px;white-space:nowrap;"><strong>Istanbul JSON</strong></span>
+            r#"<div class="empty-state sx-c2289694" >
+<div class="sx-1355ce7d" >No code coverage data found for the latest scan. Re-run with a coverage file to enable line, function, and branch coverage metrics.</div>
+<div class="sx-823a8ee4" >
+  <span class="sx-4041551f" >Supported formats</span>
+  <span class="sx-4c7d880c" ><strong>LCOV</strong> <code>.info</code></span>
+  <span class="sx-3dc23ded" >&middot;</span>
+  <span class="sx-4c7d880c" ><strong>Cobertura XML</strong></span>
+  <span class="sx-3dc23ded" >&middot;</span>
+  <span class="sx-4c7d880c" ><strong>JaCoCo XML</strong></span>
+  <span class="sx-3dc23ded" >&middot;</span>
+  <span class="sx-4c7d880c" ><strong>coverage.py JSON</strong></span>
+  <span class="sx-3dc23ded" >&middot;</span>
+  <span class="sx-4c7d880c" ><strong>Istanbul JSON</strong></span>
 </div>
-<div style="font-size:12px;color:var(--muted);">Provide the file via the web scan form or <code>--coverage-file</code> CLI flag.</div>
+<div class="sx-9d20ccc1" >Provide the file via the web scan form or <code>--coverage-file</code> CLI flag.</div>
 </div>"#,
         )
     };
@@ -14991,13 +15744,13 @@ async fn test_metrics_handler(
                         d.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;");
                     write!(
                         s,
-                        r#"<span class="watched-chip"><span class="watched-chip-path" title="{escaped}">{escaped}</span><form method="POST" action="/watched-dirs/remove" style="display:contents"><input type="hidden" name="folder_path" value="{escaped}"><input type="hidden" name="redirect_to" value="/test-metrics"><button type="submit" class="watched-chip-rm" title="Remove folder">&#x2715;</button></form></span>"#
+                        r#"<span class="watched-chip"><span class="watched-chip-path" title="{escaped}">{escaped}</span><form class="sx-043808a9" method="POST" action="/watched-dirs/remove" ><input type="hidden" name="folder_path" value="{escaped}"><input type="hidden" name="redirect_to" value="/test-metrics"><button type="submit" class="watched-chip-rm" title="Remove folder">&#x2715;</button></form></span>"#
                     ).expect("write to String is infallible");
                     s
                 })
         };
         format!(
-            r#"<div class="watched-bar" id="watched-bar"><div class="watched-bar-left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg><span class="watched-label">Watched Folders</span><div class="watched-chips">{watched_dirs_chips}</div></div><div class="watched-bar-right"><button type="button" class="btn" id="add-watched-btn"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Choose</button><form method="POST" action="/watched-dirs/refresh" style="display:contents"><input type="hidden" name="redirect_to" value="/test-metrics"><button type="submit" class="btn">&#8635; Refresh</button></form></div></div>"#
+            r#"<div class="watched-bar" id="watched-bar"><div class="watched-bar-left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg><span class="watched-label">Watched Folders</span><div class="watched-chips">{watched_dirs_chips}</div></div><div class="watched-bar-right"><button type="button" class="btn" id="add-watched-btn"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Choose</button><form class="sx-043808a9" method="POST" action="/watched-dirs/refresh" ><input type="hidden" name="redirect_to" value="/test-metrics"><button type="submit" class="btn">&#8635; Refresh</button></form></div></div>"#
         )
     };
 
@@ -15012,6 +15765,8 @@ async fn test_metrics_handler(
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OxideSLOC | Test Metrics</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{nonce}">
     :root {{
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.82); --surface-2:#fbf7f2;
@@ -15187,7 +15942,7 @@ async fn test_metrics_handler(
           </div>
         </div>
         <a class="nav-pill" href="/compare-scans">Compare Scans</a>
-        <a class="nav-pill" href="/test-metrics" style="background:rgba(255,255,255,0.22);">Test Metrics</a>
+        <a class="nav-pill sx-8c38ef73" href="/test-metrics" >Test Metrics</a>
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
@@ -15199,11 +15954,11 @@ async fn test_metrics_handler(
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -15226,7 +15981,7 @@ async fn test_metrics_handler(
         <div class="scan-overlay-sub">Reading reports and building metrics — this can take a moment for large folders.</div>
       </div>
     </div>
-    <style>
+    <style nonce="{nonce}">
     .scan-overlay{{position:fixed;inset:0;z-index:12000;display:none;align-items:center;justify-content:center;background:rgba(20,12,8,0.5);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);}}
     .scan-overlay.active{{display:flex;}}
     .scan-overlay-card{{background:var(--surface);border:1px solid var(--line-strong);border-radius:16px;padding:26px 38px;display:flex;flex-direction:column;align-items:center;gap:12px;box-shadow:0 24px 60px rgba(0,0,0,0.35);max-width:340px;text-align:center;}}
@@ -15236,12 +15991,12 @@ async fn test_metrics_handler(
     .scan-overlay-sub{{font-size:12px;color:var(--muted);line-height:1.5;}}
     </style>
     <div class="scope-bar">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;color:var(--muted);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      <svg class="sx-e1242e80" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
       <span class="scope-label">Scope</span>
       <div class="scope-sel-wrap">
         <select id="scope-root-sel" class="scope-sel"><option value="__all__">All projects</option></select>
-        <div id="scope-sub-wrap" style="display:none;align-items:center;gap:16px;padding-left:16px;margin-left:4px;border-left:1.5px solid var(--line-strong);">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;color:var(--muted);display:flex;align-self:center;margin-top:3px;"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
+        <div class="sx-8c9231df" id="scope-sub-wrap" >
+          <svg class="sx-88d1e2d6" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
           <select id="scope-sub-sel" class="scope-sel"><option value="">Entire project</option></select>
         </div>
       </div>
@@ -15261,13 +16016,13 @@ async fn test_metrics_handler(
         </button>
       </div>
     </div>
-    <div class="summary-strip" style="grid-template-columns:repeat(4,1fr);">
+    <div class="summary-strip sx-17674eb3" >
       <div class="stat-chip"><div class="stat-chip-val" id="chip-total">{total_tests}</div><div class="stat-chip-label">Test Functions</div><div class="stat-chip-tip">Lexically detected test case / function definitions (GTest, PyTest, JUnit, Unity, etc.)</div><div class="stat-chip-exact" id="chip-total-exact"></div></div>
       <div class="stat-chip"><div class="stat-chip-val" id="chip-assertions">{total_assertions}</div><div class="stat-chip-label">Assertions</div><div class="stat-chip-tip">Test assertion call lines (ASSERT_EQ, EXPECT_TRUE, assertEquals, Assert.AreEqual, assert_eq!, etc.)</div><div class="stat-chip-exact" id="chip-assertions-exact"></div></div>
       <div class="stat-chip"><div class="stat-chip-val" id="chip-suites">{total_suites}</div><div class="stat-chip-label">Test Suites</div><div class="stat-chip-tip">Test suite / fixture / group declarations (TEST_GROUP, BOOST_AUTO_TEST_SUITE, [TestClass], etc.)</div></div>
       <div class="stat-chip"><div class="stat-chip-val" id="chip-test-files">{test_files_count} / {total_files_analyzed}</div><div class="stat-chip-label">Test Files</div><div class="stat-chip-tip">Files containing at least one test definition out of total analyzed files</div><div class="stat-chip-exact" id="chip-test-files-exact"></div></div>
     </div>
-    <div class="summary-strip" style="grid-template-columns:repeat(4,1fr);">
+    <div class="summary-strip sx-17674eb3" >
       <div class="stat-chip"><div class="stat-chip-val" id="chip-density">{workspace_density_str}</div><div class="stat-chip-label">Tests per 1K SLOC</div><div class="stat-chip-tip">Workspace-wide test density: test functions ÷ code lines × 1000</div></div>
       <div class="stat-chip"><div class="stat-chip-val" id="chip-most">{most_tested}</div><div class="stat-chip-label">Most Tested Language</div><div class="stat-chip-tip">Language with the highest absolute test function count</div></div>
       <div class="stat-chip"><div class="stat-chip-val" id="chip-langs">{langs_with_tests}</div><div class="stat-chip-label">Languages with Tests</div><div class="stat-chip-tip">Number of distinct languages where test definitions were detected</div></div>
@@ -15275,17 +16030,17 @@ async fn test_metrics_handler(
     </div>
 
     <div class="panel" id="viz-panel">
-      <div class="section-header" style="margin-top:0;padding-top:0;border-top:none;">Visualizations</div>
+      <div class="section-header sx-ea7dba9f" >Visualizations</div>
 
-      <div class="chart-box" style="margin-bottom:18px;">
+      <div class="chart-box sx-50b6af6d" >
         <div class="chart-box-header">
-          <div class="chart-box-title" style="margin-bottom:0;">Test Count Trend</div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <button class="chart-expand-btn" id="multi-compare-trend-btn" title="Open all scans in Multi-Scan Timeline" style="display:none;">&#8652; Multi-Timeline</button>
+          <div class="chart-box-title sx-768bda7d" >Test Count Trend</div>
+          <div class="sx-0d5ff492" >
+            <button class="chart-expand-btn sx-d0466aa3" id="multi-compare-trend-btn" title="Open all scans in Multi-Scan Timeline" >&#8652; Multi-Timeline</button>
             <button class="chart-expand-btn" id="trend-expand-btn" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button>
           </div>
         </div>
-        <p style="font-size:13px;color:var(--muted);margin:0 0 10px;">Test metric trends across all saved scans for the selected scope. Use <strong>Multi-Timeline</strong> to compare scans side-by-side.</p>
+        <p class="sx-33c9de91" >Test metric trends across all saved scans for the selected scope. Use <strong>Multi-Timeline</strong> to compare scans side-by-side.</p>
         <div class="trend-controls-bar">
           <label>Y Metric:
             <select class="chart-select" id="tm-trend-y">
@@ -15299,7 +16054,7 @@ async fn test_metrics_handler(
               <option value="time">By Time</option>
             </select>
           </label>
-          <label id="tm-sub-label" style="display:none;">Submodule:
+          <label class="sx-d0466aa3" id="tm-sub-label" >Submodule:
             <select class="chart-select" id="tm-trend-sub">
               <option value="">All (project total)</option>
             </select>
@@ -15313,58 +16068,58 @@ async fn test_metrics_handler(
           </label>
         </div>
         <div class="chart-canvas-wrap trend-canvas-wrap" id="trend-canvas-wrap"><canvas id="canvas-trend"></canvas></div>
-        <div id="trend-empty" class="empty-state" style="display:none;">No historical test data found. Run more scans to see trends.</div>
+        <div id="trend-empty" class="empty-state sx-d0466aa3" >No historical test data found. Run more scans to see trends.</div>
       </div>
 
       <div class="chart-row">
         <div class="chart-box">
           <div class="chart-box-header">
-            <div class="chart-box-title" style="margin-bottom:0;">Test Definitions by Language</div>
+            <div class="chart-box-title sx-768bda7d" >Test Definitions by Language</div>
             <button class="chart-expand-btn" id="tests-expand-btn" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button>
           </div>
           <div class="chart-canvas-wrap"><canvas id="canvas-tests"></canvas></div>
-          <div id="no-data-tests" class="chart-no-data" style="display:none;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg><div class="chart-no-data-title">No test data</div><div class="chart-no-data-hint">Run a scan on a project with test files to see test definitions by language.</div></div>
+          <div id="no-data-tests" class="chart-no-data sx-d0466aa3" ><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg><div class="chart-no-data-title">No test data</div><div class="chart-no-data-hint">Run a scan on a project with test files to see test definitions by language.</div></div>
         </div>
         <div class="chart-box">
           <div class="chart-box-header">
-            <div class="chart-box-title" style="margin-bottom:0;">Test Density (per 1,000 code lines)</div>
+            <div class="chart-box-title sx-768bda7d" >Test Density (per 1,000 code lines)</div>
             <button class="chart-expand-btn" id="density-expand-btn" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button>
           </div>
           <div class="chart-canvas-wrap"><canvas id="canvas-density"></canvas></div>
-          <div id="no-data-density" class="chart-no-data" style="display:none;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3v18h18"/><polyline points="7 16 11 11 15 14 19 8"/></svg><div class="chart-no-data-title">No density data</div><div class="chart-no-data-hint">Density requires detected test functions alongside code SLOC.</div></div>
+          <div id="no-data-density" class="chart-no-data sx-d0466aa3" ><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3v18h18"/><polyline points="7 16 11 11 15 14 19 8"/></svg><div class="chart-no-data-title">No density data</div><div class="chart-no-data-hint">Density requires detected test functions alongside code SLOC.</div></div>
         </div>
       </div>
 
       <div class="chart-row">
         <div class="chart-box">
           <div class="chart-box-header">
-            <div class="chart-box-title" style="margin-bottom:0;">Assertions by Language</div>
+            <div class="chart-box-title sx-768bda7d" >Assertions by Language</div>
             <button class="chart-expand-btn" id="assertions-expand-btn" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button>
           </div>
           <div class="chart-canvas-wrap"><canvas id="canvas-assertions"></canvas></div>
-          <div id="no-data-assertions" class="chart-no-data" style="display:none;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="12" y1="9" x2="12" y2="15"/></svg><div class="chart-no-data-title">No assertion data</div><div class="chart-no-data-hint">No assertion calls detected in the current scope.</div></div>
+          <div id="no-data-assertions" class="chart-no-data sx-d0466aa3" ><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="12" y1="9" x2="12" y2="15"/></svg><div class="chart-no-data-title">No assertion data</div><div class="chart-no-data-hint">No assertion calls detected in the current scope.</div></div>
         </div>
         <div class="chart-box" id="suites-chart-box">
           <div class="chart-box-header">
-            <div class="chart-box-title" style="margin-bottom:0;">Test Suites by Language</div>
+            <div class="chart-box-title sx-768bda7d" >Test Suites by Language</div>
             <button class="chart-expand-btn" id="suites-expand-btn" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button>
           </div>
           <div class="chart-canvas-wrap"><canvas id="canvas-suites"></canvas></div>
-          <div id="no-data-suites" class="chart-no-data" style="display:none;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><div class="chart-no-data-title">No suite data</div><div class="chart-no-data-hint">No test suite groupings detected in the current scope.</div></div>
+          <div id="no-data-suites" class="chart-no-data sx-d0466aa3" ><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><div class="chart-no-data-title">No suite data</div><div class="chart-no-data-hint">No test suite groupings detected in the current scope.</div></div>
         </div>
       </div>
 
       <div class="chart-row">
         <div class="chart-box">
           <div class="chart-box-title">Test Files Breakdown</div>
-          <div class="chart-canvas-wrap" style="height:260px;display:flex;align-items:center;justify-content:center;"><canvas id="canvas-files"></canvas></div>
-          <div id="no-data-files" class="chart-no-data" style="display:none;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 3"/></svg><div class="chart-no-data-title">No file data</div><div class="chart-no-data-hint">No files found in the current scope.</div></div>
+          <div class="chart-canvas-wrap sx-bbc01430" ><canvas id="canvas-files"></canvas></div>
+          <div id="no-data-files" class="chart-no-data sx-d0466aa3" ><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 3"/></svg><div class="chart-no-data-title">No file data</div><div class="chart-no-data-hint">No files found in the current scope.</div></div>
         </div>
         <div class="chart-box">
           <div class="chart-box-title">Test Composition</div>
-          <p style="font-size:11px;color:var(--muted);margin:0 0 10px;">Total counts: test functions, assertions, and suites workspace-wide.</p>
+          <p class="sx-7f7492d2" >Total counts: test functions, assertions, and suites workspace-wide.</p>
           <div class="chart-canvas-wrap"><canvas id="canvas-composition"></canvas></div>
-          <div id="no-data-composition" class="chart-no-data" style="display:none;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg><div class="chart-no-data-title">No composition data</div><div class="chart-no-data-hint">Run a scan to see test function, assertion, and suite counts.</div></div>
+          <div id="no-data-composition" class="chart-no-data sx-d0466aa3" ><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg><div class="chart-no-data-title">No composition data</div><div class="chart-no-data-hint">Run a scan to see test function, assertion, and suite counts.</div></div>
         </div>
       </div>
     </div>
@@ -15375,7 +16130,7 @@ async fn test_metrics_handler(
 
       <div class="section-header">Language Breakdown</div>
       {cov_no_data_notice}
-      <div style="overflow-x:auto;">
+      <div class="sx-fbff25e9" >
         <table class="data-table" id="lang-table">
           <thead><tr>
             <th>Language</th>
@@ -15392,27 +16147,27 @@ async fn test_metrics_handler(
       </div>
     </div>
 
-    <div class="panel" id="cov-panel" style="display:none;">
-      <div class="section-header" style="margin-top:0;padding-top:0;border-top:none;">LCOV Coverage Summary</div>
+    <div class="panel sx-d0466aa3" id="cov-panel" >
+      <div class="section-header sx-ea7dba9f" >LCOV Coverage Summary</div>
       <div class="cov-gauge-row" id="cov-gauges">
         <div class="cov-gauge-card">
           <div class="cov-gauge-label">Line Coverage</div>
-          <div class="cov-gauge-val" id="cov-line-val" style="color:#2a6846;">{cov_line_pct_str}%</div>
-          <div class="cov-gauge-track"><div id="cov-line-bar" class="cov-gauge-fill" style="width:{cov_line_pct_str}%;background:#2a6846;"></div></div>
+          <div class="cov-gauge-val sx-d63f7cf0" id="cov-line-val" >{cov_line_pct_str}%</div>
+          <div class="cov-gauge-track"><div id="cov-line-bar" class="cov-gauge-fill" data-sx-style="width:{cov_line_pct_str}%;background:#2a6846;"></div></div>
           <div class="cov-gauge-sub">Lines hit / instrumented</div>
           <div class="cov-gauge-tip">Percentage of executable lines exercised by the test suite (lines hit &divide; lines instrumented), aggregated across every file in the LCOV report.</div>
         </div>
         <div class="cov-gauge-card">
           <div class="cov-gauge-label">Function Coverage</div>
-          <div class="cov-gauge-val" id="cov-fn-val" style="color:#1a6b96;">{cov_fn_pct_str}%</div>
-          <div class="cov-gauge-track"><div id="cov-fn-bar" class="cov-gauge-fill" style="width:{cov_fn_pct_str}%;background:#1a6b96;"></div></div>
+          <div class="cov-gauge-val sx-e1c6661f" id="cov-fn-val" >{cov_fn_pct_str}%</div>
+          <div class="cov-gauge-track"><div id="cov-fn-bar" class="cov-gauge-fill" data-sx-style="width:{cov_fn_pct_str}%;background:#1a6b96;"></div></div>
           <div class="cov-gauge-sub">Functions hit / found</div>
           <div class="cov-gauge-tip">Percentage of functions called at least once during testing (functions hit &divide; functions found). Shows 0% when the coverage report carries no function-level (FN/FNH) records.</div>
         </div>
         <div class="cov-gauge-card">
           <div class="cov-gauge-label">Branch Coverage</div>
-          <div class="cov-gauge-val" id="cov-branch-val" style="color:#7a4fa0;">{cov_branch_pct_str}%</div>
-          <div class="cov-gauge-track"><div id="cov-branch-bar" class="cov-gauge-fill" style="width:{cov_branch_pct_str}%;background:#7a4fa0;"></div></div>
+          <div class="cov-gauge-val sx-e35e33d5" id="cov-branch-val" >{cov_branch_pct_str}%</div>
+          <div class="cov-gauge-track"><div id="cov-branch-bar" class="cov-gauge-fill" data-sx-style="width:{cov_branch_pct_str}%;background:#7a4fa0;"></div></div>
           <div class="cov-gauge-sub">Branches hit / found</div>
           <div class="cov-gauge-tip">Percentage of conditional branches taken during testing (branches hit &divide; branches found). Shows 0% when the coverage report carries no branch-level (BRDA/BRF) records.</div>
         </div>
@@ -15424,12 +16179,12 @@ async fn test_metrics_handler(
         </div>
         <div class="chart-box">
           <div class="chart-box-title">Coverage Tier Distribution</div>
-          <div class="chart-canvas-wrap" style="height:280px;display:flex;align-items:center;justify-content:center;"><canvas id="canvas-cov-tiers"></canvas></div>
+          <div class="chart-canvas-wrap sx-5d020860" ><canvas id="canvas-cov-tiers"></canvas></div>
         </div>
       </div>
 
-      <div class="section-header" style="margin-top:24px;">Coverage File Detail</div>
-      <p class="muted" style="margin-bottom:14px;">Per-file line and function coverage from the LCOV report. Files are sorted from lowest to highest coverage. Use the filters to focus on gaps.</p>
+      <div class="section-header sx-04bbec5e" >Coverage File Detail</div>
+      <p class="muted sx-16dbf2a3" >Per-file line and function coverage from the LCOV report. Files are sorted from lowest to highest coverage. Use the filters to focus on gaps.</p>
       <div class="cov-file-toolbar">
         <div class="cov-filter-tabs" id="cov-filter-tabs">
           <button class="cov-tab active" data-tier="all">All</button>
@@ -15440,7 +16195,7 @@ async fn test_metrics_handler(
         </div>
         <input type="search" id="cov-file-search" class="cov-file-search" placeholder="Filter by filename…">
       </div>
-      <div style="overflow-x:auto;">
+      <div class="sx-fbff25e9" >
         <table class="data-table" id="cov-file-table">
           <thead><tr>
             <th>File</th>
@@ -15453,15 +16208,15 @@ async fn test_metrics_handler(
           <tbody id="cov-file-tbody"></tbody>
         </table>
       </div>
-      <div id="cov-file-empty" style="display:none;text-align:center;color:var(--muted);padding:24px;font-size:13px;">No files match the current filter.</div>
-      <div id="cov-file-count" style="text-align:right;font-size:11px;color:var(--muted);margin-top:8px;"></div>
+      <div class="sx-e5565aef" id="cov-file-empty" >No files match the current filter.</div>
+      <div class="sx-6d1fab35" id="cov-file-count" ></div>
     </div>
 
   </div>
 
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{version} — Mode: Server</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{version} — Mode: Server</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -15516,7 +16271,7 @@ async fn test_metrics_handler(
       try{{var sv=JSON.parse(localStorage.getItem('sloc-ns'));if(sv&&sv.a){{ap(sv);}}else{{ap(S[0]);}}}}catch(e){{ap(S[0]);}}
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){{var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}}catch(e){{}}el.addEventListener('click',function(){{ap(s);}});g.appendChild(el);}});
@@ -15694,7 +16449,7 @@ async fn test_metrics_handler(
       var maxH = Math.max(400, Math.floor(window.innerHeight * 0.82) - 130);
       var ch = Math.min(h || 560, maxH);
       var subHtml = subtitle ? '<span class="chart-modal-subtitle">' + subtitle + '</span>' : '';
-      overlay.innerHTML = '<div class="chart-modal" style="max-width:1200px;"><button class="chart-modal-close" aria-label="Close">&times;</button><span class="chart-modal-title">' + title + '</span>' + subHtml + '<div style="position:relative;width:100%;height:' + ch + 'px;"><canvas id="tm-modal-canvas"></canvas></div></div>';
+      overlay.innerHTML = '<div class="chart-modal sx-02e8e0b3" ><button class="chart-modal-close" aria-label="Close">&times;</button><span class="chart-modal-title">' + title + '</span>' + subHtml + '<div data-sx-style="position:relative;width:100%;height:' + ch + 'px;"><canvas id="tm-modal-canvas"></canvas></div></div>';
       document.body.appendChild(overlay);
       overlay.querySelector('.chart-modal-close').addEventListener('click', function(){{ document.body.removeChild(overlay); }});
       overlay.addEventListener('click', function(e){{ if (e.target === overlay) document.body.removeChild(overlay); }});
@@ -16016,7 +16771,7 @@ async fn test_metrics_handler(
       var tbody = document.getElementById('lang-tbody');
       if (!tbody) return;
       if (!D || !D.length) {{
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">No test definitions detected. Run a scan on a project with test files.</td></tr>';
+        tbody.innerHTML = '<tr><td class="sx-f3ab2b4c" colspan="8" >No test definitions detected. Run a scan on a project with test files.</td></tr>';
         return;
       }}
       var maxDensity = Math.max.apply(null, D.map(function(d){{ return d.density; }})) || 1;
@@ -16030,7 +16785,7 @@ async fn test_metrics_handler(
           '<td class="num">' + fmtFull(d.code) + '</td>' +
           '<td class="num">' + fmtFull(d.files) + '</td>' +
           '<td class="num">' + d.density.toFixed(2) + '</td>' +
-          '<td><div class="density-bar-wrap"><div class="density-bar" style="width:' + barW + 'px;"></div></div></td>' +
+          '<td><div class="density-bar-wrap"><div class="density-bar" data-sx-style="width:' + barW + 'px;"></div></div></td>' +
           '</tr>';
       }}).join('');
     }}
@@ -16042,7 +16797,7 @@ async fn test_metrics_handler(
     function pctBadge(pct) {{
       var color = pct >= 80 ? '#2a6846' : pct >= 50 ? '#b58a00' : '#b23030';
       var bg = pct >= 80 ? 'rgba(42,104,70,0.12)' : pct >= 50 ? 'rgba(181,138,0,0.12)' : 'rgba(178,48,48,0.12)';
-      return '<span class="cov-pct-badge" style="background:' + bg + ';color:' + color + ';border:1px solid ' + color + '40;">' + pct.toFixed(1) + '%</span>';
+      return '<span class="cov-pct-badge" data-sx-style="background:' + bg + ';color:' + color + ';border:1px solid ' + color + '40;">' + pct.toFixed(1) + '%</span>';
     }}
 
     function buildCovFileTable() {{
@@ -16070,13 +16825,13 @@ async fn test_metrics_handler(
       if (count) count.textContent = shown + ' of ' + filtered.length + ' file' + (filtered.length !== 1 ? 's' : '') + (filtered.length > 500 ? ' (showing first 500)' : '');
       tbody.innerHTML = filtered.slice(0, 500).map(function(f) {{
         var fnCol = f.fn_pct < 0
-          ? '<td class="num" style="color:var(--muted);font-size:11px;">\u2014</td><td class="num" style="color:var(--muted);font-size:11px;">\u2014</td>'
-          : '<td class="num">' + pctBadge(f.fn_pct) + '</td><td class="num" style="color:var(--muted);font-size:11px;">' + f.fhit + ' / ' + f.ffound + '</td>';
+          ? '<td class="num sx-eb12fd52" >\u2014</td><td class="num sx-eb12fd52" >\u2014</td>'
+          : '<td class="num">' + pctBadge(f.fn_pct) + '</td><td class="num sx-eb12fd52" >' + f.fhit + ' / ' + f.ffound + '</td>';
         return '<tr>' +
           '<td class="cov-file-path" title="' + f.rel.replace(/"/g, '&quot;') + '">' + f.rel + '</td>' +
-          '<td style="color:var(--muted);font-size:11px;white-space:nowrap;">' + f.lang + '</td>' +
+          '<td class="sx-db9c1998" >' + f.lang + '</td>' +
           '<td class="num">' + pctBadge(f.line_pct) + '</td>' +
-          '<td class="num" style="color:var(--muted);font-size:11px;">' + f.lhit + ' / ' + f.lfound + '</td>' +
+          '<td class="num sx-eb12fd52" >' + f.lhit + ' / ' + f.lfound + '</td>' +
           fnCol +
           '</tr>';
       }}).join('');
@@ -18309,17 +19064,25 @@ fn resolve_input_path(raw: &str) -> PathBuf {
     PathBuf::from(display_path(&canonical))
 }
 
+/// Recursively sum the byte size of every regular file under `path`. Best-effort:
+/// unreadable entries count as zero. Symlinks are NOT followed, so a symlink loop
+/// cannot hang the walk and a link into a large tree cannot inflate the total — this
+/// matters because the walk runs over client-uploaded/scanned trees. Iterative to
+/// avoid stack blow-up on deeply nested inputs.
 fn dir_size_bytes(path: &Path) -> u64 {
     let mut total = 0u64;
-    if let Ok(rd) = fs::read_dir(path) {
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
         for entry in rd.filter_map(Result::ok) {
-            let p = entry.path();
-            if p.is_file() {
-                if let Ok(meta) = p.metadata() {
-                    total += meta.len();
-                }
-            } else if p.is_dir() {
-                total += dir_size_bytes(&p);
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                stack.push(entry.path());
+            } else if let Ok(meta) = entry.metadata() {
+                total = total.saturating_add(meta.len());
             }
         }
     }
@@ -18400,7 +19163,7 @@ fn render_submodule_chips(
         .ok();
     }
     out.push_str(
-        r#"</div><button type="button" class="submodule-base-repo-btn" style="display:none">&#8593; Base repo</button>"#,
+        r#"</div><button type="button" class="submodule-base-repo-btn sx-6aa34d74" >&#8593; Base repo</button>"#,
     );
     out.push_str(r"</div>");
 }
@@ -18595,10 +19358,10 @@ fn build_preview_html(
         } else {
             r#"<span class="tree-bullet">•</span>"#.to_string()
         };
-        write!(out, r#"<div class="tree-row kind-{} status-{}" data-kind="{}" data-status="{}" data-language="{}" data-row-id="{}" data-parent-id="{}" data-dir="{}" data-expanded="true" data-name-lower="{}" data-sort-name="{}" data-sort-date="{}" data-sort-type="{}" data-sort-status="{}"><div class="tree-name-cell" style="--depth:{}">{}<span class="tree-node {}">{}</span></div><div class="tree-date-cell">{}</div><div class="tree-type-cell">{}</div><div class="tree-status-cell"><span class="badge {}">{}</span></div></div>"#, if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), escape_html(lang_attr), row.row_id, row.parent_row_id.map(|id| id.to_string()).unwrap_or_default(), if row.is_dir { "true" } else { "false" }, escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.modified), escape_html(&row.type_label.to_ascii_lowercase()), escape_html(status_label), row.depth, toggle_html, if row.is_dir { "tree-node-dir" } else { row.kind.node_class() }, escape_html(&row.name), escape_html(&row.modified), escape_html(&row.type_label), row.kind.badge_class(), status_label).ok();
+        write!(out, r#"<div class="tree-row kind-{} status-{}" data-kind="{}" data-status="{}" data-language="{}" data-row-id="{}" data-parent-id="{}" data-dir="{}" data-expanded="true" data-name-lower="{}" data-sort-name="{}" data-sort-date="{}" data-sort-type="{}" data-sort-status="{}"><div class="tree-name-cell" data-sx-style="--depth:{}">{}<span class="tree-node {}">{}</span></div><div class="tree-date-cell">{}</div><div class="tree-type-cell">{}</div><div class="tree-status-cell"><span class="badge {}">{}</span></div></div>"#, if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), escape_html(lang_attr), row.row_id, row.parent_row_id.map(|id| id.to_string()).unwrap_or_default(), if row.is_dir { "true" } else { "false" }, escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.modified), escape_html(&row.type_label.to_ascii_lowercase()), escape_html(status_label), row.depth, toggle_html, if row.is_dir { "tree-node-dir" } else { row.kind.node_class() }, escape_html(&row.name), escape_html(&row.modified), escape_html(&row.type_label), row.kind.badge_class(), status_label).ok();
     }
     if budget.shown >= budget.max_entries {
-        out.push_str(r#"<div class="tree-row more-row" data-kind="file" data-status="more" data-row-id="999999" data-parent-id="" data-dir="false" data-expanded="true" data-name-lower="preview truncated"><div class="tree-name-cell" style="--depth:0"><span class="tree-bullet">•</span><span class="tree-node tree-node-more">... preview truncated for readability ...</span></div><div class="tree-date-cell">-</div><div class="tree-type-cell">Preview note</div><div class="tree-status-cell"></div></div>"#);
+        out.push_str(r#"<div class="tree-row more-row" data-kind="file" data-status="more" data-row-id="999999" data-parent-id="" data-dir="false" data-expanded="true" data-name-lower="preview truncated"><div class="tree-name-cell sx-a008a1ed" ><span class="tree-bullet">•</span><span class="tree-node tree-node-more">... preview truncated for readability ...</span></div><div class="tree-date-cell">-</div><div class="tree-type-cell">Preview note</div><div class="tree-status-cell"></div></div>"#);
     }
     out.push_str(r"</div></div></div>");
 
@@ -19139,6 +19902,8 @@ struct SubmoduleRow {
   <meta charset="utf-8">
   <title>OxideSLOC | tmp-sloc</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --bg: #efe9e2;
@@ -19834,7 +20599,7 @@ struct SubmoduleRow {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">{% if server_mode %}Server{% else %}Local{% endif %}</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             {% if server_mode %}
@@ -19842,7 +20607,7 @@ struct SubmoduleRow {
             {% else %}
             OxideSLOC is running locally — only accessible from this machine.
             {% endif %}
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -19860,7 +20625,7 @@ struct SubmoduleRow {
     <div class="loading-card" id="loading-card">
       <h2 class="lc-title" id="lc-title">Analyzing your project…</h2>
       <p class="lc-sub">Scanning files, detecting languages, and counting lines — stay for a live view of the results.</p>
-      <div class="lc-path" id="lc-path"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="flex:0 0 auto;opacity:0.45"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg><span id="lc-path-text"></span></div>
+      <div class="lc-path" id="lc-path"><svg class="sx-9e6dfe63" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" ><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg><span id="lc-path-text"></span></div>
       <div class="lc-steps" id="lc-steps">
         <div class="lc-step active" id="lc-step-1"><span class="lc-step-num">1</span>Discover</div>
         <div class="lc-step-arrow">›</div>
@@ -20011,7 +20776,7 @@ struct SubmoduleRow {
           <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="18 15 12 9 6 15"></polyline></svg>
           Top of page
         </a>
-        <button type="button" class="step-button active" style="margin-top:10px;" data-step-target="1"><span class="step-num">1</span><span>Select project</span><svg class="step-check" viewBox="0 0 24 24" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg></button>
+        <button type="button" class="step-button active sx-726e8b31"  data-step-target="1"><span class="step-num">1</span><span>Select project</span><svg class="step-check" viewBox="0 0 24 24" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg></button>
         <button type="button" class="step-button" data-step-target="2"><span class="step-num">2</span><span>Counting rules</span><svg class="step-check" viewBox="0 0 24 24" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg></button>
         <button type="button" class="step-button" data-step-target="3"><span class="step-num">3</span><span>Outputs and reports</span><svg class="step-check" viewBox="0 0 24 24" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg></button>
         <button type="button" class="step-button" data-step-target="4"><span class="step-num">4</span><span>Review and run</span><svg class="step-check" viewBox="0 0 24 24" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg></button>
@@ -20023,7 +20788,7 @@ struct SubmoduleRow {
           <div class="step-nav-info-desc" id="step-nav-info-desc">Choose a project folder, apply scope filters, and preview which files will be counted.</div>
         </div>
 
-        <div class="step-nav-summary" id="sidebar-summary" style="display:none">
+        <div class="step-nav-summary sx-6aa34d74" id="sidebar-summary" >
           <div class="step-nav-sum-row"><span class="step-nav-sum-key">Path</span><span class="step-nav-sum-val" id="sum-path">—</span></div>
           <div class="step-nav-sum-row"><span class="step-nav-sum-key">Preset</span><span class="step-nav-sum-val" id="sum-preset">—</span></div>
           <div class="step-nav-sum-row"><span class="step-nav-sum-key">Output</span><span class="step-nav-sum-val" id="sum-output">—</span></div>
@@ -20039,7 +20804,7 @@ struct SubmoduleRow {
           <div class="quick-scan-hint">Scan immediately with default settings — skips steps 2-4.</div>
         </div>
 
-        <div class="sidebar-kbd-hint"><span class="sidebar-kbd-key">←</span><span>Back</span><span style="margin:0 6px;">·</span><span class="sidebar-kbd-key">→</span><span>Next</span></div>
+        <div class="sidebar-kbd-hint"><span class="sidebar-kbd-key">←</span><span>Back</span><span class="sx-2eebea0e" >·</span><span class="sidebar-kbd-key">→</span><span>Next</span></div>
         <div class="sidebar-scroll-divider"></div>
         <a href="#page-bottom" class="sidebar-scroll-btn" aria-label="Skip to bottom of page">
           <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
@@ -20085,7 +20850,7 @@ struct SubmoduleRow {
                   {% endif %}
                   <div class="path-scope-grid">
                       {% if !git_repo.is_empty() %}
-                      <input id="path" name="path" type="text" value="{{ git_repo }} @ {{ git_ref }}" readonly class="git-locked-input" required style="grid-column:1/4;" />
+                      <input id="path" name="path" type="text" value="{{ git_repo }} @ {{ git_ref }}" readonly class="git-locked-input sx-14aa50c7" required  />
                       <input type="hidden" name="git_repo" value="{{ git_repo }}" />
                       <input type="hidden" name="git_ref" value="{{ git_ref }}" />
                       {% else %}
@@ -20105,7 +20870,7 @@ struct SubmoduleRow {
                   </div>
                   {% if git_repo.is_empty() %}
                   {% if server_mode %}
-                  <div id="upload-limit-tip" class="hint" style="margin-top:6px;font-size:11px;">
+                  <div id="upload-limit-tip" class="hint sx-df83faee" >
                     ℹ️ Files are compressed and streamed — no fixed size limit.
                   </div>
                   {% endif %}
@@ -20118,8 +20883,8 @@ struct SubmoduleRow {
                   {% else %}
                   <div class="hint">The source code will be checked out from the remote repository at the specified ref when you run the scan.</div>
                   {% endif %}
-                  <div id="path-history-badge" class="path-history-badge" style="display:none"></div>
-                  <div id="zero-files-warning" class="path-history-badge warning" style="display:none" role="alert"></div>
+                  <div id="path-history-badge" class="path-history-badge sx-6aa34d74" ></div>
+                  <div id="zero-files-warning" class="path-history-badge warning sx-6aa34d74"  role="alert"></div>
                 </div>
 
                 <div class="scope-preview-divider" aria-hidden="true"></div>
@@ -20129,23 +20894,23 @@ struct SubmoduleRow {
                 </div>
               </div>
 
-              <div class="section" style="margin-top:14px;">
+              <div class="section sx-8d842990" >
                 <div class="preset-inline-row git-inline-row">
-                  <div class="toggle-card" style="margin:0;">
-                    <div class="field-help-title" style="margin-bottom:10px;">Git integration</div>
-                    <h4 style="margin:0 0 12px;font-size:16px;">Submodule breakdown</h4>
+                  <div class="toggle-card sx-38965f9b" >
+                    <div class="field-help-title sx-fffdd52c" >Git integration</div>
+                    <h4 class="sx-58629c9c" >Submodule breakdown</h4>
                     <label class="checkbox">
                       <input type="checkbox" name="submodule_breakdown" value="enabled" id="submodule_breakdown" checked />
                       <div>
                         <span>Detect and separate git submodules</span>
-                        <div class="hint" style="margin-top:4px;">Reads <code>.gitmodules</code> and produces a per-submodule breakdown alongside the overall totals.</div>
+                        <div class="hint sx-36e81f86" >Reads <code>.gitmodules</code> and produces a per-submodule breakdown alongside the overall totals.</div>
                       </div>
                     </label>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
-                    <div class="field-help-title" style="margin-bottom:8px;">What this does</div>
+                  <div class="explainer-card prominent sx-38965f9b" >
+                    <div class="field-help-title sx-c500155b" >What this does</div>
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Group each git submodule&#39;s files into its own section in the report so you can see per-submodule SLOC totals alongside overall figures.<br /><strong>Good default when:</strong> your repository contains nested sub-projects managed as git submodules.<br /><strong>Turn it off when:</strong> the repository has no submodules, or you only need aggregate totals across the whole tree.</div>
-                    <div class="code-sample" style="margin-top:10px;">[submodule "libs/core"]
+                    <div class="code-sample sx-726e8b31" >[submodule "libs/core"]
     path = libs/core
     url  = https://github.com/org/core.git
 
@@ -20160,15 +20925,15 @@ struct SubmoduleRow {
                 <div class="field-grid">
                   <div class="field">
                     <div class="glob-label-row">
-                      <label for="include_globs" style="margin:0;flex-shrink:0;">Include globs <span class="lbl-opt">— optional</span></label>
-                      <div id="include-scope-badge" class="include-scope-badge scope-all" aria-live="polite" style="margin:0;padding:4px 10px;font-size:11px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg> All files eligible &mdash; no include filter active</div>
+                      <label class="sx-e34c4670" for="include_globs" >Include globs <span class="lbl-opt">— optional</span></label>
+                      <div id="include-scope-badge" class="include-scope-badge scope-all sx-bacc46ba" aria-live="polite" ><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg> All files eligible &mdash; no include filter active</div>
                     </div>
                     <textarea id="include_globs" name="include_globs" class="glob-textarea" placeholder="Leave blank to scan everything&#10;&#10;Or narrow scope with patterns:&#10;src/**/*.py&#10;lib/**/*.js&#10;scripts/*.sh"></textarea>
                     <div class="hint"><strong>Leave blank to scan everything</strong> under the project path. Only add patterns here when you want to limit the scan to specific folders or file types. Patterns are line- or comma-separated and relative to the project path.</div>
                   </div>
                   <div class="field">
                     <div class="glob-label-row">
-                      <label for="exclude_globs" style="margin:0;flex-shrink:0;">Exclude globs</label>
+                      <label class="sx-e34c4670" for="exclude_globs" >Exclude globs</label>
                     </div>
                     <textarea id="exclude_globs" name="exclude_globs" class="glob-textarea" placeholder="examples:&#10;vendor/**&#10;**/*.min.js"></textarea>
                     <div id="quick-exclude-chips" class="quick-excl-row">
@@ -20199,24 +20964,24 @@ struct SubmoduleRow {
                 </div>
               </div>
 
-              <div class="section" style="margin-top:14px;">
+              <div class="section sx-8d842990" >
                 <div class="preset-inline-row git-inline-row">
-                  <div class="toggle-card" style="margin:0;">
-                    <div class="field-help-title" style="margin-bottom:10px;">Coverage</div>
-                    <h4 style="margin:0 0 12px;font-size:16px;">Code Coverage file <span style="font-weight:400;color:var(--muted);font-size:13px;">(optional)</span></h4>
-                    <div class="field" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
+                    <div class="field-help-title sx-fffdd52c" >Coverage</div>
+                    <h4 class="sx-58629c9c" >Code Coverage file <span class="sx-76948ec7" >(optional)</span></h4>
+                    <div class="field sx-38965f9b" >
                       <div class="input-group compact">
                         <input type="text" id="coverage_file" name="coverage_file" placeholder="e.g. coverage/lcov.info, coverage.xml" />
                         <button type="button" class="mini-button oxide" id="browse-coverage">Browse</button>
                       </div>
-                      <div class="hint" style="margin-top:8px;">When provided, line, function, and branch coverage percentages are overlaid on each file in the report and shown on the Test Metrics page.</div>
+                      <div class="hint sx-a33b8fc2" >When provided, line, function, and branch coverage percentages are overlaid on each file in the report and shown on the Test Metrics page.</div>
                       <div id="cov-scan-status" class="cov-scan-status cov-scan-idle" aria-live="polite"></div>
                     </div>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
-                    <div class="field-help-title" style="margin-bottom:8px;">What this does</div>
+                  <div class="explainer-card prominent sx-38965f9b" >
+                    <div class="field-help-title sx-c500155b" >What this does</div>
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Overlay line, function, and branch coverage on each file in the HTML report and populate the Test Metrics dashboard.<br /><strong>Good default when:</strong> your test suite emits a coverage report in one of the supported formats.<br /><strong>Leave blank when:</strong> you only need SLOC totals without coverage data.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># C / C++ — gcov + lcov (LCOV)
+                    <div class="code-sample sx-161ac0cc" ># C / C++ — gcov + lcov (LCOV)
 lcov --capture --directory . --output-file coverage/lcov.info
 
 # C / C++ — llvm-cov (LCOV)
@@ -20241,7 +21006,7 @@ coverage run -m pytest && coverage json   # writes coverage.json
               <div class="wizard-actions">
                 <div class="left"></div>
                 <div class="right">
-                  <div id="preview-gate-status" class="preview-gate-status" aria-live="polite" style="display:none;">
+                  <div id="preview-gate-status" class="preview-gate-status sx-d0466aa3" aria-live="polite" >
                     <span class="preview-gate-spinner" aria-hidden="true"></span>
                     <span class="preview-gate-text">Scanning project scope&hellip;</span>
                     <button type="button" class="preview-gate-info" id="preview-gate-info" title="What is this? Jump up to the live scope preview" aria-label="Show what is being scanned — jump to the scope preview">
@@ -20276,9 +21041,9 @@ coverage run -m pytest && coverage json   # writes coverage.json
                 <p class="card-subtitle counting-intro">These settings decide how mixed code-plus-comment lines and Python docstrings are classified. Pure comment lines, block comments, physical lines, and blank lines are still tracked by supported analyzers even when they do not share a line with executable code.</p>
 <div class="subsection-bar">Primary line classification</div>
                 <div class="preset-kv-row">
-                  <div class="toggle-card mixed-line-card" style="margin:0;">
-                    <div class="field-help-title" style="margin-bottom:10px;">Primary line classification</div>
-                    <h4 style="margin:0 0 12px;font-size:16px;">Mixed-line policy</h4>
+                  <div class="toggle-card mixed-line-card sx-38965f9b" >
+                    <div class="field-help-title sx-fffdd52c" >Primary line classification</div>
+                    <h4 class="sx-58629c9c" >Mixed-line policy</h4>
                     <select id="mixed_line_policy" name="mixed_line_policy">
                       <option value="code_only">Code only</option>
                       <option value="code_and_comment">Code and comment</option>
@@ -20287,7 +21052,7 @@ coverage run -m pytest && coverage json   # writes coverage.json
                     </select>
                     <div class="hint">Mixed lines share executable code and an inline comment on the same line.</div>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="field-help-title" id="mixed-policy-label">Mixed-line policy explanation</div>
                     <div class="explainer-body" id="mixed-policy-description"></div>
                     <div class="code-sample" id="mixed-policy-example"></div>
@@ -20298,116 +21063,116 @@ coverage run -m pytest && coverage json   # writes coverage.json
               <div class="subsection-bar">Additional scan rules</div>
               <div class="scan-rules-grid">
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Generated files</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Generated-file detection</h4>
+                    <h4 class="sx-0ace2b19" >Generated-file detection</h4>
                     <select name="generated_file_detection" id="generated_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Keep generated code and assets out of SLOC totals so counts reflect authored source.<br /><strong>Good default when:</strong> you want implementation-only totals.<br /><strong>Turn it off when:</strong> you intentionally want generated SDKs, compiled templates, or codegen output included.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># generated_file_detection = "enabled"
+                    <div class="code-sample sx-161ac0cc" ># generated_file_detection = "enabled"
 # Files matching codegen patterns are excluded:
 #   *.generated.cs  *.pb.go  *.g.dart</div>
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Minified files</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Minified-file detection</h4>
+                    <h4 class="sx-0ace2b19" >Minified-file detection</h4>
                     <select name="minified_file_detection" id="minified_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Prevent compressed assets from distorting file and line counts.<br /><strong>Good default when:</strong> your repo includes built JavaScript or bundled web assets.<br /><strong>Turn it off when:</strong> minified files are the actual subject of the review.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># minified_file_detection = "enabled"
+                    <div class="code-sample sx-161ac0cc" ># minified_file_detection = "enabled"
 # Heuristic: very long lines + low whitespace ratio
 #   jquery.min.js  bundle.min.css  → skipped</div>
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Vendor directories</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Vendor-directory detection</h4>
+                    <h4 class="sx-0ace2b19" >Vendor-directory detection</h4>
                     <select name="vendor_directory_detection" id="vendor_directory_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Skip bundled third-party dependencies so totals reflect your first-party code.<br /><strong>Good default when:</strong> you only want authored source in the report.<br /><strong>Turn it off when:</strong> vendored code is part of what you need to measure.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># vendor_directory_detection = "enabled"
+                    <div class="code-sample sx-161ac0cc" ># vendor_directory_detection = "enabled"
 # Directories named vendor/ node_modules/ third_party/
 #   → entire subtree is excluded from totals</div>
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Lockfiles and manifests</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Include lockfiles</h4>
+                    <h4 class="sx-0ace2b19" >Include lockfiles</h4>
                     <select name="include_lockfiles" id="include_lockfiles"><option value="disabled" selected>Disabled</option><option value="enabled">Enabled</option></select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Decide whether package lockfiles and generated manifests belong in the scan scope.<br /><strong>Good default when:</strong> you want implementation-focused totals.<br /><strong>Turn it off when:</strong> your review needs to include dependency metadata or footprint accounting.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># include_lockfiles = false  (default)
+                    <div class="code-sample sx-161ac0cc" ># include_lockfiles = false  (default)
 # Files like package-lock.json  Cargo.lock  yarn.lock
 #   → skipped unless this is enabled</div>
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Binary handling</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Binary file behavior</h4>
+                    <h4 class="sx-0ace2b19" >Binary file behavior</h4>
                     <select name="binary_file_behavior" id="binary_file_behavior"><option value="skip" selected>Skip binary files</option><option value="fail">Fail on binary files</option></select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Control how the scan reacts when binaries are found inside the selected scope.<br /><strong>Good default when:</strong> your repo has images, fonts, or other assets alongside source.<br /><strong>Turn it off when:</strong> you want the run to fail-fast and force cleanup of binary assets in the path.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># binary_file_behavior = "skip"  (default)
+                    <div class="code-sample sx-161ac0cc" ># binary_file_behavior = "skip"  (default)
 # Detected via long lines + low whitespace heuristic
 #   .png  .exe  .so  → skipped silently</div>
                   </div>
                 </div>
                 <div class="preset-inline-row python-docstring-wrap" id="python-docstring-wrap">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Python docstrings</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Docstring counting</h4>
+                    <h4 class="sx-0ace2b19" >Docstring counting</h4>
                     <label class="checkbox">
                       <input id="python_docstrings_as_comments" name="python_docstrings_as_comments" type="checkbox" checked />
                       <span>Count as comment-style lines</span>
                     </label>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description" id="python-docstring-live-help">Enabled: docstrings contribute to comment-style totals. Disable to count only inline comments and explicit comment lines.</div>
-                    <div class="code-sample" id="python-docstring-example" style="margin-top:10px;font-size:12px;white-space:pre;"></div>
+                    <div class="code-sample sx-dc0bca3d" id="python-docstring-example" ></div>
                   </div>
                 </div>
               </div>
               <div class="subsection-bar">IEEE 1045-1992 counting</div>
               <div class="scan-rules-grid">
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Continuation lines</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Continuation-line policy</h4>
+                    <h4 class="sx-0ace2b19" >Continuation-line policy</h4>
                     <select name="continuation_line_policy" id="continuation_line_policy">
                       <option value="each_physical_line" selected>Each physical line (default)</option>
                       <option value="collapse_to_logical">Collapse to logical line</option>
                     </select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Controls how backslash-continued lines (C macros, shell, Makefile) are counted.<br /><strong>Each physical line</strong> — the IEEE 1045-1992 default; every line with content is counted separately.<br /><strong>Collapse to logical</strong> — a backslash-continued sequence counts as one logical line, matching logical-SLOC conventions.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;">#define MAX(a, b) \
+                    <div class="code-sample sx-161ac0cc" >#define MAX(a, b) \
     ((a) &gt; (b) ? (a) : (b))
 # each_physical_line → 2 SLOC
 # collapse_to_logical → 1 SLOC</div>
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Block-comment blanks</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Blank lines in block comments</h4>
+                    <h4 class="sx-0ace2b19" >Blank lines in block comments</h4>
                     <select name="blank_in_block_comment_policy" id="blank_in_block_comment_policy">
                       <option value="count_as_comment" selected>Count as comment (default)</option>
                       <option value="count_as_blank">Count as blank</option>
                     </select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
-                    <div class="advanced-rule-description"><strong>Purpose:</strong> Decides how blank lines that fall inside a <code style="font-size:12px;">/* … */</code> block comment are classified.<br /><strong>Count as comment</strong> — IEEE-aligned; blank lines are part of the comment body.<br /><strong>Count as blank</strong> — legacy behaviour; blank lines inside block comments are treated as ordinary blank lines.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;">/*
+                  <div class="explainer-card prominent sx-38965f9b" >
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> Decides how blank lines that fall inside a <code class="sx-c42f23b8" >/* … */</code> block comment are classified.<br /><strong>Count as comment</strong> — IEEE-aligned; blank lines are part of the comment body.<br /><strong>Count as blank</strong> — legacy behaviour; blank lines inside block comments are treated as ordinary blank lines.</div>
+                    <div class="code-sample sx-161ac0cc" >/*
  * Summary line
  *              ← blank inside block comment
  * Detail line
@@ -20417,17 +21182,17 @@ coverage run -m pytest && coverage json   # writes coverage.json
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Compiler directives</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Count compiler directives</h4>
+                    <h4 class="sx-0ace2b19" >Count compiler directives</h4>
                     <select name="count_compiler_directives" id="count_compiler_directives">
                       <option value="enabled" selected>Include in code SLOC (default)</option>
                       <option value="disabled">Exclude from code SLOC</option>
                     </select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
-                    <div class="advanced-rule-description"><strong>Purpose:</strong> IEEE 1045-1992 §4.2 — controls whether preprocessor directives contribute to code SLOC. Applies to C, C++, and Objective-C.<br /><strong>Include</strong> — <code style="font-size:12px;">#include</code> / <code style="font-size:12px;">#define</code> lines count toward code SLOC (default).<br /><strong>Exclude</strong> — directives are tracked separately in raw counts but not added to effective code SLOC; useful when comparing with tools that strip the preprocessor layer.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;">#include &lt;stdio.h&gt;   ← compiler directive
+                  <div class="explainer-card prominent sx-38965f9b" >
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> IEEE 1045-1992 §4.2 — controls whether preprocessor directives contribute to code SLOC. Applies to C, C++, and Objective-C.<br /><strong>Include</strong> — <code class="sx-c42f23b8" >#include</code> / <code class="sx-c42f23b8" >#define</code> lines count toward code SLOC (default).<br /><strong>Exclude</strong> — directives are tracked separately in raw counts but not added to effective code SLOC; useful when comparing with tools that strip the preprocessor layer.</div>
+                    <div class="code-sample sx-161ac0cc" >#include &lt;stdio.h&gt;   ← compiler directive
 #define BUF 256     ← compiler directive
 int main() { … }   ← code
 # enabled  → 3 code SLOC
@@ -20439,34 +21204,34 @@ int main() { … }   ← code
               <div class="subsection-bar">Code Style Analysis</div>
               <div class="scan-rules-grid">
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Style analysis</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Enable style analysis</h4>
+                    <h4 class="sx-0ace2b19" >Enable style analysis</h4>
                     <select name="style_analysis_enabled" id="style_analysis_enabled">
                       <option value="enabled" selected>Enabled (default)</option>
                       <option value="disabled">Disabled — skip style scoring</option>
                     </select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Controls whether lexical style-guide heuristics run at all.<br /><strong>Enable</strong> — every supported file is scored against its language's style guides and the results appear in the report (default).<br /><strong>Disable</strong> — style scoring is skipped entirely; useful for very large repos where you only need SLOC counts.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># style_analysis_enabled = true   (default)
+                    <div class="code-sample sx-161ac0cc" ># style_analysis_enabled = true   (default)
 # style_analysis_enabled = false  (skip, faster scan)
 # Disabling removes the Code Style section from the report.</div>
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Column-width threshold</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Line-length compliance column</h4>
+                    <h4 class="sx-0ace2b19" >Line-length compliance column</h4>
                     <select name="style_col_threshold" id="style_col_threshold">
                       <option value="80" selected>80 columns (PEP 8, Google, gofmt)</option>
                       <option value="100">100 columns (Uber Go, Google Java)</option>
                       <option value="120">120 columns (Uber Go max, Kotlin)</option>
                     </select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Sets the column width used to compute the <em>N-col Compliant</em> summary chip in the Code Style Analysis section of the report.<br /><strong>A file is compliant</strong> when ≤&thinsp;5&thinsp;% of its lines exceed this limit.<br /><strong>Does not affect SLOC counts</strong> — only the style-adherence reporting. The style guide scores themselves are always computed across all three thresholds (80 / 100 / 120) regardless of this setting.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># style_col_threshold = 80  (PEP 8, Google, gofmt)
+                    <div class="code-sample sx-161ac0cc" ># style_col_threshold = 80  (PEP 8, Google, gofmt)
 # style_col_threshold = 100 (Uber Go, Google Java)
 # style_col_threshold = 120 (Uber Go max, Kotlin)
 # Files where &lt;= 5% of lines exceed the limit
@@ -20474,9 +21239,9 @@ int main() { … }   ← code
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Score alert threshold</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Low-score file alert</h4>
+                    <h4 class="sx-0ace2b19" >Low-score file alert</h4>
                     <select name="style_score_threshold" id="style_score_threshold">
                       <option value="0" selected>Off — no threshold (default)</option>
                       <option value="40">40% — flag poorly styled files</option>
@@ -20485,9 +21250,9 @@ int main() { … }   ← code
                       <option value="70">70% — flag below-strong files</option>
                     </select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Files whose dominant-guide adherence score falls below this percentage are highlighted with a red left-border in the per-file style table — making it easy to spot the lowest-conformance files at a glance.<br /><strong>Off</strong> — all files shown without any alert (default).<br /><strong>Any other value</strong> — a red indicator flags each file scoring below the threshold.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># style_score_threshold = 0   (off, default)
+                    <div class="code-sample sx-161ac0cc" ># style_score_threshold = 0   (off, default)
 # style_score_threshold = 50  (flag files &lt; 50%)
 # Low-scoring files get a red left-border in the
 # per-file style breakdown table.</div>
@@ -20500,39 +21265,39 @@ int main() { … }   ← code
                 <div class="always-tracked-tip-body">
                   <div class="field-help-title">Always tracked — not configurable &nbsp;·&nbsp; What these settings change</div>
                   <h4>Comment and blank-line basics &amp; Lines on the boundary</h4>
-                  <div class="advanced-rule-description">Pure comment lines, multi-line comment blocks, blank lines, and total physical lines are always included by every supported analyzer. The settings on this page only affect lines that live on the boundary between code and comments — for example <code style="font-size:12px;">x = 1  # counter</code>, which contains both executable code and inline comment text. Every other category is always counted the same regardless of these settings.</div>
+                  <div class="advanced-rule-description">Pure comment lines, multi-line comment blocks, blank lines, and total physical lines are always included by every supported analyzer. The settings on this page only affect lines that live on the boundary between code and comments — for example <code class="sx-c42f23b8" >x = 1  # counter</code>, which contains both executable code and inline comment text. Every other category is always counted the same regardless of these settings.</div>
                 </div>
               </div>
 
               <div class="subsection-bar">Advanced Metrics</div>
               <div class="scan-rules-grid">
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">COCOMO mode</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Cost estimation model</h4>
+                    <h4 class="sx-0ace2b19" >Cost estimation model</h4>
                     <select name="cocomo_mode" id="cocomo_mode">
                       <option value="organic" selected>Organic — small team, familiar domain (default)</option>
                       <option value="semi_detached">Semi-detached — mixed constraints</option>
                       <option value="embedded">Embedded — tight hardware/OS constraints</option>
                     </select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Selects the COCOMO I Basic mode used to estimate development effort, schedule, and team size from code SLOC.<br /><strong>Organic</strong> — small teams with good experience on similar problems (most software projects).<br /><strong>Semi-detached</strong> — mixed experience; some novel aspects; medium-sized projects.<br /><strong>Embedded</strong> — tight hardware, OS, or real-time constraints; high innovation; large projects.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># Organic:      Effort = 2.4 × KSLOC^1.05
+                    <div class="code-sample sx-161ac0cc" ># Organic:      Effort = 2.4 × KSLOC^1.05
 # Semi-detached: Effort = 3.0 × KSLOC^1.12
 # Embedded:     Effort = 3.6 × KSLOC^1.20
 # All modes: Schedule = 2.5 × Effort^d</div>
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Complexity alert</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Complexity score alert threshold</h4>
-                    <input type="number" name="complexity_alert" id="complexity_alert" min="0" max="9999" placeholder="e.g. 100 — leave blank for no alert" style="width:100%;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);font-size:14px;" />
+                    <h4 class="sx-0ace2b19" >Complexity score alert threshold</h4>
+                    <input class="sx-31b6fe48" type="number" name="complexity_alert" id="complexity_alert" min="0" max="9999" placeholder="e.g. 100 — leave blank for no alert"  />
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> When set, files whose total cyclomatic complexity score exceeds this threshold are highlighted in the results page with an accent border.<br /><strong>Complexity score</strong> counts branch decision keywords (if, for, while, ||, &amp;&amp;, …) across all code lines — a fast lexical approximation of McCabe complexity.<br /><strong>Common thresholds:</strong> 50 for a simple project, 100-200 for medium, 300+ for large repos.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># 0 or blank = no alert (default)
+                    <div class="code-sample sx-161ac0cc" ># 0 or blank = no alert (default)
 # 50  = flag any file with &gt; 50 branch points
 # 100 = flag any file with &gt; 100 branch points
 # Files above the threshold are highlighted
@@ -20540,14 +21305,14 @@ int main() { … }   ← code
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Git hotspots</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Activity window (days)</h4>
-                    <input type="number" name="activity_window" id="activity_window" min="0" max="3650" value="90" placeholder="e.g. 90 — set 0 to disable" style="width:100%;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);font-size:14px;" />
+                    <h4 class="sx-0ace2b19" >Activity window (days)</h4>
+                    <input class="sx-31b6fe48" type="number" name="activity_window" id="activity_window" min="0" max="3650" value="90" placeholder="e.g. 90 — set 0 to disable"  />
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> <strong>On by default (90 days).</strong> oxide-sloc runs a single <code>git log</code> pass over the last N days and ranks files by <strong>code&nbsp;lines&nbsp;&times;&nbsp;recent&nbsp;commits</strong> in a Git Hotspots table — large files that change often are the strongest refactoring candidates.<br /><strong>Requires</strong> the scanned path to be a git repository. This is distinct from the scan-to-scan churn rate shown on the Compare page.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># 90  = last quarter (default)
+                    <div class="code-sample sx-161ac0cc" ># 90  = last quarter (default)
 # 30  = last month of activity
 # 365 = last year
 # 0   = disable the hotspots table
@@ -20555,40 +21320,40 @@ int main() { … }   ← code
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Code ownership</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Per-author attribution (git blame)</h4>
+                    <h4 class="sx-0ace2b19" >Per-author attribution (git blame)</h4>
                     <select name="attribution" id="attribution">
                       <option value="enabled" selected>On — attribute lines per author (default)</option>
                       <option value="disabled">Off — skip the blame pass</option>
                     </select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> When on, oxide-sloc runs <code>git blame</code> on every analyzed file and attributes each physical line to the author who last touched it, split into <strong>code / comment / blank</strong> per contributor. Results appear on the Code Ownership page and in the HTML/PDF/CSV reports.<br /><strong>Requires</strong> the scanned path to be a git repository. <strong>On by default</strong>; turn it off on very large repositories where the per-file blame pass is too slow. Same-email identities are merged automatically and the repo <code>.mailmap</code> is honoured.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># On  = per-author code/comment/blank ownership (default)
+                    <div class="code-sample sx-161ac0cc" ># On  = per-author code/comment/blank ownership (default)
 # Off = skip blame, no ownership data
 # CLI equivalent: analyze --no-attribution to disable
 # View results at /code-ownership</div>
                   </div>
                 </div>
                 <div class="preset-inline-row">
-                  <div class="toggle-card" style="margin:0;">
+                  <div class="toggle-card sx-38965f9b" >
                     <div class="field-help-title">Duplicate handling</div>
-                    <h4 style="margin:6px 0 12px;font-size:16px;">Duplicate file detection</h4>
+                    <h4 class="sx-0ace2b19" >Duplicate file detection</h4>
                     <select name="exclude_duplicates" id="exclude_duplicates">
                       <option value="disabled" selected>Detect and report only (default)</option>
                       <option value="enabled">Detect and exclude from SLOC totals</option>
                     </select>
                   </div>
-                  <div class="explainer-card prominent" style="margin:0;">
+                  <div class="explainer-card prominent sx-38965f9b" >
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Detects files with identical content (bit-for-bit copies) that would otherwise inflate SLOC counts.<br /><strong>Detect and report only</strong> — duplicates are counted normally in totals; a "Duplicate groups" chip in the result page shows how many groups exist (default).<br /><strong>Detect and exclude</strong> — only one file per identical-content group contributes to code/comment/blank line totals; the rest are silently excluded.</div>
-                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># A repo with 3 identical config files:
+                    <div class="code-sample sx-161ac0cc" ># A repo with 3 identical config files:
 # detect only   → all 3 counted in SLOC
 # exclude dupes → 1 counted, 2 excluded
 # Duplicate groups chip always shows the count.</div>
                   </div>
                 </div>
-                <div class="always-tracked-tip" style="margin:8px 0 0;">
+                <div class="always-tracked-tip sx-a9d31d9e" >
                   <div class="always-tracked-tip-icon">ℹ</div>
                   <div class="always-tracked-tip-body">
                     <div class="field-help-title">Always computed &mdash; every scan produces these automatically</div>
@@ -20598,7 +21363,7 @@ int main() { … }   ← code
                       <div><strong>ULOC &amp; DRYness</strong>De-duplicates lines project-wide; DRYness&nbsp;%&nbsp;=&nbsp;ULOC&nbsp;&divide;&nbsp;Code&nbsp;Lines.</div>
                       <div><strong>COCOMO&nbsp;I</strong>Converts total SLOC into effort, schedule &amp; team-size estimates.</div>
                     </div>
-                    <div class="hint" style="margin-top:8px;">All four appear in the results page. The settings above only affect how they are displayed or whether edge cases are excluded.</div>
+                    <div class="hint sx-a33b8fc2" >All four appear in the results page. The settings above only affect how they are displayed or whether edge cases are excluded.</div>
                   </div>
                 </div>
               </div>
@@ -20617,11 +21382,11 @@ int main() { … }   ← code
               <div class="section">
                 <div class="section-kicker">Step 3</div>
                 <h2>Output and report identity</h2>
-                <p class="card-subtitle step3-subtitle" style="white-space:nowrap;">Choose where generated files should be saved, what the exported report title should be, and which artifact bundle fits your workflow.</p>
+                <p class="card-subtitle step3-subtitle sx-32fb29ef" >Choose where generated files should be saved, what the exported report title should be, and which artifact bundle fits your workflow.</p>
                 <div class="preset-kv-row">
-                  <div class="toggle-card" style="margin:0;">
-                    <div class="field-help-title" style="margin-bottom:10px;">Scan configuration</div>
-                    <h4 style="margin:0 0 12px;font-size:16px;">Scan preset</h4>
+                  <div class="toggle-card sx-38965f9b" >
+                    <div class="field-help-title sx-fffdd52c" >Scan configuration</div>
+                    <h4 class="sx-58629c9c" >Scan preset</h4>
                     <select id="scan_preset">
                       <option value="balanced">Balanced local scan</option>
                       <option value="code_focused">Code focused</option>
@@ -20640,9 +21405,9 @@ int main() { … }   ← code
                 </div>
                 <hr class="step3-separator" />
                 <div class="preset-kv-row">
-                  <div class="toggle-card" style="margin:0;">
-                    <div class="field-help-title" style="margin-bottom:10px;">Output configuration</div>
-                    <h4 style="margin:0 0 12px;font-size:16px;">Artifact preset</h4>
+                  <div class="toggle-card sx-38965f9b" >
+                    <div class="field-help-title sx-fffdd52c" >Output configuration</div>
+                    <h4 class="sx-58629c9c" >Artifact preset</h4>
                     <select id="artifact_preset">
                       <option value="review">Review bundle</option>
                       <option value="full">Full bundle</option>
@@ -20666,7 +21431,7 @@ int main() { … }   ← code
                     <label for="output_dir">Output directory</label>
                     {% if server_mode %}
                     <div class="input-group compact">
-                      <input id="output_dir" name="output_dir" type="text" value="" placeholder="auto: project/sloc" readonly style="cursor:default;opacity:0.68;background:var(--surface-2);" />
+                      <input class="sx-338e056b" id="output_dir" name="output_dir" type="text" value="" placeholder="auto: project/sloc" readonly  />
                     </div>
                     <div class="hint">Output path is managed by the server — each run stores artifacts in a unique timestamped subfolder automatically.</div>
                     {% else %}
@@ -20704,7 +21469,7 @@ int main() { … }   ← code
                   <div class="field">
                     <label for="report_header_footer">Report header / footer</label>
                     <input id="report_header_footer" name="report_header_footer" type="text" value="" placeholder="e.g. Acme Corp — Confidential · Project Athena" />
-                    <div class="hint" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Printed on every HTML/PDF page — company name, project ID, or scanner tag.</div>
+                    <div class="hint sx-72d22148" >Printed on every HTML/PDF page — company name, project ID, or scanner tag.</div>
                   </div>
                   <div class="output-field-aside">
                     <strong>Page-level identification</strong>
@@ -20740,7 +21505,7 @@ int main() { … }   ← code
                   <div class="review-card">
                     <div class="review-card-head"><h4>Output &amp; artifacts</h4><button type="button" class="review-link jump-step" data-step-target="3">Edit step 3</button></div>
                     <ul id="review-artifact-summary"></ul>
-                    <ul id="review-output-summary" style="margin-top:6px;padding-left:18px;margin-bottom:0;"></ul>
+                    <ul class="sx-44293b6e" id="review-output-summary" ></ul>
                   </div>
                   <div class="review-card">
                     <div class="review-card-head"><h4>Scope preview snapshot</h4><button type="button" class="review-link jump-step" data-step-target="1">Review scope</button></div>
@@ -20759,8 +21524,8 @@ int main() { … }   ← code
               </div>
             </div>
             {% if server_mode %}
-            <input type="file" id="dir-upload-input" webkitdirectory multiple style="display:none" aria-hidden="true">
-            <input type="file" id="cov-upload-input" accept=".info,.lcov,.xml,.json" style="display:none" aria-hidden="true">
+            <input class="sx-6aa34d74" type="file" id="dir-upload-input" webkitdirectory multiple  aria-hidden="true">
+            <input class="sx-6aa34d74" type="file" id="cov-upload-input" accept=".info,.lcov,.xml,.json"  aria-hidden="true">
             {% endif %}
           </form>
         </div>
@@ -21475,7 +22240,7 @@ int main() { … }   ← code
 
         if (previewSummary) {
           if (GIT_MODE) {
-            previewSummary.innerHTML = '<li style="color:var(--muted-text,#888);font-style:italic;">Scope preview is not pre-computed in git-browser mode \u2014 the repository will be cloned and fully analyzed during the scan run.</li>';
+            previewSummary.innerHTML = '<li class="sx-7f8edb5d" >Scope preview is not pre-computed in git-browser mode \u2014 the repository will be cloned and fully analyzed during the scan run.</li>';
           } else {
           var statButtons = Array.prototype.slice.call(previewPanel.querySelectorAll('.scope-stat-button'));
           var languages = Array.prototype.slice.call(previewPanel.querySelectorAll('.detected-language-chip')).map(function (node) { return node.textContent.trim(); }).filter(Boolean);
@@ -21868,7 +22633,7 @@ int main() { … }   ← code
         multiRepoBlocked = false;
         refreshStep1Gate();
         if (GIT_MODE) {
-          previewPanel.innerHTML = '<div class="preview-error" style="color:var(--muted);font-style:italic;">Preview is not available for remote git refs. The scan will check out the source at runtime.</div>';
+          previewPanel.innerHTML = '<div class="preview-error sx-f3d78751" >Preview is not available for remote git refs. The scan will check out the source at runtime.</div>';
           setPreviewLoading(false);
           return;
         }
@@ -22281,6 +23046,29 @@ int main() { … }   ← code
                 fetchProjectHistory(data.selected_path);
                 loadPreview();
                 suggestCoverageFile(data.selected_path);
+                var gbHint = document.getElementById("git-browse-hint");
+                if (data.is_git_repo) {
+                  if (!gbHint) {
+                    gbHint = document.createElement("a");
+                    gbHint.id = "git-browse-hint";
+                    gbHint.target = "_self";
+                    gbHint.style.marginTop = "8px";
+                    gbHint.style.fontSize = "12px";
+                    gbHint.style.fontWeight = "700";
+                    gbHint.style.color = "var(--oxide-2, #b85d33)";
+                    gbHint.style.textDecoration = "none";
+                    if (pathInput && pathInput.parentNode) {
+                      pathInput.parentNode.insertBefore(gbHint, pathInput.nextSibling);
+                    }
+                  }
+                  gbHint.href = "/git-browser?repo=" + encodeURIComponent(data.selected_path);
+                  gbHint.textContent = "This folder is a git repo "
+                    + String.fromCharCode(8212) + " browse its branches "
+                    + String.fromCharCode(8594);
+                  gbHint.style.display = "inline-block";
+                } else if (gbHint) {
+                  gbHint.style.display = "none";
+                }
               }
 
               updateReview();
@@ -22991,7 +23779,7 @@ int main() { … }   ← code
     function init(){
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -23055,10 +23843,10 @@ int main() { … }   ← code
     if(fm){var isServer=location.hostname!=='localhost'&&location.hostname!=='127.0.0.1'&&location.hostname!=='[::1]';fm.textContent='oxide-sloc v{{ version }} \u2014 Mode: '+(isServer?'Network Server':'Local');}
   })();
   </script>
-  <span id="page-bottom" aria-hidden="true" style="display:block;height:0;"></span>
+  <span class="sx-dab0f2f8" id="page-bottom" aria-hidden="true" ></span>
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{{ version }} — Mode: {% if server_mode %}Network Server{% else %}Local{% endif %}</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{{ version }} — Mode: {% if server_mode %}Network Server{% else %}Local{% endif %}</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -23092,6 +23880,8 @@ struct IndexTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC — local code analysis - metrics, history and reports</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -23183,8 +23973,10 @@ struct IndexTemplate {
     .card-section-label{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:5px;padding-left:2px;}
     .card-section-grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;}
     .card-section-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;}
-    @media(max-width:900px){.card-section-grid-2,.card-section-grid-3{grid-template-columns:1fr 1fr;}}
-    @media(max-width:480px){.card-section-grid-2,.card-section-grid-3{grid-template-columns:1fr;}}
+    .card-section-grid-4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;}
+    @media(max-width:1150px){.card-section-grid-4{grid-template-columns:1fr 1fr;}}
+    @media(max-width:900px){.card-section-grid-2,.card-section-grid-3,.card-section-grid-4{grid-template-columns:1fr 1fr;}}
+    @media(max-width:480px){.card-section-grid-2,.card-section-grid-3,.card-section-grid-4{grid-template-columns:1fr;}}
     .action-card{display:flex;flex-direction:column;align-items:flex-start;padding:12px 15px 10px;border-radius:var(--radius);border:1px solid var(--line-strong);background:var(--surface);box-shadow:var(--shadow);text-decoration:none;color:var(--text);transition:transform 0.22s cubic-bezier(.34,1.56,.64,1),box-shadow 0.18s ease,border-color 0.18s ease;animation:cardRise 0.7s ease both;}
     .action-card:nth-child(1){animation-delay:0.1s;} .action-card:nth-child(2){animation-delay:0.2s;} .action-card:nth-child(3){animation-delay:0.3s;} .action-card:nth-child(4){animation-delay:0.4s;} .action-card:nth-child(5){animation-delay:0.5s;} .action-card:nth-child(6){animation-delay:0.6s;} .action-card:nth-child(7){animation-delay:0.7s;}
     @keyframes cardRise{from{opacity:0;}to{opacity:1;}}
@@ -23216,6 +24008,9 @@ struct IndexTemplate {
     .action-card.test-metrics .action-card-icon{background:linear-gradient(135deg,#ec4899,#be185d);color:#fff;box-shadow:0 8px 22px rgba(236,72,153,0.28);}
     .action-card.test-metrics .action-card-cta{color:#be185d;}
     body.dark-theme .action-card.test-metrics .action-card-cta{color:#f472b6;}
+    .action-card.ownership .action-card-icon{background:linear-gradient(135deg,#6366f1,#4338ca);color:#fff;box-shadow:0 8px 22px rgba(99,102,241,0.28);}
+    .action-card.ownership .action-card-cta{color:#4338ca;}
+    body.dark-theme .action-card.ownership .action-card-cta{color:#a5b4fc;}
     .action-card:hover .action-card-cta{gap:12px;}
     .action-card.card-split{flex-direction:row;align-items:stretch;}
     .action-card-left{flex:1;display:flex;flex-direction:column;align-items:flex-start;}
@@ -23330,7 +24125,7 @@ struct IndexTemplate {
         <div class="brand-copy"><div class="brand-title">OxideSLOC</div><div class="brand-subtitle">local code analysis - metrics, history and reports</div></div>
       </a>
       <div class="nav-right">
-        <a class="nav-pill" href="/" style="background:rgba(255,255,255,0.22);">Home</a>
+        <a class="nav-pill sx-8c38ef73" href="/" >Home</a>
         <div class="nav-dropdown">
           <a href="/view-reports" class="nav-dropdown-btn">View Reports <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
@@ -23350,11 +24145,11 @@ struct IndexTemplate {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">{% if server_mode %}Server{% else %}Local{% endif %}</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             {% if server_mode %}OxideSLOC is running in server mode — accessible on your LAN.{% else %}OxideSLOC is running locally — only accessible from this machine.{% endif %}
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -23425,7 +24220,7 @@ struct IndexTemplate {
 
       <div>
         <div class="card-section-label">Reports &amp; Insights</div>
-        <div class="card-section-grid-3">
+        <div class="card-section-grid-4">
           <a class="action-card view" href="/view-reports">
             <div class="action-card-icon">
               <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
@@ -23449,6 +24244,14 @@ struct IndexTemplate {
             <div class="action-card-title">Trend Report</div>
             <p class="action-card-desc">Visualize how SLOC, comments, and blank lines evolve over time. Spot regressions and chart the full scan history.</p>
             <span class="action-card-cta">View trends <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg></span>
+          </a>
+          <a class="action-card ownership" href="/code-ownership">
+            <div class="action-card-icon">
+              <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+            </div>
+            <div class="action-card-title">Code Ownership</div>
+            <p class="action-card-desc">Attribute every line to its author via git blame — per-author breakdowns, a contributor leaderboard, hotspot ownership, and .mailmap identity merging.</p>
+            <span class="action-card-cta">View ownership <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg></span>
           </a>
         </div>
       </div>
@@ -23571,7 +24374,7 @@ struct IndexTemplate {
 
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{{ version }} — Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{{ version }} — Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -23818,7 +24621,7 @@ struct IndexTemplate {
     function init(){
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -23858,6 +24661,8 @@ struct SplashTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC — Start a Scan</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:#ffffff; --surface-2:#fbf7f2;
@@ -24016,11 +24821,11 @@ struct SplashTemplate {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -24147,7 +24952,7 @@ struct SplashTemplate {
 
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{{ version }} — Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{{ version }} — Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -24302,7 +25107,7 @@ struct SplashTemplate {
     function init(){
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -24339,6 +25144,8 @@ struct ScanSetupTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | {{ report_title }} | Report</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --radius: 18px;
@@ -24689,14 +25496,14 @@ struct ScanSetupTemplate {
         <div class="nav-project-pill"><span class="nav-project-label">REPORT</span><span class="nav-project-value">{{ report_title }}</span></div>
       </div>
       <div class="nav-status">
-        <a class="nav-pill" href="/" style="text-decoration:none;">Home</a>
+        <a class="nav-pill sx-a85c6157" href="/" >Home</a>
         <div class="nav-dropdown">
           <a href="/view-reports" class="nav-dropdown-btn">View Reports <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
             <a href="/trend-reports"><svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>Trend Reports</a>
           </div>
         </div>
-        <a class="nav-pill" href="/compare-scans" style="text-decoration:none;">Compare Scans</a>
+        <a class="nav-pill sx-a85c6157" href="/compare-scans" >Compare Scans</a>
         <a class="nav-pill" href="/test-metrics">Test Metrics</a>
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
@@ -24709,11 +25516,11 @@ struct ScanSetupTemplate {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -24731,15 +25538,15 @@ struct ScanSetupTemplate {
     <section class="hero">
       <div class="hero-top">
         <div>
-          <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
-            <h1 class="hero-title" style="margin:0;">{{ report_title }}</h1>
+          <div class="sx-5de06b01" >
+            <h1 class="hero-title sx-38965f9b" >{{ report_title }}</h1>
             <span class="run-id-short-badge" title="Short run ID — matches the ID shown in View Reports">{{ run_id_short }}</span>
-            <div class="soft-chip success" style="margin-left:auto;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>Run finished successfully</div>
+            <div class="soft-chip success sx-c9fd821d" ><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>Run finished successfully</div>
           </div>
         </div>
         <div class="hero-quick-actions">
           {% if server_mode %}
-          <button type="button" class="copy-button secondary" disabled title="Output folder is on the server — path is not meaningful for remote users" style="opacity:0.45;cursor:not-allowed;">Copy output folder</button>
+          <button type="button" class="copy-button secondary sx-c7c70665" disabled title="Output folder is on the server — path is not meaningful for remote users" >Copy output folder</button>
           {% else %}
           <button type="button" class="copy-button secondary" data-copy-value="{{ output_dir }}">Copy output folder</button>
           {% endif %}
@@ -24748,7 +25555,7 @@ struct ScanSetupTemplate {
           <button type="button" class="copy-button secondary open-path-btn open-folder-button" data-folder="{{ output_dir }}">Open output folder</button>
           {% endif %}
           <button class="copy-button secondary" id="download-bundle-btn" type="button">Download all artifacts</button>
-          <button class="copy-button" id="delete-run-btn" type="button" style="background:#b23030;border-color:#b23030;color:#fff;box-shadow:0 12px 24px rgba(178,48,48,0.11);">Delete this run</button>
+          <button class="copy-button sx-7e6e6255" id="delete-run-btn" type="button" >Delete this run</button>
         </div>
       </div>
 
@@ -24764,7 +25571,7 @@ struct ScanSetupTemplate {
           {% match git_commit_url %}
             {% when Some with (commit_url) %}
             <a class="run-id-chip" href="{{ commit_url }}" target="_blank" rel="noopener">
-              <span class="run-id-chip-label"><svg class="chip-label-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><line x1="1" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="23" y2="12"/></svg>Git Commit<svg class="chip-label-icon" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="margin-left:4px;opacity:0.7;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></span>
+              <span class="run-id-chip-label"><svg class="chip-label-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><line x1="1" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="23" y2="12"/></svg>Git Commit<svg class="chip-label-icon sx-6d255c61" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></span>
               <span class="run-id-chip-value">{{ long_sha }}</span>
               <span class="chip-tooltip">Open commit on version control — click to navigate</span>
             </a>
@@ -24787,7 +25594,7 @@ struct ScanSetupTemplate {
           {% match git_branch_url %}
             {% when Some with (branch_url) %}
             <a class="run-id-chip" href="{{ branch_url }}" target="_blank" rel="noopener">
-              <span class="run-id-chip-label"><svg class="chip-label-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Branch<svg class="chip-label-icon" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="margin-left:4px;opacity:0.7;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></span>
+              <span class="run-id-chip-label"><svg class="chip-label-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Branch<svg class="chip-label-icon sx-6d255c61" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></span>
               <span class="run-id-chip-value">{{ branch }}</span>
               <span class="chip-tooltip">Open branch on version control — click to navigate</span>
             </a>
@@ -24905,7 +25712,7 @@ struct ScanSetupTemplate {
           <div class="stat-chip-tip">Total number of source files included in this analysis.</div>
         </div>
         {% if cyclomatic_complexity > 0 %}
-        <div class="stat-chip" data-raw="{{ cyclomatic_complexity }}" {% if complexity_alert > 0 && cyclomatic_complexity > complexity_alert as u64 %}style="border-color:var(--oxide-2);"{% endif %}>
+        <div class="stat-chip" data-raw="{{ cyclomatic_complexity }}" {% if complexity_alert > 0 && cyclomatic_complexity > complexity_alert as u64 %}data-sx-style="border-color:var(--oxide-2);"{% endif %}>
           <div class="stat-chip-label">Complexity score</div>
           <div class="stat-chip-val">{{ cyclomatic_complexity }}</div>
           <div class="stat-chip-exact"></div>
@@ -24937,7 +25744,7 @@ struct ScanSetupTemplate {
         </div>
         {% endif %}
         {% if duplicate_group_count > 0 %}
-        <div class="stat-chip" data-raw="{{ duplicate_group_count }}" style="border-color:rgba(179,93,51,0.4);">
+        <div class="stat-chip sx-30e8d2a1" data-raw="{{ duplicate_group_count }}" >
           <div class="stat-chip-label">Duplicate groups</div>
           <div class="stat-chip-val">{{ duplicate_group_count }}</div>
           <div class="stat-chip-exact"></div>
@@ -24947,7 +25754,7 @@ struct ScanSetupTemplate {
         <!-- Reserve "pad" card: revealed by JS only when the visible card count is
              odd, so the strip always forms exactly two full rows with every column
              aligned and every card the same width (no oversized card, no gap). -->
-        <div class="stat-chip stat-chip-pad" data-raw="{{ test_assertion_count }}" style="display:none;">
+        <div class="stat-chip stat-chip-pad sx-d0466aa3" data-raw="{{ test_assertion_count }}" >
           <div class="stat-chip-label">Assertions</div>
           <div class="stat-chip-val">{{ test_assertion_count }}</div>
           <div class="stat-chip-exact"></div>
@@ -24964,7 +25771,7 @@ struct ScanSetupTemplate {
             <span class="compare-ts">{{ prev_ts }}</span>
             {% if prev_scan_count > 1 %}<span class="compare-ts">{{ prev_scan_count }} scans total</span>{% endif %}
             {% if let Some(prev_code) = prev_run_code_lines %}
-            <div class="compare-banner-stats" style="margin-top:4px;">
+            <div class="compare-banner-stats sx-36e81f86" >
               <span>Code before: <strong data-raw="{{ prev_code }}">{{ prev_code }}</strong></span>
               <span class="compare-arrow">→</span>
               <span>Code now: <strong data-raw="{{ code_lines }}">{{ code_lines }}</strong></span>
@@ -25017,17 +25824,17 @@ struct ScanSetupTemplate {
             </div>
           </div>
           {% else %}
-          <p style="font-size:12px;color:var(--muted);line-height:1.5;flex:1;">
+          <p class="sx-7c192d5b" >
             Line-level delta not available — previous scan's result file could not be read. Re-running will restore full delta tracking.
           </p>
           {% endif %}
           </div>
           <div class="compare-banner-actions">
             <div class="compare-banner-actions-left">
-              <a class="button secondary" href="/runs/result/{{ prev_id }}" style="white-space:nowrap;">View previous report</a>
-              <a class="button secondary" href="/compare-scans" style="white-space:nowrap;">Compare scans</a>
+              <a class="button secondary sx-32fb29ef" href="/runs/result/{{ prev_id }}" >View previous report</a>
+              <a class="button secondary sx-32fb29ef" href="/compare-scans" >Compare scans</a>
             </div>
-            <a class="button" href="/compare?a={{ prev_id }}&b={{ run_id }}" style="white-space:nowrap;">Full diff →</a>
+            <a class="button sx-32fb29ef" href="/compare?a={{ prev_id }}&b={{ run_id }}" >Full diff →</a>
           </div>
         </div>
       </div>
@@ -25047,7 +25854,7 @@ struct ScanSetupTemplate {
               {% when None %}{% endmatch %}
             {% match html_path %}
               {% when Some with (_path) %}{% when None %}{% endmatch %}
-            <p class="action-empty-note" style="margin-top:6px;">Interactive report with charts, language breakdown, and per-file detail. Opens in your browser.</p>
+            <p class="action-empty-note sx-1d436efc" >Interactive report with charts, language breakdown, and per-file detail. Opens in your browser.</p>
           </div>
         </div>
         <div class="action-card">
@@ -25056,8 +25863,8 @@ struct ScanSetupTemplate {
             {% match pdf_url %}
               {% when Some with (url) %}
                 {% if pdf_generating %}
-                  <button class="button" id="pdf-open-btn" disabled style="opacity:0.55;cursor:not-allowed;gap:8px;">
-                    <span style="width:14px;height:14px;border:2px solid rgba(255,255,255,0.4);border-top-color:#fff;border-radius:50%;display:inline-block;animation:spin .75s linear infinite;flex:0 0 auto;"></span>
+                  <button class="button sx-aead66b2" id="pdf-open-btn" disabled >
+                    <span class="sx-9f3afbfe" ></span>
                     Generating PDF…
                   </button>
                 {% else %}
@@ -25067,20 +25874,20 @@ struct ScanSetupTemplate {
                 {% match html_url %}
                   {% when Some with (_hurl) %}
                     <a class="button" href="/runs/pdf/{{ run_id }}" target="_blank" rel="noopener" id="pdf-open-btn">Generate PDF</a>
-                    <p class="action-empty-note" style="margin-top:6px;font-size:11px;">Generates the PDF report from the scan results. Usually completes within a few seconds.</p>
+                    <p class="action-empty-note sx-df83faee" >Generates the PDF report from the scan results. Usually completes within a few seconds.</p>
                   {% when None %}
-                    <p class="action-empty-note" style="color:var(--muted);font-size:12px;background:rgba(0,0,0,0.04);border:1px solid var(--line);border-radius:8px;padding:10px 12px;">
+                    <p class="action-empty-note sx-e5c6f3b4" >
                       PDF could not be generated for this run — Chromium or Edge may not be installed. The HTML report is always available above.
                     </p>
                 {% endmatch %}
             {% endmatch %}
             {% match pdf_download_url %}
               {% when Some with (url) %}
-                <a class="button secondary" href="{{ url }}" id="pdf-download-btn"{% if pdf_generating %} style="opacity:0.55;pointer-events:none;"{% endif %}>Download PDF</a>
+                <a class="button secondary sx-884cbe59" href="{{ url }}" id="pdf-download-btn"{% if pdf_generating %} {% endif %}>Download PDF</a>
               {% when None %}{% endmatch %}
             {% match pdf_url %}
               {% when Some with (_) %}
-                <p class="action-empty-note" style="margin-top:6px;">Print-ready PDF generated from the HTML report. Suitable for sharing or archiving.</p>
+                <p class="action-empty-note sx-1d436efc" >Print-ready PDF generated from the HTML report. Suitable for sharing or archiving.</p>
               {% when None %}{% endmatch %}
           </div>
         </div>
@@ -25097,7 +25904,7 @@ struct ScanSetupTemplate {
               {% when None %}{% endmatch %}
             {% match json_path %}
               {% when Some with (_path) %}
-                <p class="action-empty-note" style="margin-top:6px;">Machine-readable scan result for CI pipelines, scripting, or re-rendering reports.</p>
+                <p class="action-empty-note sx-1d436efc" >Machine-readable scan result for CI pipelines, scripting, or re-rendering reports.</p>
               {% when None %}
                 <p class="action-empty-note">JSON not enabled for this run — re-run with JSON artifact enabled to get a machine-readable result.</p>
               {% endmatch %}
@@ -25107,8 +25914,8 @@ struct ScanSetupTemplate {
           <h3>Scan config</h3>
           <div class="action-buttons">
             <a class="button secondary" href="{{ scan_config_url }}">Download config</a>
-            <a class="button" href="/scan-setup" style="background:linear-gradient(135deg,#e07b3a,#b85028);color:#fff;border:none;">Run another scan</a>
-            <p class="action-empty-note" style="margin-top:6px;">Download scan-config.json to replay this exact setup via the Scan Setup page.</p>
+            <a class="button sx-08dc943d" href="/scan-setup" >Run another scan</a>
+            <p class="action-empty-note sx-1d436efc" >Download scan-config.json to replay this exact setup via the Scan Setup page.</p>
           </div>
         </div>
         {% if confluence_configured %}
@@ -25118,34 +25925,34 @@ struct ScanSetupTemplate {
             <button class="button" id="postConfluenceBtn" type="button">Post to Confluence</button>
             <button class="button secondary" id="copyWikiBtn" type="button">Copy Wiki Markup</button>
           </div>
-          <p class="action-empty-note" style="margin-top:6px;">Create or update a Confluence page with this scan result, or copy wiki markup for manual paste.</p>
+          <p class="action-empty-note sx-1d436efc" >Create or update a Confluence page with this scan result, or copy wiki markup for manual paste.</p>
         </div>
         {% endif %}
       </div>
       {% if confluence_configured %}
-      <div id="confluenceModal" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.45);align-items:center;justify-content:center;">
-        <div style="background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:28px 32px;max-width:480px;width:95%;box-shadow:0 16px 48px rgba(0,0,0,0.28);">
-          <div style="font-size:16px;font-weight:800;margin-bottom:18px;">Post to Confluence</div>
-          <label style="font-size:12px;font-weight:700;color:var(--muted);">Page Title</label>
-          <input id="confPageTitle" type="text" value="OxideSLOC — {{ report_title }}" style="width:100%;margin:5px 0 14px;padding:9px 12px;border-radius:8px;border:1.5px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:13px;box-sizing:border-box;">
-          <label style="font-size:12px;font-weight:700;color:var(--muted);">Report URL <span style="font-weight:400;">(optional — linked in page body)</span></label>
-          <input id="confReportUrl" type="url" placeholder="http://127.0.0.1:4317/runs/result/{{ run_id }}" style="width:100%;margin:5px 0 14px;padding:9px 12px;border-radius:8px;border:1.5px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:13px;box-sizing:border-box;">
-          <div id="confStatus" style="display:none;padding:9px 13px;border-radius:8px;font-size:13px;font-weight:600;margin-bottom:14px;"></div>
-          <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <div class="sx-75f31a73" id="confluenceModal" >
+        <div class="sx-3996551e" >
+          <div class="sx-57b0349b" >Post to Confluence</div>
+          <label class="sx-806c372e" >Page Title</label>
+          <input class="sx-1b68562b" id="confPageTitle" type="text" value="OxideSLOC — {{ report_title }}" >
+          <label class="sx-806c372e" >Report URL <span class="sx-1d258e26" >(optional — linked in page body)</span></label>
+          <input class="sx-1b68562b" id="confReportUrl" type="url" placeholder="http://127.0.0.1:4317/runs/result/{{ run_id }}" >
+          <div class="sx-ea0b282d" id="confStatus" ></div>
+          <div class="sx-49fc5621" >
             <button class="button secondary" id="confCancelBtn" type="button">Cancel</button>
             <button class="button" id="confSubmitBtn" type="button">Post</button>
           </div>
         </div>
       </div>
       {% endif %}
-      <div id="delete-run-modal" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.90);align-items:center;justify-content:center;">
-        <div style="background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:56px 72px;max-width:820px;width:95%;box-shadow:0 24px 72px rgba(0,0,0,0.55);">
-          <div style="font-size:28px;font-weight:800;margin-bottom:16px;color:#b23030;">Delete run &mdash; irreversible</div>
-          <p style="font-size:17px;color:var(--text);margin:0 0 28px;">This will permanently delete all artifacts for this run from disk (HTML, PDF, JSON, CSV, scan config). <strong>This cannot be undone</strong> and the run will no longer be accessible by anyone.</p>
-          <div id="delete-run-status" style="display:none;padding:14px 20px;border-radius:10px;font-size:15px;font-weight:600;margin-bottom:22px;"></div>
-          <div style="display:flex;gap:18px;justify-content:flex-end;">
-            <button class="button secondary" id="delete-run-cancel" type="button" style="font-size:15px;padding:12px 28px;">Cancel</button>
-            <button class="button" id="delete-run-confirm" type="button" style="background:#b23030;border-color:#b23030;font-size:15px;padding:12px 28px;">Yes, delete permanently</button>
+      <div class="sx-aff736e5" id="delete-run-modal" >
+        <div class="sx-93c3c708" >
+          <div class="sx-97551196" >Delete run &mdash; irreversible</div>
+          <p class="sx-aed4a64d" >This will permanently delete all artifacts for this run from disk (HTML, PDF, JSON, CSV, scan config). <strong>This cannot be undone</strong> and the run will no longer be accessible by anyone.</p>
+          <div class="sx-1db0ab8d" id="delete-run-status" ></div>
+          <div class="sx-f154314f" >
+            <button class="button secondary sx-6f042b89" id="delete-run-cancel" type="button" >Cancel</button>
+            <button class="button sx-9ea84a6b" id="delete-run-confirm" type="button" >Yes, delete permanently</button>
           </div>
         </div>
       </div>
@@ -25153,37 +25960,37 @@ struct ScanSetupTemplate {
       <div class="submodule-panel">
         <div class="toolbar-row">
           <div>
-            <h2 style="margin:0 0 4px;font-size:18px;">Submodule breakdown</h2>
-            <p class="muted" style="margin:0;">Git submodules detected — each is shown as a separate project slice.</p>
+            <h2 class="sx-954b0139" >Submodule breakdown</h2>
+            <p class="muted sx-38965f9b" >Git submodules detected — each is shown as a separate project slice.</p>
           </div>
           <div class="pill-row"><span class="soft-chip">{{ submodule_rows.len() }} submodule{% if submodule_rows.len() != 1 %}s{% endif %}</span></div>
         </div>
-        <div style="overflow-x:auto;border-radius:10px;border:1px solid var(--line);margin-top:12px;">
-        <table id="subm-tbl" style="width:100%;border-collapse:collapse;font-size:14px;table-layout:fixed;min-width:1050px;">
-          <colgroup><col style="width:24%"><col style="width:22%"><col style="width:9%"><col style="width:9%"><col style="width:9%"><col style="width:9%"><col style="width:9%"><col style="width:9%"></colgroup>
+        <div class="sx-86e55239" >
+        <table class="sx-98748fdb" id="subm-tbl" >
+          <colgroup><col class="sx-295d28ff" ><col class="sx-cffff263" ><col class="sx-2be6e492" ><col class="sx-2be6e492" ><col class="sx-2be6e492" ><col class="sx-2be6e492" ><col class="sx-2be6e492" ><col class="sx-2be6e492" ></colgroup>
           <thead>
             <tr>
-              <th style="padding:9px 14px;background:var(--surface-2);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);border-bottom:1px solid var(--line);text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Submodule</th>
-              <th style="padding:9px 14px;background:var(--surface-2);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;">Path</th>
-              <th style="padding:9px 2px;background:var(--surface-2);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Files</th>
-              <th style="padding:9px 2px;background:var(--surface-2);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Physical</th>
-              <th style="padding:9px 2px;background:var(--surface-2);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Code</th>
-              <th style="padding:9px 2px;background:var(--surface-2);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Comments</th>
-              <th style="padding:9px 2px;background:var(--surface-2);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Blank</th>
-              <th style="padding:9px 8px;background:var(--surface-2);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);border-bottom:1px solid var(--line);text-align:center;white-space:nowrap;">Report</th>
+              <th class="sx-d1e8d03c" >Submodule</th>
+              <th class="sx-e4ba4877" >Path</th>
+              <th class="sx-d2f0b15c" >Files</th>
+              <th class="sx-d2f0b15c" >Physical</th>
+              <th class="sx-d2f0b15c" >Code</th>
+              <th class="sx-d2f0b15c" >Comments</th>
+              <th class="sx-d2f0b15c" >Blank</th>
+              <th class="sx-9eb6a01a" >Report</th>
             </tr>
           </thead>
           <tbody>
             {% for row in submodule_rows %}
             <tr>
-              <td style="padding:10px 14px;border-bottom:1px solid var(--line);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="{{ row.name }}"><strong>{{ row.name }}</strong></td>
-              <td style="padding:10px 14px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;" title="{{ row.relative_path }}"><code style="font-size:12px;white-space:nowrap;word-break:keep-all;overflow-wrap:normal;">{{ row.relative_path }}</code></td>
-              <td style="padding:10px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;">{{ row.files_analyzed|commas }}</td>
-              <td style="padding:10px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;">{{ row.total_physical_lines|commas }}</td>
-              <td style="padding:10px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;">{{ row.code_lines|commas }}</td>
-              <td style="padding:10px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;">{{ row.comment_lines|commas }}</td>
-              <td style="padding:10px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;">{{ row.blank_lines|commas }}</td>
-              <td style="padding:10px 8px;border-bottom:1px solid var(--line);text-align:center;white-space:nowrap;">{% if let Some(url) = row.html_url %}<a class="button" href="{{ url }}" target="_blank" rel="noopener" style="font-size:12px;padding:6px 10px;min-height:0;display:block;margin:0 auto;width:fit-content;">View</a>{% else %}<span style="color:var(--muted);font-size:12px;">—</span>{% endif %}</td>
+              <td class="sx-b03d9852"  title="{{ row.name }}"><strong>{{ row.name }}</strong></td>
+              <td class="sx-59770ce0"  title="{{ row.relative_path }}"><code class="sx-902e8daa" >{{ row.relative_path }}</code></td>
+              <td class="sx-a15ec64c" >{{ row.files_analyzed|commas }}</td>
+              <td class="sx-a15ec64c" >{{ row.total_physical_lines|commas }}</td>
+              <td class="sx-a15ec64c" >{{ row.code_lines|commas }}</td>
+              <td class="sx-a15ec64c" >{{ row.comment_lines|commas }}</td>
+              <td class="sx-a15ec64c" >{{ row.blank_lines|commas }}</td>
+              <td class="sx-273aef9f" >{% if let Some(url) = row.html_url %}<a class="button sx-66f5341d" href="{{ url }}" target="_blank" rel="noopener" >View</a>{% else %}<span class="sx-3dc23ded" >—</span>{% endif %}</td>
             </tr>
             {% endfor %}
           </tbody>
@@ -25353,7 +26160,7 @@ struct ScanSetupTemplate {
       <div class="path-list">
         <div class="path-item">
           <div class="path-item-label">Project path</div>
-          {% if project_path.is_empty() %}<code style="color:var(--muted)" title="The scanned project path was not recorded in this run's metadata.">Not recorded for this scan</code>{% else %}<code>{{ project_path }}</code>{% endif %}
+          {% if project_path.is_empty() %}<code class="sx-eac76940"  title="The scanned project path was not recorded in this run's metadata.">Not recorded for this scan</code>{% else %}<code>{{ project_path }}</code>{% endif %}
         </div>
         <div class="path-item">
           <div class="path-item-label">Git branch</div>
@@ -25361,17 +26168,17 @@ struct ScanSetupTemplate {
           <code>{{ branch }}{% if let Some(sha) = git_commit %} @ {{ sha }}{% endif %}</code>
           {% if let Some(author) = git_author %}<div class="path-meta">Last commit by {{ author }}</div>{% endif %}
           {% else %}
-          <code style="color:var(--muted)">—</code>
+          <code class="sx-eac76940" >—</code>
           {% endif %}
         </div>
         <div class="path-item">
           <div class="path-item-label">Output folder</div>
-          <code style="display:block;margin-top:4px;overflow-wrap:anywhere;font-size:12px;word-break:break-all;">{{ output_dir }}</code>
+          <code class="sx-e765c2e1" >{{ output_dir }}</code>
         </div>
         <div class="path-item">
           <div class="path-item-label">Run ID</div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;">
-            <code style="font-size:11px;word-break:break-all;">{{ run_id }}</code>
+          <div class="sx-ed46f3ae" >
+            <code class="sx-1d11d813" >{{ run_id }}</code>
             <span class="path-item-scan-badge">scan #{{ current_scan_number }}</span>
           </div>
         </div>
@@ -25379,15 +26186,15 @@ struct ScanSetupTemplate {
     </section>
 
     {% if has_cocomo %}
-    <div class="cocomo-box" style="margin-top:24px;">
+    <div class="cocomo-box sx-04bbec5e" >
       <div class="cocomo-box-head">
         <span class="cocomo-box-title">Constructive Cost Model &mdash; COCOMO I</span>
-        <span class="cocomo-mode-pill-wrap" style="margin-left:10px;">
+        <span class="cocomo-mode-pill-wrap sx-8a450d4e" >
           <span class="cocomo-mode-pill">{{ cocomo_mode_label }} mode</span>
           <span class="cocomo-mode-tip">{{ cocomo_mode_tooltip }}</span>
         </span>
       </div>
-      <div class="summary-strip" style="margin-top:0;grid-template-columns:repeat(4,1fr);">
+      <div class="summary-strip sx-8fd19811" >
         <div class="stat-chip">
           <div class="stat-chip-label">Person-months</div>
           <div class="stat-chip-val">{{ cocomo_effort_str|commas }}</div>
@@ -25409,21 +26216,21 @@ struct ScanSetupTemplate {
           <div class="stat-chip-tip">KSLOC = Kilo Source Lines of Code (1 KSLOC = 1,000 lines). This is the primary input to the COCOMO model. Only executable code lines are counted &mdash; blank lines and comments are excluded from this total.</div>
         </div>
       </div>
-      <div class="cocomo-box-note" style="white-space:nowrap;">COCOMO I (Constructive Cost Model) is a 1981 algorithmic model by Barry Boehm that converts SLOC into effort, schedule, and team-size estimates.<br>These are ballpark figures &mdash; actual outcomes vary widely by team experience, toolchain maturity, and domain complexity.</div>
+      <div class="cocomo-box-note sx-32fb29ef" >COCOMO I (Constructive Cost Model) is a 1981 algorithmic model by Barry Boehm that converts SLOC into effort, schedule, and team-size estimates.<br>These are ballpark figures &mdash; actual outcomes vary widely by team experience, toolchain maturity, and domain complexity.</div>
     </div>
     {% endif %}
 
     <!-- ── Tests & Coverage brief summary ────────────────────────────────── -->
-    <div class="cocomo-box" style="margin-top:24px;">
+    <div class="cocomo-box sx-04bbec5e" >
       <div class="cocomo-box-head">
         <span class="cocomo-box-title">Tests &amp; Coverage</span>
         {% if has_coverage_data %}
-        <span class="cocomo-mode-pill-wrap" style="margin-left:10px;">
-          <span class="cocomo-mode-pill" style="background:rgba(34,197,94,0.14);color:#16a34a;">Coverage data present</span>
+        <span class="cocomo-mode-pill-wrap sx-8a450d4e" >
+          <span class="cocomo-mode-pill sx-c586fb0a" >Coverage data present</span>
         </span>
         {% endif %}
       </div>
-      <div class="summary-strip" style="margin-top:0;grid-template-columns:repeat(4,1fr);">
+      <div class="summary-strip sx-8fd19811" >
         <div class="stat-chip">
           <div class="stat-chip-val" data-fmt="{{ test_count }}">{{ test_count|commas }}</div>
           <div class="stat-chip-label">Test Functions</div>
@@ -25431,27 +26238,27 @@ struct ScanSetupTemplate {
         </div>
         <div class="stat-chip">
           {% if has_coverage_data %}
-          <div class="stat-chip-val" style="color:#16a34a;">{{ cov_line_pct }}%</div>
+          <div class="stat-chip-val sx-ccd997a1" >{{ cov_line_pct }}%</div>
           {% else %}
-          <div class="stat-chip-val" style="color:var(--muted);">&mdash;</div>
+          <div class="stat-chip-val sx-911ada61" >&mdash;</div>
           {% endif %}
           <div class="stat-chip-label">Line Coverage</div>
           <div class="stat-chip-tip">Overall line coverage from LCOV / Cobertura / JaCoCo data</div>
         </div>
         <div class="stat-chip">
           {% if !cov_fn_pct.is_empty() %}
-          <div class="stat-chip-val" style="color:#16a34a;">{{ cov_fn_pct }}%</div>
+          <div class="stat-chip-val sx-ccd997a1" >{{ cov_fn_pct }}%</div>
           {% else %}
-          <div class="stat-chip-val" style="color:var(--muted);">&mdash;</div>
+          <div class="stat-chip-val sx-911ada61" >&mdash;</div>
           {% endif %}
           <div class="stat-chip-label">Fn Coverage</div>
           <div class="stat-chip-tip">Overall function coverage — requires function-level LCOV data</div>
         </div>
         <div class="stat-chip">
           {% if !cov_branch_pct.is_empty() %}
-          <div class="stat-chip-val" style="color:#16a34a;">{{ cov_branch_pct }}%</div>
+          <div class="stat-chip-val sx-ccd997a1" >{{ cov_branch_pct }}%</div>
           {% else %}
-          <div class="stat-chip-val" style="color:var(--muted);">&mdash;</div>
+          <div class="stat-chip-val sx-911ada61" >&mdash;</div>
           {% endif %}
           <div class="stat-chip-label">Branch Coverage</div>
           <div class="stat-chip-tip">Overall branch coverage — requires branch-level LCOV data</div>
@@ -25473,11 +26280,11 @@ struct ScanSetupTemplate {
           </div>
           <button class="r-expand-btn" id="result-lang-overview-expand" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button>
         </div>
-        <div id="result-lang-charts" style="margin:0 0 8px;"></div>
+        <div class="sx-bb5bea38" id="result-lang-charts" ></div>
     </section>
 
     <section class="panel r-chart-section">
-      <div class="toolbar-row" style="margin-bottom:16px;">
+      <div class="toolbar-row sx-7564ec60" >
         <div>
           <h2>Visualizations</h2>
           <p class="muted">Interactive charts for this scan — use the controls to switch views.</p>
@@ -25486,8 +26293,8 @@ struct ScanSetupTemplate {
 
       <div class="r-viz-grid">
         <div class="r-viz-card">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
-            <p class="r-viz-card-title" style="margin:0;flex:1 1 auto;">Language Composition</p>
+          <div class="sx-3a744011" >
+            <p class="r-viz-card-title sx-1181d69d" >Language Composition</p>
             <button class="r-expand-btn" id="r-composition-expand" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button>
           </div>
           <div class="r-chart-tab-bar">
@@ -25497,16 +26304,16 @@ struct ScanSetupTemplate {
           <div class="r-chart-container" id="r-composition-chart"></div>
         </div>
         <div class="r-viz-card">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-            <p class="r-viz-card-title" style="margin:0;flex:1 1 auto;">Files vs Code Lines</p>
+          <div class="sx-66b97f4b" >
+            <p class="r-viz-card-title sx-1181d69d" >Files vs Code Lines</p>
             <button class="r-expand-btn" id="r-scatter-expand" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button>
           </div>
           <div class="r-chart-container" id="r-scatter-chart"></div>
         </div>
         {% if has_semantic_data %}
         <div class="r-viz-card">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
-            <p class="r-viz-card-title" style="margin:0;flex:1 1 auto;">Semantic Metrics</p>
+          <div class="sx-3a744011" >
+            <p class="r-viz-card-title sx-1181d69d" >Semantic Metrics</p>
             <select class="r-chart-select" id="r-semantic-metric">
               <option value="functions">Functions</option>
               <option value="classes">Classes</option>
@@ -25520,22 +26327,22 @@ struct ScanSetupTemplate {
         </div>
         {% endif %}
         <div class="r-viz-card">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-            <p class="r-viz-card-title" style="margin:0;flex:1 1 auto;">Comment Density</p>
+          <div class="sx-66b97f4b" >
+            <p class="r-viz-card-title sx-1181d69d" >Comment Density</p>
             <button class="r-expand-btn" id="r-density-expand" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button>
           </div>
           <div class="r-chart-container" id="r-density-chart"></div>
         </div>
         <div class="r-viz-card">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-            <p class="r-viz-card-title" style="margin:0;flex:1 1 auto;">Avg Lines per File</p>
+          <div class="sx-66b97f4b" >
+            <p class="r-viz-card-title sx-1181d69d" >Avg Lines per File</p>
             <button class="r-expand-btn" id="r-avglines-expand" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button>
           </div>
           <div class="r-chart-container" id="r-avglines-chart"></div>
         </div>
         <div class="r-viz-card">
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
-            <p class="r-viz-card-title" style="margin:0;flex:1 1 auto;">Repository Overview</p>
+          <div class="sx-9ef668bf" >
+            <p class="r-viz-card-title sx-1181d69d" >Repository Overview</p>
             <select class="r-chart-select" id="r-sub-metric">
               <option value="code">Code Lines</option>
               <option value="comment">Comments</option>
@@ -25775,7 +26582,7 @@ struct ScanSetupTemplate {
         var legCount=D.length;
         var legSpacing=Math.max(12,Math.min(22,Math.floor((DH-30)/Math.max(legCount,1))));
         var legYStart=Math.round((DH-legCount*legSpacing)/2);
-        var ds='<svg id="dnt-svg" viewBox="0 0 '+DW+' '+DH+'" width="'+DW+'" height="'+DH+'" style="display:block;max-width:100%;" xmlns="http://www.w3.org/2000/svg">';
+        var ds='<svg class="sx-b882cc83" id="dnt-svg" viewBox="0 0 '+DW+' '+DH+'" width="'+DW+'" height="'+DH+'"  xmlns="http://www.w3.org/2000/svg">';
         // One shared transition on every donut element so slices, leader lines,
         // outside labels, % labels and the legend all animate together as a single
         // picture when a language is hovered. Slices scale from the donut centre.
@@ -25794,7 +26601,7 @@ struct ScanSetupTemplate {
             var xi2=cx+Ri*Math.cos(ang),yi2=cy+Ri*Math.sin(ang);
             var pct=Math.round(d.code/tot*100);
             ds+='<path'+tt(d.lang,fmt(d.code)+' code lines ('+pct+'%)')+' data-lang="'+esc(d.lang)+'" d="M'+px(x1)+','+px(y1)+' A'+Ro+','+Ro+' 0 '+(sw>Math.PI?1:0)+',1 '+px(x2)+','+px(y2)+' L'+px(xi1)+','+px(yi1)+' A'+Ri+','+Ri+' 0 '+(sw>Math.PI?1:0)+',0 '+px(xi2)+','+px(yi2)+' Z" fill="'+(COLS[i%COLS.length])+'" stroke="white" stroke-width="2"/>';
-            if(pct>=5){var mAng=ang+sw/2,mR=(Ro+Ri)/2;ds+='<text data-lang="'+esc(d.lang)+'" x="'+px(cx+mR*Math.cos(mAng))+'" y="'+px(cy+mR*Math.sin(mAng))+'" text-anchor="middle" dominant-baseline="middle" font-family="'+FONT+'" font-size="10" font-weight="700" fill="white" style="pointer-events:none;">'+pct+'%</text>';}else if(pct>0){smalls.push({mAng:ang+sw/2,pct:pct,lang:d.lang,col:COLS[i%COLS.length]});}
+            if(pct>=5){var mAng=ang+sw/2,mR=(Ro+Ri)/2;ds+='<text class="sx-c3270469" data-lang="'+esc(d.lang)+'" x="'+px(cx+mR*Math.cos(mAng))+'" y="'+px(cy+mR*Math.sin(mAng))+'" text-anchor="middle" dominant-baseline="middle" font-family="'+FONT+'" font-size="10" font-weight="700" fill="white" >'+pct+'%</text>';}else if(pct>0){smalls.push({mAng:ang+sw/2,pct:pct,lang:d.lang,col:COLS[i%COLS.length]});}
             ang+=sw;
           });
           // Small slices (<5%) get outside labels positioned near each slice's own
@@ -25811,8 +26618,8 @@ struct ScanSetupTemplate {
             if(sOver>0)smalls.forEach(function(sm){sm.x-=sOver;});
             smalls.forEach(function(sm){
               var axx=cx+Ro*Math.cos(sm.mAng),ayy=cy+Ro*Math.sin(sm.mAng);
-              ds+='<line data-lang="'+esc(sm.lang)+'" x1="'+px(axx)+'" y1="'+px(ayy)+'" x2="'+px(sm.x)+'" y2="'+px(sRowY+4)+'" stroke="'+sm.col+'" stroke-width="1" opacity="0.5" style="pointer-events:none;"/>';
-              ds+='<text data-lang="'+esc(sm.lang)+'" x="'+px(sm.x)+'" y="'+px(sRowY)+'" text-anchor="middle" font-family="'+FONT+'" font-size="9" font-weight="700" fill="'+sm.col+'" style="cursor:pointer;">'+esc(sm.txt)+'</text>';
+              ds+='<line class="sx-c3270469" data-lang="'+esc(sm.lang)+'" x1="'+px(axx)+'" y1="'+px(ayy)+'" x2="'+px(sm.x)+'" y2="'+px(sRowY+4)+'" stroke="'+sm.col+'" stroke-width="1" opacity="0.5" />';
+              ds+='<text class="sx-83ac1cee" data-lang="'+esc(sm.lang)+'" x="'+px(sm.x)+'" y="'+px(sRowY)+'" text-anchor="middle" font-family="'+FONT+'" font-size="9" font-weight="700" fill="'+sm.col+'" >'+esc(sm.txt)+'</text>';
             });
           }
         }
@@ -25823,7 +26630,7 @@ struct ScanSetupTemplate {
           var pctL=Math.round(d.code/tot*100);
           var ttL=String(d.lang).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
           var ttV=(fmt(d.code)+' code lines ('+pctL+'%)').replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-          ds+='<g data-lang="'+esc(d.lang)+'" data-ttl="'+ttL+'" data-ttv="'+ttV+'" style="cursor:pointer;">';
+          ds+='<g class="sx-83ac1cee" data-lang="'+esc(d.lang)+'" data-ttl="'+ttL+'" data-ttv="'+ttV+'" >';
           ds+='<rect x="'+legX+'" y="'+(ly-2)+'" width="'+(DW-legX)+'" height="'+(legSpacing||14)+'" fill="transparent"/>';
           ds+='<rect x="'+legX+'" y="'+ly+'" width="11" height="11" rx="2" fill="'+(COLS[i%COLS.length])+'"/>';
           ds+='<text x="'+(legX+16)+'" y="'+(ly+10)+'" font-family="'+FONT+'" font-size="'+Math.min(11,legSpacing-2)+'" fill="#43342d">'+esc(d.lang)+'</text>';
@@ -25839,7 +26646,7 @@ struct ScanSetupTemplate {
         var barBH=Math.min(32,Math.round(barRhb*0.7));
         var SH=DH;
         var barTopPad=Math.max(6,Math.round((SH-D.length*barRhb-18)/2));
-        var bs='<svg viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'" style="display:block;max-width:100%;" xmlns="http://www.w3.org/2000/svg">';
+        var bs='<svg class="sx-b882cc83" viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'"  xmlns="http://www.w3.org/2000/svg">';
         D.forEach(function(d,i){
           var y=barTopPad+i*barRhb,x=LW;
           var phys=d.physical||d.code+d.comments+d.blanks;
@@ -25852,12 +26659,12 @@ struct ScanSetupTemplate {
           // Hit area ends just past the total label so empty space to the right of the
           // bar does not trigger the tooltip — only the name, bar and total are hot.
           var hitW=px(LW+phys/maxT*BW+8+(String(fmt(phys)).length*6.8)+6);
-          bs+='<rect'+tt(d.lang,ttv)+' x="0" y="'+y+'" width="'+hitW+'" height="'+barBH+'" fill="transparent" style="cursor:pointer;"/>';
-          bs+='<text'+tt(d.lang,ttv)+' x="'+(LW-6)+'" y="'+lmid+'" text-anchor="end" font-family="'+FONT+'" font-size="11" fill="#43342d" style="cursor:pointer;">'+esc(d.lang)+'</text>';
-          if(cW>0.5){bs+='<rect'+tt(d.lang+' Code',fmt(d.code)+' lines')+' data-kind="code" x="'+px(x)+'" y="'+y+'" width="'+px(cW)+'" height="'+barBH+'" fill="'+OX+'" rx="0"/>';var _fc=fitFs(fmt(d.code),cW);if(_fc)bs+='<text x="'+px(x+cW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fc+'" font-weight="700" fill="#fff" style="pointer-events:none;">'+fmt(d.code)+'</text>';x+=cW;}
-          if(cmW>0.5){bs+='<rect'+tt(d.lang+' Comments',fmt(d.comments)+' lines')+' data-kind="comment" x="'+px(x)+'" y="'+y+'" width="'+px(cmW)+'" height="'+barBH+'" fill="'+GN+'" rx="0"/>';var _fm=fitFs(fmt(d.comments),cmW);if(_fm)bs+='<text x="'+px(x+cmW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fm+'" font-weight="700" fill="#fff" style="pointer-events:none;">'+fmt(d.comments)+'</text>';x+=cmW;}
-          if(blW>0.5){bs+='<rect'+tt(d.lang+' Blank',fmt(d.blanks)+' lines')+' data-kind="blank" x="'+px(x)+'" y="'+y+'" width="'+px(blW)+'" height="'+barBH+'" fill="'+GY+'" rx="0"/>';var _fb=fitFs(fmt(d.blanks),blW);if(_fb)bs+='<text x="'+px(x+blW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fb+'" font-weight="700" fill="#555" style="pointer-events:none;">'+fmt(d.blanks)+'</text>';}
-          bs+='<text'+tt(d.lang,ttv)+' x="'+px(LW+phys/maxT*BW+8)+'" y="'+lmid+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="#7b675b" style="cursor:pointer;">'+fmt(phys)+'</text>';
+          bs+='<rect class="sx-83ac1cee"'+tt(d.lang,ttv)+' x="0" y="'+y+'" width="'+hitW+'" height="'+barBH+'" fill="transparent" />';
+          bs+='<text class="sx-83ac1cee"'+tt(d.lang,ttv)+' x="'+(LW-6)+'" y="'+lmid+'" text-anchor="end" font-family="'+FONT+'" font-size="11" fill="#43342d" >'+esc(d.lang)+'</text>';
+          if(cW>0.5){bs+='<rect'+tt(d.lang+' Code',fmt(d.code)+' lines')+' data-kind="code" x="'+px(x)+'" y="'+y+'" width="'+px(cW)+'" height="'+barBH+'" fill="'+OX+'" rx="0"/>';var _fc=fitFs(fmt(d.code),cW);if(_fc)bs+='<text class="sx-c3270469" x="'+px(x+cW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fc+'" font-weight="700" fill="#fff" >'+fmt(d.code)+'</text>';x+=cW;}
+          if(cmW>0.5){bs+='<rect'+tt(d.lang+' Comments',fmt(d.comments)+' lines')+' data-kind="comment" x="'+px(x)+'" y="'+y+'" width="'+px(cmW)+'" height="'+barBH+'" fill="'+GN+'" rx="0"/>';var _fm=fitFs(fmt(d.comments),cmW);if(_fm)bs+='<text class="sx-c3270469" x="'+px(x+cmW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fm+'" font-weight="700" fill="#fff" >'+fmt(d.comments)+'</text>';x+=cmW;}
+          if(blW>0.5){bs+='<rect'+tt(d.lang+' Blank',fmt(d.blanks)+' lines')+' data-kind="blank" x="'+px(x)+'" y="'+y+'" width="'+px(blW)+'" height="'+barBH+'" fill="'+GY+'" rx="0"/>';var _fb=fitFs(fmt(d.blanks),blW);if(_fb)bs+='<text class="sx-c3270469" x="'+px(x+blW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fb+'" font-weight="700" fill="#555" >'+fmt(d.blanks)+'</text>';}
+          bs+='<text class="sx-83ac1cee"'+tt(d.lang,ttv)+' x="'+px(LW+phys/maxT*BW+8)+'" y="'+lmid+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="#7b675b" >'+fmt(phys)+'</text>';
           bs+='</g>';
         });
         var ly=SH-14;
@@ -25870,17 +26677,17 @@ struct ScanSetupTemplate {
         var ttCm=legTT('Comment lines',fmt(totCm)+' total ('+Math.round(totCm/totAll*100)+'%)');
         var ttBl=legTT('Blank lines',fmt(totBl)+' total ('+Math.round(totBl/totAll*100)+'%)');
         var legSt=LW+Math.max(0,Math.round((BW-194)/2));
-        bs+='<g data-kind="code" style="cursor:pointer;">'
+        bs+='<g class="sx-83ac1cee" data-kind="code" >'
           +'<rect x="'+legSt+'" y="'+(ly-3)+'" width="50" height="16" fill="transparent"'+ttC+'/>'
           +'<rect x="'+legSt+'" y="'+ly+'" width="9" height="9" fill="'+OX+'"'+ttC+'/>'
           +'<text x="'+(legSt+13)+'" y="'+(ly+9)+'"'+ttC+' font-family="'+FONT+'" font-size="10" font-weight="700" fill="#43342d">Code</text>'
           +'</g>';
-        bs+='<g data-kind="comment" style="cursor:pointer;">'
+        bs+='<g class="sx-83ac1cee" data-kind="comment" >'
           +'<rect x="'+(legSt+58)+'" y="'+(ly-3)+'" width="82" height="16" fill="transparent"'+ttCm+'/>'
           +'<rect x="'+(legSt+58)+'" y="'+ly+'" width="9" height="9" fill="'+GN+'"'+ttCm+'/>'
           +'<text x="'+(legSt+71)+'" y="'+(ly+9)+'"'+ttCm+' font-family="'+FONT+'" font-size="10" font-weight="700" fill="#43342d">Comments</text>'
           +'</g>';
-        bs+='<g data-kind="blank" style="cursor:pointer;">'
+        bs+='<g class="sx-83ac1cee" data-kind="blank" >'
           +'<rect x="'+(legSt+145)+'" y="'+(ly-3)+'" width="55" height="16" fill="transparent"'+ttBl+'/>'
           +'<rect x="'+(legSt+145)+'" y="'+ly+'" width="9" height="9" fill="'+GY+'"'+ttBl+'/>'
           +'<text x="'+(legSt+158)+'" y="'+(ly+9)+'"'+ttBl+' font-family="'+FONT+'" font-size="10" font-weight="700" fill="#43342d">Blanks</text>'
@@ -25888,7 +26695,7 @@ struct ScanSetupTemplate {
         bs+='</svg>';
         el.innerHTML='<div class="r-lang-overview">'+
           '<div class="r-lang-overview-cell"><p>Code Lines by Language</p>'+ds+'</div>'+
-          '<div class="r-lang-overview-cell" style="flex:2 1 340px;"><p>Line Mix per Language</p>'+bs+'</div>'+
+          '<div class="r-lang-overview-cell sx-096e0509" ><p>Line Mix per Language</p>'+bs+'</div>'+
         '</div>';
         function wireDonutLegend(svg){
           if(!svg)return;
@@ -25942,7 +26749,7 @@ struct ScanSetupTemplate {
           if(!src)return;
           var overlay=document.createElement('div');
           overlay.className='r-chart-modal-overlay';
-          overlay.innerHTML='<div class="r-chart-modal" style="max-width:1600px;"><button class="r-chart-modal-close" aria-label="Close">&times;</button><div class="r-modal-header"><span class="r-chart-modal-title">Language Breakdown \u2014 Full View</span></div><div id="result-lang-overview-modal-wrap" style="width:100%;"></div></div>';
+          overlay.innerHTML='<div class="r-chart-modal sx-eb9a8e19" ><button class="r-chart-modal-close" aria-label="Close">&times;</button><div class="r-modal-header"><span class="r-chart-modal-title">Language Breakdown \u2014 Full View</span></div><div class="sx-9ccc4ca9" id="result-lang-overview-modal-wrap" ></div></div>';
           document.body.appendChild(overlay);
           overlay.querySelector('.r-chart-modal-close').addEventListener('click',function(){document.body.removeChild(overlay);});
           overlay.addEventListener('click',function(e){if(e.target===overlay)document.body.removeChild(overlay);});
@@ -25998,7 +26805,7 @@ struct ScanSetupTemplate {
           var n=LANG_D.length||1;
           var rowTotal=Math.floor((SH-legendH-topPad)/n);
           var bH=Math.min(22,Math.max(10,Math.floor(rowTotal*0.65)));
-          var s='<svg viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'" style="display:block;max-width:100%;" xmlns="http://www.w3.org/2000/svg">';
+          var s='<svg class="sx-b882cc83" viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'"  xmlns="http://www.w3.org/2000/svg">';
           var totC2=LANG_D.reduce(function(a,d){return a+(d.code||0);},0);
           var totCm2=LANG_D.reduce(function(a,d){return a+(d.comments||0);},0);
           var totBl2=LANG_D.reduce(function(a,d){return a+(d.blanks||0);},0);
@@ -26010,12 +26817,12 @@ struct ScanSetupTemplate {
               var y=topPad+i*rowTotal+Math.floor((rowTotal-bH)/2),x=LW;
               var lmid=y+Math.floor(bH/2)+4;
               var ttvc='Code: '+fmt(d.code||0)+'\nComments: '+fmt(d.comments||0)+'\nBlank: '+fmt(d.blanks||0)+'\nTotal: '+fmt(d.physical||tot2);
-              s+='<text'+tt(d.lang,ttvc)+' x="'+(LW-5)+'" y="'+lmid+'" text-anchor="end" font-family="'+FONT+'" font-size="11" fill="currentColor" style="cursor:pointer;">'+esc(d.lang)+'</text>';
-              if(cW>0.5){s+='<rect'+tt(d.lang+' Code',fmt(d.code||0)+' lines')+' data-kind="code" x="'+px(x)+'" y="'+y+'" width="'+px(cW)+'" height="'+bH+'" fill="'+OX+'"/>';var _fc=fitFs(fmt(d.code||0),cW);if(_fc)s+='<text x="'+px(x+cW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fc+'" font-weight="700" fill="#fff" style="pointer-events:none;">'+fmt(d.code||0)+'</text>';x+=cW;}
-              if(cmW>0.5){s+='<rect'+tt(d.lang+' Comments',fmt(d.comments||0)+' lines')+' data-kind="comment" x="'+px(x)+'" y="'+y+'" width="'+px(cmW)+'" height="'+bH+'" fill="'+GN+'"/>';var _fm=fitFs(fmt(d.comments||0),cmW);if(_fm)s+='<text x="'+px(x+cmW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fm+'" font-weight="700" fill="#fff" style="pointer-events:none;">'+fmt(d.comments||0)+'</text>';x+=cmW;}
-              if(blW>0.5){s+='<rect'+tt(d.lang+' Blank',fmt(d.blanks||0)+' lines')+' data-kind="blank" x="'+px(x)+'" y="'+y+'" width="'+px(blW)+'" height="'+bH+'" fill="'+GY+'"/>';var _fb=fitFs(fmt(d.blanks||0),blW);if(_fb)s+='<text x="'+px(x+blW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fb+'" font-weight="700" fill="#555" style="pointer-events:none;">'+fmt(d.blanks||0)+'</text>';}
+              s+='<text class="sx-83ac1cee"'+tt(d.lang,ttvc)+' x="'+(LW-5)+'" y="'+lmid+'" text-anchor="end" font-family="'+FONT+'" font-size="11" fill="currentColor" >'+esc(d.lang)+'</text>';
+              if(cW>0.5){s+='<rect'+tt(d.lang+' Code',fmt(d.code||0)+' lines')+' data-kind="code" x="'+px(x)+'" y="'+y+'" width="'+px(cW)+'" height="'+bH+'" fill="'+OX+'"/>';var _fc=fitFs(fmt(d.code||0),cW);if(_fc)s+='<text class="sx-c3270469" x="'+px(x+cW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fc+'" font-weight="700" fill="#fff" >'+fmt(d.code||0)+'</text>';x+=cW;}
+              if(cmW>0.5){s+='<rect'+tt(d.lang+' Comments',fmt(d.comments||0)+' lines')+' data-kind="comment" x="'+px(x)+'" y="'+y+'" width="'+px(cmW)+'" height="'+bH+'" fill="'+GN+'"/>';var _fm=fitFs(fmt(d.comments||0),cmW);if(_fm)s+='<text class="sx-c3270469" x="'+px(x+cmW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fm+'" font-weight="700" fill="#fff" >'+fmt(d.comments||0)+'</text>';x+=cmW;}
+              if(blW>0.5){s+='<rect'+tt(d.lang+' Blank',fmt(d.blanks||0)+' lines')+' data-kind="blank" x="'+px(x)+'" y="'+y+'" width="'+px(blW)+'" height="'+bH+'" fill="'+GY+'"/>';var _fb=fitFs(fmt(d.blanks||0),blW);if(_fb)s+='<text class="sx-c3270469" x="'+px(x+blW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fb+'" font-weight="700" fill="#555" >'+fmt(d.blanks||0)+'</text>';}
               var pct=Math.round((d.code||0)/tot2*100);
-              s+='<text'+tt(d.lang,ttvc)+' x="'+(LW+BW+4)+'" y="'+lmid+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" style="cursor:pointer;">'+pct+'%</text>';
+              s+='<text class="sx-83ac1cee"'+tt(d.lang,ttvc)+' x="'+(LW+BW+4)+'" y="'+lmid+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" >'+pct+'%</text>';
             });
           } else {
             var maxT=Math.max.apply(null,LANG_D.map(function(d){return(d.code||0)+(d.comments||0)+(d.blanks||0);}))||1;
@@ -26024,11 +26831,11 @@ struct ScanSetupTemplate {
               var y=topPad+i*rowTotal+Math.floor((rowTotal-bH)/2),x=LW;
               var lmid=y+Math.floor(bH/2)+4;
               var ttvc='Code: '+fmt(d.code||0)+'\nComments: '+fmt(d.comments||0)+'\nBlank: '+fmt(d.blanks||0)+'\nTotal: '+fmt(d.physical||(d.code||0)+(d.comments||0)+(d.blanks||0));
-              s+='<text'+tt(d.lang,ttvc)+' x="'+(LW-5)+'" y="'+lmid+'" text-anchor="end" font-family="'+FONT+'" font-size="11" fill="currentColor" style="cursor:pointer;">'+esc(d.lang)+'</text>';
-              if(cW>0.5){s+='<rect'+tt(d.lang+' Code',fmt(d.code||0)+' lines')+' data-kind="code" x="'+px(x)+'" y="'+y+'" width="'+px(cW)+'" height="'+bH+'" fill="'+OX+'"/>';var _fc=fitFs(fmt(d.code||0),cW);if(_fc)s+='<text x="'+px(x+cW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fc+'" font-weight="700" fill="#fff" style="pointer-events:none;">'+fmt(d.code||0)+'</text>';x+=cW;}
-              if(cmW>0.5){s+='<rect'+tt(d.lang+' Comments',fmt(d.comments||0)+' lines')+' data-kind="comment" x="'+px(x)+'" y="'+y+'" width="'+px(cmW)+'" height="'+bH+'" fill="'+GN+'"/>';var _fm=fitFs(fmt(d.comments||0),cmW);if(_fm)s+='<text x="'+px(x+cmW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fm+'" font-weight="700" fill="#fff" style="pointer-events:none;">'+fmt(d.comments||0)+'</text>';x+=cmW;}
-              if(blW>0.5){s+='<rect'+tt(d.lang+' Blank',fmt(d.blanks||0)+' lines')+' data-kind="blank" x="'+px(x)+'" y="'+y+'" width="'+px(blW)+'" height="'+bH+'" fill="'+GY+'"/>';var _fb=fitFs(fmt(d.blanks||0),blW);if(_fb)s+='<text x="'+px(x+blW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fb+'" font-weight="700" fill="#555" style="pointer-events:none;">'+fmt(d.blanks||0)+'</text>';}
-              s+='<text'+tt(d.lang,ttvc)+' x="'+(LW+cW+cmW+blW+4)+'" y="'+lmid+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" style="cursor:pointer;">'+fmt(d.physical||(d.code||0)+(d.comments||0)+(d.blanks||0))+'</text>';
+              s+='<text class="sx-83ac1cee"'+tt(d.lang,ttvc)+' x="'+(LW-5)+'" y="'+lmid+'" text-anchor="end" font-family="'+FONT+'" font-size="11" fill="currentColor" >'+esc(d.lang)+'</text>';
+              if(cW>0.5){s+='<rect'+tt(d.lang+' Code',fmt(d.code||0)+' lines')+' data-kind="code" x="'+px(x)+'" y="'+y+'" width="'+px(cW)+'" height="'+bH+'" fill="'+OX+'"/>';var _fc=fitFs(fmt(d.code||0),cW);if(_fc)s+='<text class="sx-c3270469" x="'+px(x+cW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fc+'" font-weight="700" fill="#fff" >'+fmt(d.code||0)+'</text>';x+=cW;}
+              if(cmW>0.5){s+='<rect'+tt(d.lang+' Comments',fmt(d.comments||0)+' lines')+' data-kind="comment" x="'+px(x)+'" y="'+y+'" width="'+px(cmW)+'" height="'+bH+'" fill="'+GN+'"/>';var _fm=fitFs(fmt(d.comments||0),cmW);if(_fm)s+='<text class="sx-c3270469" x="'+px(x+cmW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fm+'" font-weight="700" fill="#fff" >'+fmt(d.comments||0)+'</text>';x+=cmW;}
+              if(blW>0.5){s+='<rect'+tt(d.lang+' Blank',fmt(d.blanks||0)+' lines')+' data-kind="blank" x="'+px(x)+'" y="'+y+'" width="'+px(blW)+'" height="'+bH+'" fill="'+GY+'"/>';var _fb=fitFs(fmt(d.blanks||0),blW);if(_fb)s+='<text class="sx-c3270469" x="'+px(x+blW/2)+'" y="'+lmid+'" text-anchor="middle" font-family="'+FONT+'" font-size="'+_fb+'" font-weight="700" fill="#555" >'+fmt(d.blanks||0)+'</text>';}
+              s+='<text class="sx-83ac1cee"'+tt(d.lang,ttvc)+' x="'+(LW+cW+cmW+blW+4)+'" y="'+lmid+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" >'+fmt(d.physical||(d.code||0)+(d.comments||0)+(d.blanks||0))+'</text>';
             });
           }
           var ly=SH-legendH+4;
@@ -26037,17 +26844,17 @@ struct ScanSetupTemplate {
           var ttC2=legTT2('Code lines',fmt(totC2)+' total ('+Math.round(totC2/totAll2*100)+'%)');
           var ttCm2=legTT2('Comment lines',fmt(totCm2)+' total ('+Math.round(totCm2/totAll2*100)+'%)');
           var ttBl2=legTT2('Blank lines',fmt(totBl2)+' total ('+Math.round(totBl2/totAll2*100)+'%)');
-          s+='<g data-kind="code" style="cursor:pointer;">'
+          s+='<g class="sx-83ac1cee" data-kind="code" >'
             +'<rect x="'+legSt2+'" y="'+(ly-3)+'" width="50" height="16" fill="transparent"'+ttC2+'/>'
             +'<rect x="'+legSt2+'" y="'+ly+'" width="9" height="9" fill="'+OX+'"'+ttC2+'/>'
             +'<text x="'+(legSt2+13)+'" y="'+(ly+9)+'"'+ttC2+' font-family="'+FONT+'" font-size="10" font-weight="700" fill="currentColor">Code</text>'
             +'</g>';
-          s+='<g data-kind="comment" style="cursor:pointer;">'
+          s+='<g class="sx-83ac1cee" data-kind="comment" >'
             +'<rect x="'+(legSt2+58)+'" y="'+(ly-3)+'" width="82" height="16" fill="transparent"'+ttCm2+'/>'
             +'<rect x="'+(legSt2+58)+'" y="'+ly+'" width="9" height="9" fill="'+GN+'"'+ttCm2+'/>'
             +'<text x="'+(legSt2+71)+'" y="'+(ly+9)+'"'+ttCm2+' font-family="'+FONT+'" font-size="10" font-weight="700" fill="currentColor">Comments</text>'
             +'</g>';
-          s+='<g data-kind="blank" style="cursor:pointer;">'
+          s+='<g class="sx-83ac1cee" data-kind="blank" >'
             +'<rect x="'+(legSt2+145)+'" y="'+(ly-3)+'" width="55" height="16" fill="transparent"'+ttBl2+'/>'
             +'<rect x="'+(legSt2+145)+'" y="'+ly+'" width="9" height="9" fill="'+GY+'"'+ttBl2+'/>'
             +'<text x="'+(legSt2+158)+'" y="'+(ly+9)+'"'+ttBl2+' font-family="'+FONT+'" font-size="10" font-weight="700" fill="currentColor">Blanks</text>'
@@ -26123,7 +26930,7 @@ struct ScanSetupTemplate {
           var maxP=Math.max.apply(null,SCAT_D.map(function(d){return d.physical;}))||1;
           // log1p scale on X to prevent outlier files-count from collapsing all others to the left
           var logMaxF=Math.log1p(maxF);
-          var s='<svg class="scat-svg" viewBox="0 0 '+W+' '+H+'" width="'+W+'" height="'+H+'" style="display:block;max-width:100%;" xmlns="http://www.w3.org/2000/svg">';
+          var s='<svg class="scat-svg sx-b882cc83" viewBox="0 0 '+W+' '+H+'" width="'+W+'" height="'+H+'"  xmlns="http://www.w3.org/2000/svg">';
           // Smooth the legend-hover fade so bubbles + labels animate together.
           s+='<style>.scat-svg circle,.scat-svg text,.scat-svg g{transition:opacity .2s ease,filter .2s ease;}</style>';
           // Y grid lines (linear)
@@ -26153,11 +26960,11 @@ struct ScanSetupTemplate {
             if(showVal){
               var ty2=Math.max(24,px(cy2)-px(r)-3);
               var ty1=Math.max(12,ty2-14);
-              s+='<text data-lang="'+esc(d.lang)+'" x="'+px(cx2)+'" y="'+ty1+'" text-anchor="middle" font-family="'+FONT+'" font-size="11" font-weight="800" fill="currentColor" opacity="0.92" style="pointer-events:none;">'+esc(d.lang)+'</text>';
-              s+='<text data-lang="'+esc(d.lang)+'" x="'+px(cx2)+'" y="'+ty2+'" text-anchor="middle" font-family="'+FONT+'" font-size="10" font-weight="700" fill="currentColor" opacity="0.88" style="pointer-events:none;">'+fmt(d.code)+'</text>';
+              s+='<text class="sx-c3270469" data-lang="'+esc(d.lang)+'" x="'+px(cx2)+'" y="'+ty1+'" text-anchor="middle" font-family="'+FONT+'" font-size="11" font-weight="800" fill="currentColor" opacity="0.92" >'+esc(d.lang)+'</text>';
+              s+='<text class="sx-c3270469" data-lang="'+esc(d.lang)+'" x="'+px(cx2)+'" y="'+ty2+'" text-anchor="middle" font-family="'+FONT+'" font-size="10" font-weight="700" fill="currentColor" opacity="0.88" >'+fmt(d.code)+'</text>';
             }else{
               var ly2=Math.max(12,px(cy2)-px(r)-3);
-              s+='<text data-lang="'+esc(d.lang)+'" x="'+px(cx2)+'" y="'+ly2+'" text-anchor="middle" font-family="'+FONT+'" font-size="11" font-weight="800" fill="currentColor" opacity="0.92" style="pointer-events:none;">'+esc(d.lang)+'</text>';
+              s+='<text class="sx-c3270469" data-lang="'+esc(d.lang)+'" x="'+px(cx2)+'" y="'+ly2+'" text-anchor="middle" font-family="'+FONT+'" font-size="11" font-weight="800" fill="currentColor" opacity="0.92" >'+esc(d.lang)+'</text>';
             }
           });
           s+='<text x="'+(PL+cW/2)+'" y="'+(H-4)+'" text-anchor="middle" font-family="'+FONT+'" font-size="11" fill="currentColor" opacity="0.75">Files Analyzed</text>';
@@ -26170,18 +26977,18 @@ struct ScanSetupTemplate {
           for(var lk=0;lk<legShown;lk++){
             var oi=legOrder[lk],ld=SCAT_D[oi],lcol=COLS[oi%COLS.length];
             var lp=legXY(lk),ly=lp.y+Math.floor(legRowH/2);
-            s+='<g data-lang="'+esc(ld.lang)+'" data-ttl="'+esc(ld.lang)+'" data-ttv="'+esc(fmt(ld.files)+' files · '+fmt(ld.code)+' code lines')+'" style="cursor:pointer;">';
+            s+='<g class="sx-83ac1cee" data-lang="'+esc(ld.lang)+'" data-ttl="'+esc(ld.lang)+'" data-ttv="'+esc(fmt(ld.files)+' files · '+fmt(ld.code)+' code lines')+'" >';
             s+='<rect x="'+lp.x+'" y="'+lp.y+'" width="'+(legColW-6)+'" height="'+legRowH+'" fill="transparent"/>';
-            s+='<rect x="'+lp.x+'" y="'+(ly-6)+'" width="22" height="12" rx="2" fill="'+lcol+'" opacity="0.88" style="pointer-events:none;"/>';
-            s+='<text x="'+(lp.x+28)+'" y="'+(ly+4)+'" font-family="'+FONT+'" font-size="12" font-weight="400" fill="currentColor" style="pointer-events:none;">'+esc(ld.lang)+'</text>';
+            s+='<rect class="sx-c3270469" x="'+lp.x+'" y="'+(ly-6)+'" width="22" height="12" rx="2" fill="'+lcol+'" opacity="0.88" />';
+            s+='<text class="sx-c3270469" x="'+(lp.x+28)+'" y="'+(ly+4)+'" font-family="'+FONT+'" font-size="12" font-weight="400" fill="currentColor" >'+esc(ld.lang)+'</text>';
             s+='</g>';
           }
           if(legTrunc){
             var pm=legXY(legShown),lym=pm.y+Math.floor(legRowH/2);
-            s+='<g data-more="1" style="cursor:pointer;">';
+            s+='<g class="sx-83ac1cee" data-more="1" >';
             s+='<rect x="'+pm.x+'" y="'+pm.y+'" width="'+(legColW-6)+'" height="'+legRowH+'" fill="transparent"/>';
-            s+='<rect x="'+pm.x+'" y="'+(lym-6)+'" width="22" height="12" rx="2" fill="#9a8c82" opacity="0.45" style="pointer-events:none;"/>';
-            s+='<text x="'+(pm.x+28)+'" y="'+(lym+4)+'" font-family="'+FONT+'" font-size="12" font-style="italic" fill="currentColor" opacity="0.8" style="pointer-events:none;">+'+(n-legShown)+' more</text>';
+            s+='<rect class="sx-c3270469" x="'+pm.x+'" y="'+(lym-6)+'" width="22" height="12" rx="2" fill="#9a8c82" opacity="0.45" />';
+            s+='<text class="sx-c3270469" x="'+(pm.x+28)+'" y="'+(lym+4)+'" font-family="'+FONT+'" font-size="12" font-style="italic" fill="currentColor" opacity="0.8" >+'+(n-legShown)+' more</text>';
             s+='</g>';
           }
           s+='</svg>';
@@ -26205,12 +27012,12 @@ struct ScanSetupTemplate {
           var rowTotal2=Math.floor((SH-topPad-botPad)/n2);
           var bH=Math.min(22,Math.max(10,Math.floor(rowTotal2*0.65)));
           var maxV=Math.max.apply(null,SEM_D.map(function(d){return d[key]||0;}))||1;
-          var s='<svg viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'" style="display:block;max-width:100%;" xmlns="http://www.w3.org/2000/svg">';
+          var s='<svg class="sx-b882cc83" viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'"  xmlns="http://www.w3.org/2000/svg">';
           SEM_D.forEach(function(d,i){
             var v=d[key]||0,bw=v/maxV*BW,y=topPad+i*rowTotal2+Math.floor((rowTotal2-bH)/2);
             s+='<text x="'+(LW-5)+'" y="'+(y+Math.floor(bH/2)+4)+'" text-anchor="end" font-family="'+FONT+'" font-size="11" fill="currentColor">'+esc(d.lang)+'</text>';
             if(bw>0.5)s+='<rect'+tt(d.lang,fmt(v)+' '+key)+' x="'+LW+'" y="'+y+'" width="'+px(bw)+'" height="'+bH+'" fill="'+COLS[i%COLS.length]+'" rx="3"/>';
-            s+='<text x="'+(LW+px(bw)+6)+'" y="'+(y+Math.floor(bH/2)+4)+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" style="pointer-events:none;">'+fmt(v)+'</text>';
+            s+='<text class="sx-c3270469" x="'+(LW+px(bw)+6)+'" y="'+(y+Math.floor(bH/2)+4)+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" >'+fmt(v)+'</text>';
           });
           s+='</svg>';
           el.innerHTML=s;
@@ -26233,7 +27040,7 @@ struct ScanSetupTemplate {
               +'<option value="variables"'+(key==='variables'?' selected':'')+'>Variables</option>'
               +'<option value="imports"'+(key==='imports'?' selected':'')+'>Imports</option>'
               +'<option value="tests"'+(key==='tests'?' selected':'')+'>Tests</option>';
-            overlay.innerHTML='<div class="r-chart-modal" style="max-width:1320px;"><button class="r-chart-modal-close" aria-label="Close">&times;</button><div class="r-modal-header"><span class="r-chart-modal-title">Semantic Metrics \u2014 Full View</span><select class="r-chart-select" id="r-sem-modal-metric">'+optHtml+'</select></div><div id="r-sem-modal-chart" class="r-expand-modal-chart" style="height:'+modalH+'px;width:100%;overflow:hidden;"></div></div>';
+            overlay.innerHTML='<div class="r-chart-modal sx-f4f5192a" ><button class="r-chart-modal-close" aria-label="Close">&times;</button><div class="r-modal-header"><span class="r-chart-modal-title">Semantic Metrics \u2014 Full View</span><select class="r-chart-select" id="r-sem-modal-metric">'+optHtml+'</select></div><div id="r-sem-modal-chart" class="r-expand-modal-chart" data-sx-style="height:'+modalH+'px;width:100%;overflow:hidden;"></div></div>';
             document.body.appendChild(overlay);
             overlay.querySelector('.r-chart-modal-close').addEventListener('click',function(){document.body.removeChild(overlay);});
             overlay.addEventListener('click',function(e){if(e.target===overlay)document.body.removeChild(overlay);});
@@ -26251,7 +27058,7 @@ struct ScanSetupTemplate {
             overlay.className='r-chart-modal-overlay';
             var subHtml=subtitle?'<span class="r-chart-modal-subtitle">'+subtitle+'</span>':'';
             var hdr='<div class="r-modal-header"><span class="r-chart-modal-title">'+title+' \u2014 Full View</span>'+(ctrlHtml||'')+'</div>';
-            overlay.innerHTML='<div class="r-chart-modal" style="max-width:1320px;"><button class="r-chart-modal-close" aria-label="Close">&times;</button>'+hdr+subHtml+'<div class="r-expand-modal-chart" style="width:100%;height:'+mH+'px;overflow:hidden;"></div></div>';
+            overlay.innerHTML='<div class="r-chart-modal sx-f4f5192a" ><button class="r-chart-modal-close" aria-label="Close">&times;</button>'+hdr+subHtml+'<div class="r-expand-modal-chart" data-sx-style="width:100%;height:'+mH+'px;overflow:hidden;"></div></div>';
             document.body.appendChild(overlay);
             overlay.querySelector('.r-chart-modal-close').addEventListener('click',function(){document.body.removeChild(overlay);});
             overlay.addEventListener('click',function(e){if(e.target===overlay)document.body.removeChild(overlay);});
@@ -26338,7 +27145,7 @@ struct ScanSetupTemplate {
             return sig>0?(d.comments||0)/sig:0;
           });
           var maxDen=Math.max.apply(null,densities)||1;
-          var s='<svg viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'" style="display:block;max-width:100%;" xmlns="http://www.w3.org/2000/svg">';
+          var s='<svg class="sx-b882cc83" viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'"  xmlns="http://www.w3.org/2000/svg">';
           LANG_D.forEach(function(d,i){
             var den=densities[i],bw=den/maxDen*BW;
             var y=topPad+i*rowTotal+Math.floor((rowTotal-bH)/2);
@@ -26346,7 +27153,7 @@ struct ScanSetupTemplate {
             s+='<text x="'+(LW-5)+'" y="'+(y+Math.floor(bH/2)+4)+'" text-anchor="end" font-family="'+FONT+'" font-size="11" fill="currentColor">'+esc(d.lang)+'</text>';
             if(bw>0.5)s+='<rect'+tt(d.lang,pct+'% of significant lines are comments')+' x="'+LW+'" y="'+y+'" width="'+px(bw)+'" height="'+bH+'" fill="'+COLS[i%COLS.length]+'" rx="3"/>';
             else s+='<rect x="'+LW+'" y="'+y+'" width="2" height="'+bH+'" fill="rgba(128,128,128,0.18)" rx="1"/>';
-            s+='<text x="'+(LW+Math.max(px(bw),2)+6)+'" y="'+(y+Math.floor(bH/2)+4)+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" style="pointer-events:none;">'+pct+'%</text>';
+            s+='<text class="sx-c3270469" x="'+(LW+Math.max(px(bw),2)+6)+'" y="'+(y+Math.floor(bH/2)+4)+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" >'+pct+'%</text>';
           });
           s+='<text x="'+(LW+BW/2)+'" y="'+(SH-6)+'" text-anchor="middle" font-family="'+FONT+'" font-size="12" fill="currentColor" opacity="0.75">comment ratio (higher = more documented)</text>';
           s+='</svg>';
@@ -26369,14 +27176,14 @@ struct ScanSetupTemplate {
           var bH=Math.min(22,Math.max(10,Math.floor(rowTotal*0.65)));
           var avgs=data.map(function(d){return(d.code||0)/(d.files||1);});
           var maxAvg=Math.max.apply(null,avgs)||1;
-          var s='<svg viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'" style="display:block;max-width:100%;" xmlns="http://www.w3.org/2000/svg">';
+          var s='<svg class="sx-b882cc83" viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'"  xmlns="http://www.w3.org/2000/svg">';
           data.forEach(function(d,i){
             var avg=avgs[i],bw=avg/maxAvg*BW;
             var y=topPad+i*rowTotal+Math.floor((rowTotal-bH)/2);
             s+='<text x="'+(LW-5)+'" y="'+(y+Math.floor(bH/2)+4)+'" text-anchor="end" font-family="'+FONT+'" font-size="11" fill="currentColor">'+esc(d.lang)+'</text>';
             if(bw>0.5)s+='<rect'+tt(d.lang,fmt(Math.round(avg))+' avg code lines/file \u00b7 '+fmt(d.files||0)+' files')+' x="'+LW+'" y="'+y+'" width="'+px(bw)+'" height="'+bH+'" fill="'+COLS[i%COLS.length]+'" rx="3"/>';
             else s+='<rect x="'+LW+'" y="'+y+'" width="2" height="'+bH+'" fill="rgba(128,128,128,0.18)" rx="1"/>';
-            s+='<text x="'+(LW+Math.max(px(bw),2)+6)+'" y="'+(y+Math.floor(bH/2)+4)+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" style="pointer-events:none;">'+fmt(Math.round(avg))+'</text>';
+            s+='<text class="sx-c3270469" x="'+(LW+Math.max(px(bw),2)+6)+'" y="'+(y+Math.floor(bH/2)+4)+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" >'+fmt(Math.round(avg))+'</text>';
           });
           s+='<text x="'+(LW+BW/2)+'" y="'+(SH-6)+'" text-anchor="middle" font-family="'+FONT+'" font-size="12" fill="currentColor" opacity="0.75">avg code lines per file (higher = larger files)</text>';
           s+='</svg>';
@@ -26412,7 +27219,7 @@ struct ScanSetupTemplate {
           var topPad=4,botPad=8;
           var rowSlot=Math.floor((SH-topPad-botPad-sepH)/data.length);
           var bH=Math.min(22,Math.max(10,Math.floor(rowSlot*0.65)));
-          var s='<svg viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'" style="display:block;max-width:100%;" xmlns="http://www.w3.org/2000/svg">';
+          var s='<svg class="sx-b882cc83" viewBox="0 0 '+svgW+' '+SH+'" width="'+svgW+'" height="'+SH+'"  xmlns="http://www.w3.org/2000/svg">';
           var yOff=topPad;
           data.forEach(function(d,i){
             var v=d[key]||0,bw=v/maxV*BW;
@@ -26422,7 +27229,7 @@ struct ScanSetupTemplate {
             s+='<text x="'+(LW-5)+'" y="'+(y+Math.floor(bH/2)+4)+'" text-anchor="end" font-family="'+FONT+'" font-size="11" fill="currentColor"'+(d.isOverall?' font-weight="700"':'')+'>'+esc(label)+'</text>';
             if(bw>0.5)s+='<rect'+tt(label,fmt(v))+' x="'+LW+'" y="'+y+'" width="'+px(bw)+'" height="'+bH+'" fill="'+col+'" rx="3"/>';
             else s+='<rect x="'+LW+'" y="'+y+'" width="2" height="'+bH+'" fill="rgba(128,128,128,0.18)" rx="1"/>';
-            s+='<text x="'+(LW+Math.max(px(bw),2)+6)+'" y="'+(y+Math.floor(bH/2)+4)+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" style="pointer-events:none;">'+fmt(v)+'</text>';
+            s+='<text class="sx-c3270469" x="'+(LW+Math.max(px(bw),2)+6)+'" y="'+(y+Math.floor(bH/2)+4)+'" font-family="'+FONT+'" font-size="11" font-weight="700" fill="currentColor" >'+fmt(v)+'</text>';
             yOff+=rowSlot;
             if(d.isOverall&&subs.length>0){
               yOff+=sepH;
@@ -26586,7 +27393,7 @@ struct ScanSetupTemplate {
     function init(){
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -26601,7 +27408,7 @@ struct ScanSetupTemplate {
   </script>
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{{ version }} — Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{{ version }} — Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -26921,6 +27728,8 @@ struct ResultTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Analyzing…</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.86); --surface-2:#fbf7f2;
@@ -27022,11 +27831,11 @@ struct ResultTemplate {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -27160,7 +27969,7 @@ struct ResultTemplate {
   </script>
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{{ version }} — Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{{ version }} — Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -27210,7 +28019,7 @@ struct ResultTemplate {
     function init(){
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -27248,6 +28057,8 @@ struct ScanWaitTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Error</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.86); --surface-2:#fbf7f2;
@@ -27374,11 +28185,11 @@ struct ScanWaitTemplate {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -27423,17 +28234,17 @@ struct ScanWaitTemplate {
               <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               Copy to clipboard
             </button>
-            <a class="btn-sm" id="bug-report-github-link" href="https://github.com/oxide-sloc/oxide-sloc/issues/new" target="_blank" rel="noopener noreferrer" style="display:none;">
+            <a class="btn-sm sx-d0466aa3" id="bug-report-github-link" href="https://github.com/oxide-sloc/oxide-sloc/issues/new" target="_blank" rel="noopener noreferrer" >
               <svg viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/></svg>
               Open GitHub Issue
             </a>
-            <button type="button" class="btn-sm" id="bug-report-save" style="display:none;">
+            <button type="button" class="btn-sm sx-d0466aa3" id="bug-report-save" >
               <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               Save as file
             </button>
           </div>
-          <p class="bug-report-hint" id="br-hint-online" style="display:none;">Paste the report into a new GitHub issue, or click <strong>Open GitHub Issue</strong> to open a pre-filled draft. Remove any file paths you prefer not to share before posting.</p>
-          <p class="bug-report-hint" id="br-hint-offline" style="display:none;"><strong>Air-gapped system detected</strong> &mdash; GitHub is not reachable from this machine. Copy or save the report above, then open a <a href="https://github.com/oxide-sloc/oxide-sloc/issues/new" target="_blank" rel="noopener noreferrer">GitHub issue</a> from a connected machine and paste it there.</p>
+          <p class="bug-report-hint sx-d0466aa3" id="br-hint-online" >Paste the report into a new GitHub issue, or click <strong>Open GitHub Issue</strong> to open a pre-filled draft. Remove any file paths you prefer not to share before posting.</p>
+          <p class="bug-report-hint sx-d0466aa3" id="br-hint-offline" ><strong>Air-gapped system detected</strong> &mdash; GitHub is not reachable from this machine. Copy or save the report above, then open a <a href="https://github.com/oxide-sloc/oxide-sloc/issues/new" target="_blank" rel="noopener noreferrer">GitHub issue</a> from a connected machine and paste it there.</p>
         </div>
       </div>
     </div>
@@ -27533,7 +28344,7 @@ struct ScanWaitTemplate {
         if(navigator.clipboard&&navigator.clipboard.writeText){
           navigator.clipboard.writeText(txt).then(function(){
             copyBtn.textContent='\u2713 Copied!';
-            setTimeout(function(){copyBtn.innerHTML='<svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy to clipboard';},2000);
+            setTimeout(function(){copyBtn.innerHTML='<svg class="sx-78514aa8" viewBox="0 0 24 24" ><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy to clipboard';},2000);
           });
         }else{
           var ta=document.createElement('textarea');
@@ -27603,7 +28414,7 @@ struct ScanWaitTemplate {
     function init(){
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -27650,6 +28461,8 @@ struct ErrorTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Locate Report</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root{--radius:18px;--bg:#f5efe8;--surface:rgba(255,255,255,0.86);--surface-2:#fbf7f2;--line:#e6d0bf;--line-strong:#dcb89f;--text:#43342d;--muted:#7b675b;--muted-2:#a08878;--nav:#283790;--nav-2:#013e6b;--accent:#6f9bff;--accent-2:#4a78ee;--oxide:#d37a4c;--oxide-2:#b85d33;--shadow:0 18px 42px rgba(77,44,20,0.12);}
     body.dark-theme{--bg:#1b1511;--surface:#261c17;--surface-2:#2d221d;--line:#524238;--line-strong:#6b5548;--text:#f5ece6;--muted:#c7b7aa;--muted-2:#9c877a;}
@@ -27785,11 +28598,11 @@ struct ErrorTemplate {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running &mdash; accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -27830,11 +28643,11 @@ struct ErrorTemplate {
           <span>Tip: select the <strong>folder</strong>, not an individual file. If you must pick a file directly, its name must match <strong>{{ expected_filename }}</strong>.</span>
         </div>
         <div class="error-inline" id="locate-error">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:0 0 auto;margin-top:2px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <svg class="sx-2b752633" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           <span id="locate-error-text"></span>
         </div>
         <div class="success-inline" id="locate-success">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:0 0 auto;"><polyline points="20 6 9 17 4 12"/></svg>
+          <svg class="sx-5becf0bb" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ><polyline points="20 6 9 17 4 12"/></svg>
           <span>Scan restored &mdash; loading report&hellip;</span>
         </div>
         <div class="btn-row">
@@ -27913,7 +28726,7 @@ struct ErrorTemplate {
     var S=[{n:'Classic',a:'#b85d33',b:'#7a371b'},{n:'Navy',a:'#283790',b:'#1e1e24'},{n:'Ember',a:'#ce5d3d',b:'#1e1e24'},{n:'Ocean',a:'#1f439b',b:'#1e1e24'},{n:'Royal',a:'#003184',b:'#1e1e24'}];
     function ap(s){document.documentElement.style.setProperty('--nav',s.a);document.documentElement.style.setProperty('--nav-2',s.b);try{localStorage.setItem('sloc-ns',JSON.stringify(s));}catch(e){}document.querySelectorAll('.scheme-swatch').forEach(function(x){x.classList.toggle('active',x.dataset.n===s.n);});}
     try{var sv=JSON.parse(localStorage.getItem('sloc-ns'));if(sv&&sv.a){ap(sv);}else{ap(S[0]);}}catch(e){ap(S[0]);}
-    function init(){var btn=document.getElementById('settings-btn');if(!btn)return;var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';document.body.appendChild(m);var g=document.getElementById('scheme-grid');if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});var cl=document.getElementById('settings-close');window.tzAbbr=function(z){return{'America/Los_Angeles':'PT','America/Denver':'MT','America/Chicago':'CT','America/New_York':'ET','America/Anchorage':'AT','Pacific/Honolulu':'HT'}[z]||'PT';};window.tzCity=function(z){return{'America/Los_Angeles':'Los Angeles','America/Denver':'Denver','America/Chicago':'Chicago','America/New_York':'New York','America/Anchorage':'Anchorage','Pacific/Honolulu':'Honolulu'}[z]||'';};window.tzOffset=function(z){var r='';try{var p=new Intl.DateTimeFormat('en-US',{timeZone:z,timeZoneName:'longOffset'}).formatToParts(new Date());p.forEach(function(x){if(x.type==='timeZoneName')r=x.value.replace('GMT','UTC');});}catch(e){}return r;};window.tf24=function(){try{return localStorage.getItem('sloc-tf')!=='12';}catch(e){return true;}};window.fmtTz=function(ms,tz){var d=new Date(ms);if(isNaN(d.getTime()))return'';var h24=window.tf24();try{var pts=new Intl.DateTimeFormat('en-US',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:!h24}).formatToParts(d);var v={};pts.forEach(function(p){v[p.type]=p.value;});var t=v.hour+':'+v.minute;if(!h24&&v.dayPeriod)t+=' '+v.dayPeriod;return v.year+'-'+v.month+'-'+v.day+' '+t+' '+window.tzAbbr(tz);}catch(e){return'';}};window.enhanceTzOptions=function(sel){if(!sel)return;Array.prototype.forEach.call(sel.options,function(o){var base=o.textContent.split(' - ')[0];var city=window.tzCity(o.value);var off=window.tzOffset(o.value);o.textContent=base+(city?' - '+city:'')+(off?' - '+off:'');});};window.applyTz=function(tz){try{localStorage.setItem('sloc-tz',tz);}catch(e){}document.querySelectorAll('[data-utc-ms]').forEach(function(el){var ms=parseInt(el.getAttribute('data-utc-ms'),10);if(!isNaN(ms))el.textContent=window.fmtTz(ms,tz);});};window.applyTf=function(tf){try{localStorage.setItem('sloc-tf',tf);}catch(e){}var z;try{z=localStorage.getItem('sloc-tz')||'America/Los_Angeles';}catch(e){z='America/Los_Angeles';}window.applyTz(z);};var tzSel=document.getElementById('tz-select');window.enhanceTzOptions(tzSel);var storedTz;try{storedTz=localStorage.getItem('sloc-tz')||'America/Los_Angeles';}catch(e){storedTz='America/Los_Angeles';}if(tzSel){tzSel.value=storedTz;tzSel.addEventListener('change',function(){window.applyTz(this.value);});}window.applyTz(storedTz);(function(){var tzp=document.getElementById('tz-select');if(!tzp||document.getElementById('tf-select')||!tzp.parentNode)return;var tw=document.createElement('div');tw.style.marginTop='10px';var tl=document.createElement('div');tl.className='settings-modal-label';tl.style.marginBottom='8px';tl.textContent='Time format';var tfSel=document.createElement('select');tfSel.className='tz-select';tfSel.id='tf-select';tfSel.innerHTML='<option value="24">24-hour (14:30)</option><option value="12">12-hour (2:30 PM)</option>';tw.appendChild(tl);tw.appendChild(tfSel);tzp.parentNode.appendChild(tw);var storedTf;try{storedTf=localStorage.getItem('sloc-tf')||'24';}catch(e){storedTf='24';}tfSel.value=storedTf;tfSel.addEventListener('change',function(){window.applyTf(this.value);});})();btn.addEventListener('click',function(e){e.stopPropagation();var r=btn.getBoundingClientRect();m.style.top=(r.bottom+6)+'px';m.style.right=(window.innerWidth-r.right)+'px';m.classList.toggle('open');});if(cl)cl.addEventListener('click',function(){m.classList.remove('open');});document.addEventListener('click',function(e){if(!m.contains(e.target)&&e.target!==btn)m.classList.remove('open');});}
+    function init(){var btn=document.getElementById('settings-btn');if(!btn)return;var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';document.body.appendChild(m);var g=document.getElementById('scheme-grid');if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});var cl=document.getElementById('settings-close');window.tzAbbr=function(z){return{'America/Los_Angeles':'PT','America/Denver':'MT','America/Chicago':'CT','America/New_York':'ET','America/Anchorage':'AT','Pacific/Honolulu':'HT'}[z]||'PT';};window.tzCity=function(z){return{'America/Los_Angeles':'Los Angeles','America/Denver':'Denver','America/Chicago':'Chicago','America/New_York':'New York','America/Anchorage':'Anchorage','Pacific/Honolulu':'Honolulu'}[z]||'';};window.tzOffset=function(z){var r='';try{var p=new Intl.DateTimeFormat('en-US',{timeZone:z,timeZoneName:'longOffset'}).formatToParts(new Date());p.forEach(function(x){if(x.type==='timeZoneName')r=x.value.replace('GMT','UTC');});}catch(e){}return r;};window.tf24=function(){try{return localStorage.getItem('sloc-tf')!=='12';}catch(e){return true;}};window.fmtTz=function(ms,tz){var d=new Date(ms);if(isNaN(d.getTime()))return'';var h24=window.tf24();try{var pts=new Intl.DateTimeFormat('en-US',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:!h24}).formatToParts(d);var v={};pts.forEach(function(p){v[p.type]=p.value;});var t=v.hour+':'+v.minute;if(!h24&&v.dayPeriod)t+=' '+v.dayPeriod;return v.year+'-'+v.month+'-'+v.day+' '+t+' '+window.tzAbbr(tz);}catch(e){return'';}};window.enhanceTzOptions=function(sel){if(!sel)return;Array.prototype.forEach.call(sel.options,function(o){var base=o.textContent.split(' - ')[0];var city=window.tzCity(o.value);var off=window.tzOffset(o.value);o.textContent=base+(city?' - '+city:'')+(off?' - '+off:'');});};window.applyTz=function(tz){try{localStorage.setItem('sloc-tz',tz);}catch(e){}document.querySelectorAll('[data-utc-ms]').forEach(function(el){var ms=parseInt(el.getAttribute('data-utc-ms'),10);if(!isNaN(ms))el.textContent=window.fmtTz(ms,tz);});};window.applyTf=function(tf){try{localStorage.setItem('sloc-tf',tf);}catch(e){}var z;try{z=localStorage.getItem('sloc-tz')||'America/Los_Angeles';}catch(e){z='America/Los_Angeles';}window.applyTz(z);};var tzSel=document.getElementById('tz-select');window.enhanceTzOptions(tzSel);var storedTz;try{storedTz=localStorage.getItem('sloc-tz')||'America/Los_Angeles';}catch(e){storedTz='America/Los_Angeles';}if(tzSel){tzSel.value=storedTz;tzSel.addEventListener('change',function(){window.applyTz(this.value);});}window.applyTz(storedTz);(function(){var tzp=document.getElementById('tz-select');if(!tzp||document.getElementById('tf-select')||!tzp.parentNode)return;var tw=document.createElement('div');tw.style.marginTop='10px';var tl=document.createElement('div');tl.className='settings-modal-label';tl.style.marginBottom='8px';tl.textContent='Time format';var tfSel=document.createElement('select');tfSel.className='tz-select';tfSel.id='tf-select';tfSel.innerHTML='<option value="24">24-hour (14:30)</option><option value="12">12-hour (2:30 PM)</option>';tw.appendChild(tl);tw.appendChild(tfSel);tzp.parentNode.appendChild(tw);var storedTf;try{storedTf=localStorage.getItem('sloc-tf')||'24';}catch(e){storedTf='24';}tfSel.value=storedTf;tfSel.addEventListener('change',function(){window.applyTf(this.value);});})();btn.addEventListener('click',function(e){e.stopPropagation();var r=btn.getBoundingClientRect();m.style.top=(r.bottom+6)+'px';m.style.right=(window.innerWidth-r.right)+'px';m.classList.toggle('open');});if(cl)cl.addEventListener('click',function(){m.classList.remove('open');});document.addEventListener('click',function(e){if(!m.contains(e.target)&&e.target!==btn)m.classList.remove('open');});}
     if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
   }());</script>
   <script nonce="{{ csp_nonce }}">(function(){
@@ -28037,6 +28850,8 @@ struct LocateFileTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Locate Scan Files</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.86); --surface-2:#fbf7f2;
@@ -28134,7 +28949,7 @@ struct LocateFileTemplate {
             <a href="/trend-reports"><svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>Trend Reports</a>
           </div>
         </div>
-        <a class="nav-pill" style="background:rgba(255,255,255,0.22);" href="/compare-scans">Compare Scans</a>
+        <a class="nav-pill sx-8c38ef73"  href="/compare-scans">Compare Scans</a>
         <a class="nav-pill" href="/test-metrics">Test Metrics</a>
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
@@ -28147,11 +28962,11 @@ struct LocateFileTemplate {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -28183,8 +28998,8 @@ struct LocateFileTemplate {
           <button type="button" id="browse-relocate-btn" class="btn-secondary">Browse&hellip;</button>
           {% endif %}
         </div>
-        <div style="margin-top:12px;">
-          <button type="button" id="restore-btn" class="btn-primary" style="border:none;">Restore Scan</button>
+        <div class="sx-b6d781cb" >
+          <button type="button" id="restore-btn" class="btn-primary sx-87798f9f" >Restore Scan</button>
         </div>
       </div>
       <div class="actions">
@@ -28213,7 +29028,7 @@ struct LocateFileTemplate {
     function init(){
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -28304,6 +29119,8 @@ struct RelocateScanTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | View Reports</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.82); --surface-2:#fbf7f2;
@@ -28477,7 +29294,7 @@ struct RelocateScanTemplate {
       <div class="nav-right">
         <a class="nav-pill" href="/">Home</a>
         <div class="nav-dropdown">
-          <a href="/view-reports" class="nav-dropdown-btn" style="background:rgba(255,255,255,0.22);">View Reports <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
+          <a href="/view-reports" class="nav-dropdown-btn sx-8c38ef73" >View Reports <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
             <a href="/trend-reports"><svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>Trend Reports</a>
           </div>
@@ -28495,11 +29312,11 @@ struct RelocateScanTemplate {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -28537,7 +29354,7 @@ struct RelocateScanTemplate {
           {% for dir in watched_dirs %}
           <span class="watched-chip">
             <span class="watched-chip-path" title="{{ dir }}">{{ dir }}</span>
-            <form method="POST" action="/watched-dirs/remove" style="display:contents">
+            <form class="sx-043808a9" method="POST" action="/watched-dirs/remove" >
               <input type="hidden" name="folder_path" value="{{ dir }}">
               <input type="hidden" name="redirect_to" value="/view-reports">
               <button type="submit" class="watched-chip-rm" title="Remove folder">&#x2715;</button>
@@ -28556,7 +29373,7 @@ struct RelocateScanTemplate {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           Choose
         </button>
-        <form method="POST" action="/watched-dirs/refresh" style="display:contents">
+        <form class="sx-043808a9" method="POST" action="/watched-dirs/refresh" >
           <input type="hidden" name="redirect_to" value="/view-reports">
           <button type="submit" class="btn">&#8635; Refresh</button>
         </form>
@@ -28570,7 +29387,7 @@ struct RelocateScanTemplate {
         <div class="scan-overlay-sub">Reading reports and building metrics — this can take a moment for large folders.</div>
       </div>
     </div>
-    <style>
+    <style nonce="{{ csp_nonce }}">
     .scan-overlay{position:fixed;inset:0;z-index:12000;display:none;align-items:center;justify-content:center;background:rgba(20,12,8,0.5);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);}
     .scan-overlay.active{display:flex;}
     .scan-overlay-card{background:var(--surface);border:1px solid var(--line-strong);border-radius:16px;padding:26px 38px;display:flex;flex-direction:column;align-items:center;gap:12px;box-shadow:0 24px 60px rgba(0,0,0,0.35);max-width:340px;text-align:center;}
@@ -28593,7 +29410,7 @@ struct RelocateScanTemplate {
         <div>
           <h1>View Reports</h1>
           <p class="panel-meta">{{ total_scans }} report(s) available. Use the View or PDF button to open a report.</p>
-          {% if server_mode %}<p class="panel-meta" style="margin-top:4px;color:var(--muted);">Showing all scans from all users on this server — scan history is shared across authenticated sessions.</p>{% endif %}
+          {% if server_mode %}<p class="panel-meta sx-4db908e4" >Showing all scans from all users on this server — scan history is shared across authenticated sessions.</p>{% endif %}
         </div>
         <div class="flex-row">
           <button type="button" class="export-btn" id="export-csv-btn">
@@ -28709,7 +29526,7 @@ struct RelocateScanTemplate {
 
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{{ version }} — Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{{ version }} — Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -29325,7 +30142,7 @@ struct RelocateScanTemplate {
     function init(){
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -29367,6 +30184,8 @@ struct HistoryTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Compare Scans</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.82); --surface-2:#fbf7f2;
@@ -29560,7 +30379,7 @@ struct HistoryTemplate {
             <a href="/trend-reports"><svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>Trend Reports</a>
           </div>
         </div>
-        <a class="nav-pill" style="background:rgba(255,255,255,0.22);" href="/compare-scans">Compare Scans</a>
+        <a class="nav-pill sx-8c38ef73"  href="/compare-scans">Compare Scans</a>
         <a class="nav-pill" href="/test-metrics">Test Metrics</a>
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
@@ -29573,11 +30392,11 @@ struct HistoryTemplate {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -29603,7 +30422,7 @@ struct HistoryTemplate {
           {% for dir in watched_dirs %}
           <span class="watched-chip">
             <span class="watched-chip-path" title="{{ dir }}">{{ dir }}</span>
-            <form method="POST" action="/watched-dirs/remove" style="display:contents">
+            <form class="sx-043808a9" method="POST" action="/watched-dirs/remove" >
               <input type="hidden" name="folder_path" value="{{ dir }}">
               <input type="hidden" name="redirect_to" value="/compare-scans">
               <button type="submit" class="watched-chip-rm" title="Remove folder">&#x2715;</button>
@@ -29622,7 +30441,7 @@ struct HistoryTemplate {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           Choose
         </button>
-        <form method="POST" action="/watched-dirs/refresh" style="display:contents">
+        <form class="sx-043808a9" method="POST" action="/watched-dirs/refresh" >
           <input type="hidden" name="redirect_to" value="/compare-scans">
           <button type="submit" class="btn">&#8635; Refresh</button>
         </form>
@@ -29636,7 +30455,7 @@ struct HistoryTemplate {
         <div class="scan-overlay-sub">Reading reports and building metrics — this can take a moment for large folders.</div>
       </div>
     </div>
-    <style>
+    <style nonce="{{ csp_nonce }}">
     .scan-overlay{position:fixed;inset:0;z-index:12000;display:none;align-items:center;justify-content:center;background:rgba(20,12,8,0.5);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);}
     .scan-overlay.active{display:flex;}
     .scan-overlay-card{background:var(--surface);border:1px solid var(--line-strong);border-radius:16px;padding:26px 38px;display:flex;flex-direction:column;align-items:center;gap:12px;box-shadow:0 24px 60px rgba(0,0,0,0.35);max-width:340px;text-align:center;}
@@ -29659,8 +30478,8 @@ struct HistoryTemplate {
           <h1>Compare Scans</h1>
           <p class="panel-meta">{{ total_scans }} scan record(s) available. Select two or more scans from the same project, then press Compare.</p>
         </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+        <div class="sx-fde5ebae" >
+          <div class="sx-a6b122c5" >
             <button class="btn primary" id="compare-btn" disabled>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
               Compare <span class="sel-count" id="sel-count">0</span> Selected
@@ -29688,14 +30507,14 @@ struct HistoryTemplate {
         <div class="scope-options" id="scope-options"></div>
       </div>
       {% if total_scans > 0 %}
-      <div class="hint-right-wrap" style="display:flex;justify-content:flex-end;margin:6px 0 8px;">
-        <div class="instruction-bar" style="margin:0;max-width:fit-content;flex-shrink:0;">
+      <div class="hint-right-wrap sx-f9538e2a" >
+        <div class="instruction-bar sx-2f0d883e" >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
           Select rows from the <strong>same project</strong>, then press <strong>Compare</strong> — or use <strong>Compare All</strong> for a full project history.
         </div>
       </div>
       {% endif %}
-      <div id="compare-all-bar" class="compare-all-bar" style="display:none">
+      <div id="compare-all-bar" class="compare-all-bar sx-6aa34d74" >
         <span class="compare-all-label">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline></svg>
           Quick Compare All
@@ -29739,9 +30558,9 @@ struct HistoryTemplate {
               <td><span class="metric-num">{{ entry.code_lines }}</span></td>
               <td><span class="metric-num">{{ entry.comment_lines }}</span></td>
               <td><span class="metric-num">{{ entry.blank_lines }}</span></td>
-              <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span style="color:var(--muted)">&#8212;</span>{% endif %}</td>
-              <td>{% if !entry.git_commit.is_empty() %}<span class="git-chip git-commit-chip" style="cursor:help;" data-full-commit="{{ entry.git_commit_long }}">{{ entry.git_commit }}</span>{% else %}<span style="color:var(--muted)">&#8212;</span>{% endif %}</td>
-              <td style="white-space:normal;vertical-align:middle;">{% if !entry.submodule_links.is_empty() %}<div class="submod-chips-cell">{% for sub in entry.submodule_links %}<span class="submod-chip">{{ sub.name }}</span>{% endfor %}</div>{% else %}<span style="color:var(--muted)">&#8212;</span>{% endif %}</td>
+              <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span class="sx-eac76940" >&#8212;</span>{% endif %}</td>
+              <td>{% if !entry.git_commit.is_empty() %}<span class="git-chip git-commit-chip sx-53f53688"  data-full-commit="{{ entry.git_commit_long }}">{{ entry.git_commit }}</span>{% else %}<span class="sx-eac76940" >&#8212;</span>{% endif %}</td>
+              <td class="sx-bf562f19" >{% if !entry.submodule_links.is_empty() %}<div class="submod-chips-cell">{% for sub in entry.submodule_links %}<span class="submod-chip">{{ sub.name }}</span>{% endfor %}</div>{% else %}<span class="sx-eac76940" >&#8212;</span>{% endif %}</td>
             </tr>
             {% endfor %}
           </tbody>
@@ -29767,7 +30586,7 @@ struct HistoryTemplate {
 
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{{ version }} — Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{{ version }} — Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -30255,7 +31074,7 @@ struct HistoryTemplate {
     function init(){
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -30297,6 +31116,8 @@ struct CompareSelectTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Scan Delta</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:#fbf7f2; --surface-2:#f4ede4;
@@ -30597,7 +31418,7 @@ struct CompareSelectTemplate {
             <a href="/trend-reports"><svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>Trend Reports</a>
           </div>
         </div>
-        <a class="nav-pill" style="background:rgba(255,255,255,0.22);" href="/compare-scans">Compare Scans</a>
+        <a class="nav-pill sx-8c38ef73"  href="/compare-scans">Compare Scans</a>
         <a class="nav-pill" href="/test-metrics">Test Metrics</a>
         <div class="nav-dropdown">
           <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
@@ -30610,11 +31431,11 @@ struct CompareSelectTemplate {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -30634,23 +31455,23 @@ struct CompareSelectTemplate {
         <div>
           <h1 class="delta-title">Scan Delta</h1>
           <p class="delta-desc">Side-by-side metric comparison between two scans — code line deltas, file changes, and language breakdown.</p>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px;">
+          <div class="sx-3d0e741f" >
             {% if let Some(sub) = active_submodule %}
-            <span class="muted" style="font-size:16px;">Submodule <strong>{{ sub }}</strong> — two scans of</span>
+            <span class="muted sx-43e9c079" >Submodule <strong>{{ sub }}</strong> — two scans of</span>
             {% else if super_scope_active %}
-            <span class="muted" style="font-size:16px;">Super-repo only (submodules excluded) — two scans of</span>
+            <span class="muted sx-43e9c079" >Super-repo only (submodules excluded) — two scans of</span>
             {% else %}
-            <span class="muted" style="font-size:16px;">Full scan — two scans of</span>
+            <span class="muted sx-43e9c079" >Full scan — two scans of</span>
             {% endif %}
-            <a class="path-link" id="project-path-link" data-folder="{{ project_path }}" href="#" style="font-size:16px;font-weight:700;">{{ project_path }}</a>
+            <a class="path-link sx-eac12633" id="project-path-link" data-folder="{{ project_path }}" href="#" >{{ project_path }}</a>
           </div>
         </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;">
+        <div class="sx-543fb39c" >
           <a class="btn-back" href="/compare-scans">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
             Compare Scans
           </a>
-          <div class="export-group" style="margin-top:12px;">
+          <div class="export-group sx-b6d781cb" >
             <button type="button" class="export-btn" id="page-export-html-btn" title="Export page as HTML report"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export HTML</button>
             <button type="button" class="export-btn" id="page-export-pdf-btn" title="Export page as PDF report"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> Export PDF</button>
           </div>
@@ -30680,7 +31501,7 @@ struct CompareSelectTemplate {
       <div class="meta-strip">
         <div class="delta-card delta-card-meta">
           <div class="meta-card-header">
-            <div class="delta-card-label" style="margin-bottom:0;font-size:26px;letter-spacing:.04em;">Baseline</div>
+            <div class="delta-card-label sx-d7014559" >Baseline</div>
             <div class="meta-card-project-col">
               <div class="meta-card-project">{{ project_name }}</div>
               {% if has_any_submodule_data %}
@@ -30712,7 +31533,7 @@ struct CompareSelectTemplate {
         </div>
         <div class="delta-card delta-card-meta">
           <div class="meta-card-header">
-            <div class="delta-card-label" style="margin-bottom:0;font-size:26px;letter-spacing:.04em;">Current</div>
+            <div class="delta-card-label sx-d7014559" >Current</div>
             <div class="meta-card-project-col">
               <div class="meta-card-project">{{ project_name }}</div>
               {% if has_any_submodule_data %}
@@ -30839,10 +31660,10 @@ struct CompareSelectTemplate {
     <section class="panel" id="inline-charts-section">
       <div class="panel-title">Scan Delta Charts</div>
       <div class="ic-grid">
-        <div class="ic-card" style="grid-column:span 2">
+        <div class="ic-card sx-aeb7cdee" >
           <div class="ic-card-h2-row">
             <span class="ic-card-h2">Timeline</span>
-            <div class="cmp-tl-btns" style="display:flex;gap:6px;flex-wrap:wrap;">
+            <div class="cmp-tl-btns sx-98cced4e" >
               <button class="chart-metric-btn active" data-cmp-metric="code">Code Lines</button>
               <button class="chart-metric-btn" data-cmp-metric="files">Files</button>
               <button class="chart-metric-btn" data-cmp-metric="comments">Comments</button>
@@ -30855,7 +31676,7 @@ struct CompareSelectTemplate {
         </div>
         <div class="ic-card">
           <div class="ic-card-h2-row"><span class="ic-card-h2">Code Metrics &mdash; Baseline vs Current</span><button class="ic-expand-btn" data-expand-src="ic-c1" data-expand-title="Code Metrics — Baseline vs Current">&#x2922; Full View</button></div>
-          <div class="ic-leg"><span class="ic-leg-item" data-highlight="Code Lines"><span class="ic-dot" style="background:#C45C10"></span><span style="color:#C45C10;font-weight:600">Code Lines</span></span><span class="ic-leg-item" data-highlight="Files Analyzed"><span class="ic-dot" style="background:#2A6846"></span><span style="color:#2A6846;font-weight:600">Files</span></span><span class="ic-leg-item" data-highlight="Comments"><span class="ic-dot" style="background:#D4A017"></span><span style="color:#D4A017;font-weight:600">Comments</span></span></div>
+          <div class="ic-leg"><span class="ic-leg-item" data-highlight="Code Lines"><span class="ic-dot sx-ec93ae6b" ></span><span class="sx-d50d9131" >Code Lines</span></span><span class="ic-leg-item" data-highlight="Files Analyzed"><span class="ic-dot sx-bbb79db3" ></span><span class="sx-f6800712" >Files</span></span><span class="ic-leg-item" data-highlight="Comments"><span class="ic-dot sx-6353c5b0" ></span><span class="sx-45650046" >Comments</span></span></div>
           <div id="ic-c1"></div>
         </div>
         <div class="ic-card" id="ic-lang-card">
@@ -30883,16 +31704,16 @@ struct CompareSelectTemplate {
     </section>
 
     <section class="panel">
-      <div class="panel-title">File Matrix <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px;text-transform:none;letter-spacing:0;">{{ (files_modified + files_added + files_removed + files_unchanged)|commas }} files</span></div>
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
-        <div class="filter-tabs" style="display:flex;gap:6px;flex-wrap:wrap;">
+      <div class="panel-title">File Matrix <span class="sx-8bdabd9b" >{{ (files_modified + files_added + files_removed + files_unchanged)|commas }} files</span></div>
+      <div class="sx-a86a62cc" >
+        <div class="filter-tabs sx-98cced4e" >
           <button class="tab-btn tab-all active" data-filter="all">All ({{ (files_modified + files_added + files_removed + files_unchanged)|commas }})</button>
           <button class="tab-btn tab-modified" data-filter="modified">Modified ({{ files_modified|commas }})</button>
           <button class="tab-btn tab-added" data-filter="added">Added ({{ files_added|commas }})</button>
           <button class="tab-btn tab-removed" data-filter="removed">Removed ({{ files_removed|commas }})</button>
           <button class="tab-btn tab-unchanged" data-filter="unchanged">Unchanged ({{ files_unchanged|commas }})</button>
         </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+        <div class="sx-fde5ebae" >
           <span class="delta-note">* &Delta; = delta (change from baseline &rarr; current)</span>
           <div class="export-group">
             <button type="button" class="export-btn" id="delta-reset-btn">&#8635; Reset</button>
@@ -30973,7 +31794,7 @@ struct CompareSelectTemplate {
 
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{{ version }} — Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{{ version }} — Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -31281,7 +32102,7 @@ struct CompareSelectTemplate {
         if(pdfMode) document.body.classList.add('pdf-mode');
         var saved = deltaPerPage; deltaPerPage = 999999; deltaCurrPage = 1;
         renderDeltaPage();
-        var html = document.documentElement.outerHTML;
+        var html = window.sxSelfContain(document.documentElement.outerHTML);
         deltaPerPage = saved; deltaCurrPage = 1; renderDeltaPage();
         if(pdfMode) document.body.classList.remove('pdf-mode');
         return html;
@@ -31319,7 +32140,7 @@ struct CompareSelectTemplate {
         function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
         function fmtN(n){return Number(n).toLocaleString();}
         function fullN(n){var v=Number(n);return isNaN(v)?'\u2014':v.toLocaleString();}
-        function delt(v){var s=String(v==null?'\u2014':v);if(!s||s==='0'||s==='\u2014')return'<span>'+esc(s)+'</span>';return s.charAt(0)==='-'?'<span style="color:#b23030;font-weight:700">'+esc(s)+'</span>':'<span style="color:#2a6846;font-weight:700">'+esc(s)+'</span>';}
+        function delt(v){var s=String(v==null?'\u2014':v);if(!s||s==='0'||s==='\u2014')return'<span>'+esc(s)+'</span>';return s.charAt(0)==='-'?'<span class="sx-4e307fd5" >'+esc(s)+'</span>':'<span class="sx-e46b3d3d" >'+esc(s)+'</span>';}
         var lm={};
         dr.forEach(function(r){var l=r[1]||'Unknown',d=parseInt(r[5])||0,c=parseInt(r[4])||0;if(!lm[l])lm[l]={f:0,d:0,c:0};lm[l].f++;lm[l].d+=d;lm[l].c+=c;});
         var langs=Object.keys(lm).sort(function(a,b){return lm[b].c-lm[a].c;}).slice(0,15);
@@ -31377,14 +32198,14 @@ struct CompareSelectTemplate {
           '.fcc-l{font-size:10px;font-weight:600;color:#666;line-height:1.25;}';
         var fileRows=dchg.map(function(r){
           var st=r[2]||'',ss=st==='added'?'color:#2a6846;font-weight:700':st==='removed'?'color:#b23030;font-weight:700':'';
-          return '<tr><td style="word-break:break-all">'+esc(r[0])+'</td><td>'+esc(r[1])+'</td>'+
+          return '<tr><td class="sx-a83ce3a2" >'+esc(r[0])+'</td><td>'+esc(r[1])+'</td>'+
             '<td style="'+ss+'">'+esc(st)+'</td>'+
-            '<td style="text-align:right">'+fmtN(r[3])+'</td>'+
-            '<td style="text-align:right">'+fmtN(r[4])+'</td>'+
-            '<td style="text-align:right">'+delt(r[5])+'</td></tr>';
-        }).join('')||'<tr><td colspan="6" style="text-align:center;color:#888;font-style:italic;padding:10px">No file changes between these scans.</td></tr>';
+            '<td class="sx-5f326564" >'+fmtN(r[3])+'</td>'+
+            '<td class="sx-5f326564" >'+fmtN(r[4])+'</td>'+
+            '<td class="sx-5f326564" >'+delt(r[5])+'</td></tr>';
+        }).join('')||'<tr><td class="sx-1daf8e4d" colspan="6" >No file changes between these scans.</td></tr>';
         var more='';
-        var langRows=langs.map(function(l){var e=lm[l],dv=e.d>=0?'+'+e.d:String(e.d);return'<tr><td>'+esc(l)+'</td><td style="text-align:right">'+fmtN(e.f)+'</td><td style="text-align:right">'+fmtN(e.c)+'</td><td style="text-align:right">'+delt(dv)+'</td></tr>';}).join('');
+        var langRows=langs.map(function(l){var e=lm[l],dv=e.d>=0?'+'+e.d:String(e.d);return'<tr><td>'+esc(l)+'</td><td class="sx-5f326564" >'+fmtN(e.f)+'</td><td class="sx-5f326564" >'+fmtN(e.c)+'</td><td class="sx-5f326564" >'+delt(dv)+'</td></tr>';}).join('');
         var extraCards='';
         if(Number(sd.btests||0)>0||Number(sd.ctests||0)>0){extraCards+='<div class="mcard"><div class="mc-l">Tests Detected</div><div class="mc-v">'+fullN(sd.ctests)+'</div><div class="mc-b">Before: '+fullN(sd.btests)+'</div><div class="mc-p '+pcls(sd.btests,sd.ctests)+'">'+pct(sd.btests,sd.ctests)+'</div></div>';}
         if(sd.bcov!=null||sd.ccov!=null){var _cc=(sd.ccov!=null?Number(sd.ccov).toFixed(1)+'%':'—'),_cb=(sd.bcov!=null?Number(sd.bcov).toFixed(1)+'%':'—');extraCards+='<div class="mcard"><div class="mc-l">Coverage</div><div class="mc-v">'+_cc+'</div><div class="mc-b">Before: '+_cb+'</div></div>';}
@@ -31400,24 +32221,24 @@ struct CompareSelectTemplate {
           '<div class="mcard"><div class="mc-l">Code Lines</div><div class="mc-v">'+fullN(sd.cc)+'</div><div class="mc-b">Before: '+fullN(sd.bc)+'</div><div class="mc-p '+pcls(sd.bc,sd.cc)+'">'+pct(sd.bc,sd.cc)+'</div></div>'+
           '<div class="mcard"><div class="mc-l">Files Analyzed</div><div class="mc-v">'+fullN(sd.cf)+'</div><div class="mc-b">Before: '+fullN(sd.bf)+'</div><div class="mc-p '+pcls(sd.bf,sd.cf)+'">'+pct(sd.bf,sd.cf)+'</div></div>'+
           '<div class="mcard"><div class="mc-l">Comment Lines</div><div class="mc-v">'+fullN(sd.ccm)+'</div><div class="mc-b">Before: '+fullN(sd.bcm)+'</div><div class="mc-p '+pcls(sd.bcm,sd.ccm)+'">'+pct(sd.bcm,sd.ccm)+'</div></div>'+
-          '<div class="mcard"><div class="mc-l">Lines Added</div><div class="mc-v" style="color:#2a6846">+'+fullN(sd.cla)+'</div><div class="mc-b">New or grown source lines</div></div>'+
-          '<div class="mcard"><div class="mc-l">Lines Removed</div><div class="mc-v" style="color:#b23030">−'+fullN(sd.clr)+'</div><div class="mc-b">Deleted or shrunk source lines</div></div>'+
-          '<div class="mcard"><div class="mc-l">Churn Rate</div><div class="mc-v" style="color:#1a2035">'+esc(String(sd.churn))+'</div><div class="mc-b">(added + removed) ÷ baseline</div></div>'+
+          '<div class="mcard"><div class="mc-l">Lines Added</div><div class="mc-v sx-24025da0" >+'+fullN(sd.cla)+'</div><div class="mc-b">New or grown source lines</div></div>'+
+          '<div class="mcard"><div class="mc-l">Lines Removed</div><div class="mc-v sx-fe2ed38d" >−'+fullN(sd.clr)+'</div><div class="mc-b">Deleted or shrunk source lines</div></div>'+
+          '<div class="mcard"><div class="mc-l">Churn Rate</div><div class="mc-v sx-45e37f19" >'+esc(String(sd.churn))+'</div><div class="mc-b">(added + removed) ÷ baseline</div></div>'+
           extraCards+'</div></div>'+
           '<div class="sec"><p class="sh">File Changes</p>'+
           '<div class="fcsec">'+
-          '<div class="fcc"><span class="fcc-n" style="color:#d4a017">'+fullN(sd.fm)+'</span><span class="fcc-l">Modified</span></div>'+
-          '<div class="fcc"><span class="fcc-n" style="color:#2a6846">'+fullN(sd.fa)+'</span><span class="fcc-l">Added</span></div>'+
-          '<div class="fcc"><span class="fcc-n" style="color:#b23030">'+fullN(sd.fr)+'</span><span class="fcc-l">Removed</span></div>'+
-          '<div class="fcc"><span class="fcc-n" style="color:#555">'+fullN(sd.fu)+'</span><span class="fcc-l">Unchanged (identical code counts)</span></div>'+
-          '<div class="fcc"><span class="fcc-n" style="color:#1a2035">'+fullN(Number(sd.fm)+Number(sd.fa)+Number(sd.fr)+Number(sd.fu))+'</span><span class="fcc-l">Total (modified + added + removed + unchanged)</span></div>'+
+          '<div class="fcc"><span class="fcc-n sx-8b3f8a70" >'+fullN(sd.fm)+'</span><span class="fcc-l">Modified</span></div>'+
+          '<div class="fcc"><span class="fcc-n sx-24025da0" >'+fullN(sd.fa)+'</span><span class="fcc-l">Added</span></div>'+
+          '<div class="fcc"><span class="fcc-n sx-fe2ed38d" >'+fullN(sd.fr)+'</span><span class="fcc-l">Removed</span></div>'+
+          '<div class="fcc"><span class="fcc-n sx-e5529f3c" >'+fullN(sd.fu)+'</span><span class="fcc-l">Unchanged (identical code counts)</span></div>'+
+          '<div class="fcc"><span class="fcc-n sx-45e37f19" >'+fullN(Number(sd.fm)+Number(sd.fa)+Number(sd.fr)+Number(sd.fu))+'</span><span class="fcc-l">Total (modified + added + removed + unchanged)</span></div>'+
           '</div></div>'+
-          (langs.length?'<div class="sec"><p class="sh">Language Breakdown</p><table><thead><tr><th>Language</th><th style="text-align:right">Files</th><th style="text-align:right">Code Lines</th><th style="text-align:right">Code \u0394</th></tr></thead><tbody>'+langRows+'</tbody></table></div>':'')+
+          (langs.length?'<div class="sec"><p class="sh">Language Breakdown</p><table><thead><tr><th>Language</th><th class="sx-5f326564" >Files</th><th class="sx-5f326564" >Code Lines</th><th class="sx-5f326564" >Code \u0394</th></tr></thead><tbody>'+langRows+'</tbody></table></div>':'')+
           '<div class="sec">'+
           '<table><thead>'+
           '<tr class="pg-rhdr"><th colspan="6"><div class="pg-rhdr-in"><span>File Delta &middot; '+fmtN(dchg.length)+' changed of '+fmtN(dr.length)+' files</span><span class="pg-rhdr-r"><em>oxide</em>-sloc &middot; Scan Delta &middot; '+esc(projName)+'</span></div></th></tr>'+
           '<tr><th>File</th><th>Language</th><th>Status</th>'+
-          '<th style="text-align:right">Code Before</th><th style="text-align:right">Code After</th><th style="text-align:right">Code \u0394</th>'+
+          '<th class="sx-5f326564" >Code Before</th><th class="sx-5f326564" >Code After</th><th class="sx-5f326564" >Code \u0394</th>'+
           '</tr></thead><tbody>'+fileRows+more+'</tbody><tfoot><tr><td colspan="6" class="rfoot-spacer"></td></tr></tfoot></table></div>'+
           '</div>'+
           '<div class="rfoot">'+
@@ -31671,7 +32492,7 @@ struct CompareSelectTemplate {
       var segs=[{l:'Modified',v:sd.fm,c:OX},{l:'Added',v:sd.fa,c:GN},{l:'Removed',v:sd.fr,c:RD},{l:'Unchanged',v:sd.fu,c:'#CCCCCC'}].filter(function(s){return s.v>0;});
       var tot=segs.reduce(function(a,s){return a+s.v;},0)||1;
       var C4W=240,Ro=75,Ri=48,cx4=120,cy4=88,legY=172,legRowH=18,C4H=legY+Math.ceil(segs.length/2)*legRowH+8;
-      var c4='<svg viewBox="0 0 '+C4W+' '+C4H+'" width="100%" style="max-width:336px;display:block;margin:0 auto;" xmlns="http://www.w3.org/2000/svg">';
+      var c4='<svg class="sx-f5cb162e" viewBox="0 0 '+C4W+' '+C4H+'" width="100%"  xmlns="http://www.w3.org/2000/svg">';
       var ang=-Math.PI/2;
       segs.forEach(function(s){
         var sw=Math.min(s.v/tot*2*Math.PI,2*Math.PI-0.001),a2=ang+sw;
@@ -31721,10 +32542,10 @@ struct CompareSelectTemplate {
         '<div class="two-col">'+
         '<div class="card"><h2>Code Metrics &mdash; Baseline vs Current<\/h2>'+
         '<div class="leg">'+
-        '<span><span class="dot" style="background:#E3A876"><\/span><span style="color:#C45C10;font-weight:600">Code Lines<\/span><\/span>'+
-        '<span><span class="dot" style="background:#9FC3AE"><\/span><span style="color:#2A6846;font-weight:600">Files<\/span><\/span>'+
-        '<span><span class="dot" style="background:#E0C58A"><\/span><span style="color:#BE8A2E;font-weight:600">Comments<\/span><\/span>'+
-        '<span style="font-size:10px;color:#888">&nbsp;(faded&nbsp;=&nbsp;before)<\/span><\/div>'+c1+'<\/div>'+
+        '<span><span class="dot sx-618fd811" ><\/span><span class="sx-d50d9131" >Code Lines<\/span><\/span>'+
+        '<span><span class="dot sx-d94e9768" ><\/span><span class="sx-f6800712" >Files<\/span><\/span>'+
+        '<span><span class="dot sx-38f87134" ><\/span><span class="sx-c64494ae" >Comments<\/span><\/span>'+
+        '<span class="sx-d1cc41e0" >&nbsp;(faded&nbsp;=&nbsp;before)<\/span><\/div>'+c1+'<\/div>'+
         (langs.length?'<div class="card"><h2>Language Code Delta<\/h2>'+c3+'<\/div>':'<div><\/div>')+
         '<\/div>'+
         '<div class="two-col">'+
@@ -31753,9 +32574,9 @@ struct CompareSelectTemplate {
         '<p class="sub">'+esc(proj)+'&nbsp;&middot;&nbsp;'+esc(sd.bts||'')+' \u2192 '+esc(sd.cts||'')+'<\/p>'+
         '<div class="two-col">'+
         '<div class="card"><h2>Code Metrics \u2014 Baseline vs Current<\/h2>'+
-        '<div class="leg"><span><span class="dot" style="background:#E3A876"><\/span><span style="color:#C45C10;font-weight:600">Code Lines<\/span><\/span>'+
-        '<span><span class="dot" style="background:#9FC3AE"><\/span><span style="color:#2A6846;font-weight:600">Files<\/span><\/span>'+
-        '<span><span class="dot" style="background:#E0C58A"><\/span><span style="color:#BE8A2E;font-weight:600">Comments<\/span><\/span><\/div>'+c1h+'<\/div>'+
+        '<div class="leg"><span><span class="dot sx-618fd811" ><\/span><span class="sx-d50d9131" >Code Lines<\/span><\/span>'+
+        '<span><span class="dot sx-d94e9768" ><\/span><span class="sx-f6800712" >Files<\/span><\/span>'+
+        '<span><span class="dot sx-38f87134" ><\/span><span class="sx-c64494ae" >Comments<\/span><\/span><\/div>'+c1h+'<\/div>'+
         (c3h?'<div class="card"><h2>Language Code Delta<\/h2>'+c3h+'<\/div>':'<div><\/div>')+
         '<\/div>'+
         '<div class="two-col">'+
@@ -31866,7 +32687,7 @@ struct CompareSelectTemplate {
       var tot=segs.reduce(function(a,s){return a+s.v;},0)||1;
       var DW=395,DH=Math.max(200,segs.length*30+44),cx4=104,cy4=Math.round(DH/2),Ro=88,Ri=48;
       var legX=212,legCount=segs.length,legSpacing=Math.max(18,Math.min(30,Math.floor((DH-24)/Math.max(legCount,1)))),legYStart=Math.round((DH-legCount*legSpacing)/2);
-      var c4='<svg viewBox="0 0 '+DW+' '+DH+'" width="100%" style="display:block;max-width:480px;margin:0 auto;" xmlns="http://www.w3.org/2000/svg">',ang=-Math.PI/2;
+      var c4='<svg class="sx-1f581618" viewBox="0 0 '+DW+' '+DH+'" width="100%"  xmlns="http://www.w3.org/2000/svg">',ang=-Math.PI/2;
       if(segs.length===1){
         var rm=Math.round((Ro+Ri)/2),rsw=Ro-Ri;
         c4+='<circle'+btt(segs[0].l,fmt(segs[0].v)+' files \u2022 100%')+' cx="'+cx4+'" cy="'+cy4+'" r="'+rm+'" fill="none" stroke="'+segs[0].c+'" stroke-width="'+rsw+'"/>';
@@ -31884,7 +32705,7 @@ struct CompareSelectTemplate {
           var xi1=cx4+Ri*Math.cos(a2),yi1=cy4+Ri*Math.sin(a2),xi2=cx4+Ri*Math.cos(ang),yi2=cy4+Ri*Math.sin(ang);
           var pct=Math.round(s.v/tot*100);
           c4+='<path'+btt(s.l,fmt(s.v)+' files \u2022 '+pct+'%')+' d="M'+px(x1)+','+px(y1)+' A'+Ro+','+Ro+' 0 '+(sw>Math.PI?1:0)+',1 '+px(x2)+','+px(y2)+' L'+px(xi1)+','+px(yi1)+' A'+Ri+','+Ri+' 0 '+(sw>Math.PI?1:0)+',0 '+px(xi2)+','+px(yi2)+' Z" fill="'+s.c+'" stroke="'+surfCol+'" stroke-width="2"/>';
-          if(pct>=5){var mAng=ang+sw/2,mR=(Ro+Ri)/2;c4+='<text x="'+px(cx4+mR*Math.cos(mAng))+'" y="'+px(cy4+mR*Math.sin(mAng))+'" text-anchor="middle" dominant-baseline="middle" font-family="'+FONT4+'" font-size="11" font-weight="700" fill="'+(s.c===FADE?textCol:'#fff')+'" style="pointer-events:none;">'+pct+'%</text>';}
+          if(pct>=5){var mAng=ang+sw/2,mR=(Ro+Ri)/2;c4+='<text class="sx-c3270469" x="'+px(cx4+mR*Math.cos(mAng))+'" y="'+px(cy4+mR*Math.sin(mAng))+'" text-anchor="middle" dominant-baseline="middle" font-family="'+FONT4+'" font-size="11" font-weight="700" fill="'+(s.c===FADE?textCol:'#fff')+'" >'+pct+'%</text>';}
           ang+=sw;
         });
       }
@@ -31892,7 +32713,7 @@ struct CompareSelectTemplate {
       c4+='<text x="'+cx4+'" y="'+(cy4+14)+'" text-anchor="middle" font-family="'+FONT4+'" font-size="11" fill="'+mutedCol+'">total files</text>';
       segs.forEach(function(s,i){
         var ly=legYStart+i*legSpacing,pct=Math.round(s.v/tot*100);
-        c4+='<g'+btt(s.l,fmt(s.v)+' files \u2022 '+pct+'%')+' style="cursor:pointer;">';
+        c4+='<g class="sx-83ac1cee"'+btt(s.l,fmt(s.v)+' files \u2022 '+pct+'%')+' >';
         c4+='<rect x="'+legX+'" y="'+(ly-2)+'" width="'+(DW-legX)+'" height="'+legSpacing+'" fill="transparent"/>';
         c4+='<rect x="'+legX+'" y="'+ly+'" width="11" height="11" rx="2" fill="'+s.c+'"/>';
         c4+='<text x="'+(legX+16)+'" y="'+(ly+10)+'" font-family="'+FONT4+'" font-size="'+Math.min(13,legSpacing-3)+'" fill="'+textCol+'">'+esc(s.l)+'</text>';
@@ -31903,7 +32724,7 @@ struct CompareSelectTemplate {
       // Inject the fixed-height siblings first so the grid row settles to the (taller)
       // Language Code Delta height, then draw Code Metrics (c1) to fill that height.
       var e2=document.getElementById('ic-c2');if(e2){e2.innerHTML=c2;addTT(e2);}
-      var e3=document.getElementById('ic-c3');if(e3){e3.innerHTML=langs.length?c3:'<p style="color:var(--muted);font-size:13px;padding:8px 0 0;">No language delta.</p>';addTT(e3);}
+      var e3=document.getElementById('ic-c3');if(e3){e3.innerHTML=langs.length?c3:'<p class="sx-90171b6d" >No language delta.</p>';addTT(e3);}
       var e4=document.getElementById('ic-c4');if(e4){e4.innerHTML=c4;addTT(e4);}
       var lc=document.getElementById('ic-lang-card');if(lc)lc.style.display=langs.length?'':'none';
       var e1=document.getElementById('ic-c1');if(e1){e1.innerHTML=drawC1();addTT(e1);}
@@ -31973,7 +32794,7 @@ struct CompareSelectTemplate {
             if(!cmpTT)return;
             var clbl=cmpPts[nearest].label;
             var scanLbl=nearest===0?'Baseline':'Current';
-            cmpTT.innerHTML='<strong>'+scanLbl+'</strong> <span style="font-family:monospace;font-size:11px;opacity:.75">'+escH(clbl)+'</span><br>'+escH(cmpMetricLabel[metric]||metric)+': <strong>'+Number(pts[nearest]).toLocaleString()+'</strong>';
+            cmpTT.innerHTML='<strong>'+scanLbl+'</strong> <span class="sx-0819fd61" >'+escH(clbl)+'</span><br>'+escH(cmpMetricLabel[metric]||metric)+': <strong>'+Number(pts[nearest]).toLocaleString()+'</strong>';
             var bx=rect.left+(nc/W*rect.width)+18;
             if(bx+220>window.innerWidth-8)bx=rect.left+(nc/W*rect.width)-228;
             cmpTT.style.left=bx+'px';cmpTT.style.top=(e.clientY-38)+'px';cmpTT.style.display='block';
@@ -32044,7 +32865,7 @@ struct CompareSelectTemplate {
             var curM=window.__sdGetMetric?window.__sdGetMetric():'code';
             var mets=[['code','Code Lines'],['files','Files'],['comments','Comments'],['tests','Tests'],['cov','Coverage']];
             var btnsHtml=mets.map(function(p){return '<button class="chart-metric-btn'+(p[0]===curM?' active':'')+'" data-fv-metric="'+p[0]+'">'+p[1]+'</button>';}).join('');
-            body.innerHTML='<div class="cmp-tl-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">'+btnsHtml+'</div><div class="chart-wrap" style="width:100%;"><svg id="cmp-tl-fv-svg" width="100%" height="440" style="display:block;width:100%;"></svg></div>';
+            body.innerHTML='<div class="cmp-tl-btns sx-e1b4305c" >'+btnsHtml+'</div><div class="chart-wrap sx-9ccc4ca9" ><svg class="sx-e3ce48e7" id="cmp-tl-fv-svg" width="100%" height="440" ></svg></div>';
             var fvSvg=body.querySelector('#cmp-tl-fv-svg');
             window.__sdFvTL={svg:fvSvg,h:440,metric:curM,ro:null};
             ov.classList.add('open');
@@ -32063,9 +32884,9 @@ struct CompareSelectTemplate {
           }
           var card=src.closest('.ic-card');
           var legHtml='';
-          if(card){var leg=card.querySelector('.ic-leg');if(leg)legHtml='<div class="ic-leg" style="margin-bottom:14px;">'+leg.innerHTML+'</div>';}
+          if(card){var leg=card.querySelector('.ic-leg');if(leg)legHtml='<div class="ic-leg sx-16dbf2a3" >'+leg.innerHTML+'</div>';}
           var inner=src.tagName.toLowerCase()==='svg'?src.outerHTML:src.innerHTML;
-          if(!inner||!inner.replace(/\s/g,'')){body.innerHTML=legHtml+'<p style="color:var(--muted);font-size:13px;padding:8px 0 0;">No chart data to display.</p>';ov.classList.add('open');return;}
+          if(!inner||!inner.replace(/\s/g,'')){body.innerHTML=legHtml+'<p class="sx-90171b6d" >No chart data to display.</p>';ov.classList.add('open');return;}
           body.innerHTML=legHtml+inner;
           var svg=body.querySelector('svg');
           if(svg){svg.removeAttribute('width');svg.removeAttribute('height');svg.style.width='100%';svg.style.height='auto';svg.style.maxWidth='none';}
@@ -32092,7 +32913,7 @@ struct CompareSelectTemplate {
     function init(){
       var btn=document.getElementById('settings-btn');if(!btn)return;
       var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+      m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
       document.body.appendChild(m);
       var g=document.getElementById('scheme-grid');
       if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -32213,6 +33034,8 @@ struct CompareTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Sign In</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --bg:#f5efe8; --surface:#fbf7f2; --line:#e6d0bf; --line-strong:#d8bfad;
@@ -32362,6 +33185,8 @@ pub(crate) struct LoginTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC — REST API Reference</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root {
       --radius:14px; --bg:#f5efe8; --surface:rgba(255,255,255,0.86); --surface-2:#fbf7f2;
@@ -33439,7 +34264,7 @@ Content-Disposition: attachment; filename="sloc-run-&lt;run_id&gt;.zip"
             <tr><td class="pt-name">label</td><td class="pt-type">string</td><td><span class="pt-opt">optional</span></td><td>Display name shown in View Reports (defaults to the scanned root path)</td></tr>
           </table>
           <p class="params-heading">Request Body (application/json)</p>
-          <p style="margin:0 0 8px;font-size:13px;color:var(--muted);">Full <code>AnalysisRun</code> JSON as produced by the CLI <code>--json-out</code> flag.</p>
+          <p class="sx-73b3d091" >Full <code>AnalysisRun</code> JSON as produced by the CLI <code>--json-out</code> flag.</p>
           <details class="schema"><summary>Response schema</summary>
 <div class="schema-block">// 201 Created
 {
@@ -33766,7 +34591,7 @@ Content-Disposition: attachment; filename="sloc-run-&lt;run_id&gt;.zip"
 
   <footer class="site-footer">
     local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">oxide-sloc v{{ version }} — Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >oxide-sloc v{{ version }} — Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -33818,7 +34643,7 @@ Content-Disposition: attachment; filename="sloc-run-&lt;run_id&gt;.zip"
         try{var sv=JSON.parse(localStorage.getItem('sloc-ns'));if(sv&&sv.a){ap(sv);}else{ap(S[0]);}}catch(e){ap(S[0]);}
         var btn=document.getElementById('settings-btn');if(!btn)return;
         var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
-        m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;"><div class="settings-modal-label" style="margin-bottom:8px;">Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
+        m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div><div class="sx-dec3b281" ><div class="settings-modal-label sx-c500155b" >Timestamp timezone</div><select class="tz-select" id="tz-select"><option value="America/Los_Angeles">Pacific (PT)</option><option value="America/Denver">Mountain (MT)</option><option value="America/Chicago">Central (CT)</option><option value="America/New_York">Eastern (ET)</option><option value="America/Anchorage">Alaska (AT)</option><option value="Pacific/Honolulu">Hawaii (HT)</option></select></div></div>';
         document.body.appendChild(m);
         var g=document.getElementById('scheme-grid');
         if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
@@ -33937,6 +34762,30 @@ mod form_config_tests {
         let mut cfg = sloc_config::AppConfig::default();
         apply_form_to_config(&mut cfg, form);
         cfg
+    }
+
+    // ── path_within_allowed_roots (server-mode local-path gate) ──
+
+    #[test]
+    fn path_within_allowed_roots_accepts_inside_and_rejects_outside() {
+        let root = tempfile::tempdir().unwrap();
+        let inside = root.path().join("proj");
+        std::fs::create_dir_all(&inside).unwrap();
+        let inside_canon = std::fs::canonicalize(&inside).unwrap();
+        let allowed = vec![root.path().to_path_buf()];
+        assert!(
+            path_within_allowed_roots(&inside_canon, &allowed),
+            "a path under an allowed root must be accepted"
+        );
+
+        let outside = tempfile::tempdir().unwrap();
+        let outside_canon = std::fs::canonicalize(outside.path()).unwrap();
+        assert!(
+            !path_within_allowed_roots(&outside_canon, &allowed),
+            "a path outside every allowed root must be rejected"
+        );
+        // An empty allowlist denies everything (the fail-closed server default).
+        assert!(!path_within_allowed_roots(&inside_canon, &[]));
     }
 
     // ── attribution (per-author code ownership — on by default) ──
@@ -36080,6 +36929,129 @@ mod tests_private {
         // Desktop / local mode is open by design regardless of key presence.
         assert!(!refuse_unauthenticated_server(false, false));
         assert!(!refuse_unauthenticated_server(false, true));
+    }
+
+    // ── Network-facing bind promotes to server mode ────────────────────────────
+
+    #[test]
+    fn loopback_binds_are_not_network_facing() {
+        assert!(!bind_is_network_facing("127.0.0.1:4317"));
+        assert!(!bind_is_network_facing("127.0.0.1"));
+        assert!(!bind_is_network_facing("[::1]:4317"));
+        assert!(!bind_is_network_facing("localhost:4317"));
+        assert!(!bind_is_network_facing("LOCALHOST"));
+        assert!(!bind_is_network_facing("127.5.5.5:8080")); // whole 127/8 is loopback
+    }
+
+    #[test]
+    fn wildcard_and_lan_binds_are_network_facing() {
+        assert!(bind_is_network_facing("0.0.0.0:4317"));
+        assert!(bind_is_network_facing("[::]:4317"));
+        assert!(bind_is_network_facing("192.168.1.50:4317"));
+        assert!(bind_is_network_facing("10.0.0.1:80"));
+        // A hostname or an unparseable value fails safe to network-facing.
+        assert!(bind_is_network_facing("sloc.corp.local:4317"));
+        assert!(bind_is_network_facing("not a bind address"));
+    }
+
+    // ── Disk-cap selection + combining ─────────────────────────────────────────
+
+    #[test]
+    fn combine_disk_caps_takes_the_smaller_and_ignores_zero() {
+        assert_eq!(combine_disk_caps_mb(Some(100), Some(200)), Some(100));
+        assert_eq!(combine_disk_caps_mb(Some(200), Some(100)), Some(100));
+        assert_eq!(combine_disk_caps_mb(Some(100), None), Some(100));
+        assert_eq!(combine_disk_caps_mb(None, Some(100)), Some(100));
+        assert_eq!(combine_disk_caps_mb(None, None), None);
+        // Zero means "unset", not "cap at zero".
+        assert_eq!(combine_disk_caps_mb(Some(0), Some(50)), Some(50));
+        assert_eq!(combine_disk_caps_mb(Some(0), Some(0)), None);
+    }
+
+    #[test]
+    fn size_cap_keeps_newest_runs_that_fit() {
+        // Newest-first: a=30, b=30, c=30; cap 70 keeps a+b (60), deletes c.
+        let sized = vec![
+            ("a".to_string(), 30),
+            ("b".to_string(), 30),
+            ("c".to_string(), 30),
+        ];
+        let del = select_runs_over_size_cap(&sized, 70);
+        assert_eq!(del.len(), 1);
+        assert!(del.contains("c"));
+        assert!(!del.contains("a"));
+    }
+
+    #[test]
+    fn size_cap_under_budget_deletes_nothing() {
+        let sized = vec![("a".to_string(), 10), ("b".to_string(), 10)];
+        assert!(select_runs_over_size_cap(&sized, 1_000).is_empty());
+    }
+
+    #[test]
+    fn size_cap_zero_deletes_everything() {
+        let sized = vec![("a".to_string(), 1), ("b".to_string(), 1)];
+        assert_eq!(select_runs_over_size_cap(&sized, 0).len(), 2);
+    }
+
+    // ── Host allowlist / public URL helpers ────────────────────────────────────
+
+    #[test]
+    fn host_of_url_extracts_authority() {
+        assert_eq!(
+            host_of_url("https://sloc.corp.local"),
+            Some("sloc.corp.local".into())
+        );
+        assert_eq!(
+            host_of_url("http://sloc.corp.local:4317/path?q=1"),
+            Some("sloc.corp.local:4317".into())
+        );
+        assert_eq!(
+            host_of_url("user@host.example:8080"),
+            Some("host.example:8080".into())
+        );
+        assert_eq!(host_of_url("HOST.Example"), Some("host.example".into()));
+        assert_eq!(host_of_url(""), None);
+    }
+
+    #[test]
+    fn parse_allowed_hosts_splits_commas_and_whitespace() {
+        let got = parse_allowed_hosts(" sloc.corp.local, 10.0.0.5:4317\n host2 ");
+        assert_eq!(got, vec!["sloc.corp.local", "10.0.0.5:4317", "host2"]);
+        assert!(parse_allowed_hosts("   ").is_empty());
+    }
+
+    #[test]
+    fn host_is_allowed_matches_with_and_without_port() {
+        let allowed = parse_allowed_hosts("sloc.corp.local, 10.0.0.5:4317");
+        // Entry without a port matches any request port.
+        assert!(host_is_allowed("sloc.corp.local", &allowed));
+        assert!(host_is_allowed("sloc.corp.local:4317", &allowed));
+        assert!(host_is_allowed("SLOC.CORP.LOCAL:9999", &allowed));
+        // Entry with a port must match exactly.
+        assert!(host_is_allowed("10.0.0.5:4317", &allowed));
+        assert!(!host_is_allowed("10.0.0.5:9999", &allowed));
+        // Not on the list.
+        assert!(!host_is_allowed("evil.example", &allowed));
+        assert!(!host_is_allowed("", &allowed));
+    }
+
+    #[test]
+    fn host_check_exempts_probes_and_webhooks() {
+        assert!(host_check_exempt("/healthz"));
+        assert!(host_check_exempt("/readyz"));
+        assert!(host_check_exempt("/metrics"));
+        assert!(host_check_exempt("/webhooks/github"));
+        assert!(!host_check_exempt("/"));
+        assert!(!host_check_exempt("/analyze"));
+    }
+
+    #[test]
+    fn split_host_port_handles_ipv6_and_names() {
+        assert_eq!(split_host_port("host"), ("host", None));
+        assert_eq!(split_host_port("host:80"), ("host", Some("80")));
+        assert_eq!(split_host_port("[::1]:80"), ("::1", Some("80")));
+        assert_eq!(split_host_port("[2001:db8::1]"), ("2001:db8::1", None));
     }
 
     // ── Code Ownership page ────────────────────────────────────────────────────

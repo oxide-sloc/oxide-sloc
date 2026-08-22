@@ -94,6 +94,42 @@ pub fn dir_size_bytes(path: &Path) -> u64 {
     total
 }
 
+/// Recursively copy the file tree at `src` into `dest`, creating `dest` and any
+/// intermediate directories. Returns `(files_copied, bytes_written)`.
+///
+/// Symlinks are **not** followed (a link is skipped, not dereferenced) so a link
+/// inside a scanned/uploaded tree cannot redirect the copy outside `src` or loop.
+/// Used to publish a run's artifacts to an operator-configured export directory
+/// (e.g. a mounted network share), so it must be robust against hostile trees.
+///
+/// # Errors
+/// Returns the first I/O error encountered while creating `dest` or copying a file.
+pub fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<(usize, u64)> {
+    std::fs::create_dir_all(dest)?;
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    // Iterative DFS over (src_dir, dest_dir) pairs.
+    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf())];
+    while let Some((from, to)) = stack.pop() {
+        for entry in std::fs::read_dir(&from)?.flatten() {
+            let ft = entry.file_type()?;
+            if ft.is_symlink() {
+                continue;
+            }
+            let target = to.join(entry.file_name());
+            if ft.is_dir() {
+                std::fs::create_dir_all(&target)?;
+                stack.push((entry.path(), target));
+            } else if ft.is_file() {
+                let n = std::fs::copy(entry.path(), &target)?;
+                files += 1;
+                bytes = bytes.saturating_add(n);
+            }
+        }
+    }
+    Ok((files, bytes))
+}
+
 /// Derive the on-disk output directory that holds a run's artifacts from its registry entry.
 ///
 /// Handles both the current layout (files nested in `html/` `json/` `pdf/` `excel/`
@@ -323,6 +359,37 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn copy_tree_copies_nested_files_and_counts() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join("json")).unwrap();
+        std::fs::write(src.path().join("json").join("result.json"), b"{\"a\":1}").unwrap();
+        std::fs::write(src.path().join("top.txt"), b"hello").unwrap();
+
+        let dest_root = dst.path().join("run-123");
+        let (files, bytes) = copy_tree(src.path(), &dest_root).unwrap();
+
+        assert_eq!(files, 2);
+        assert_eq!(bytes, 7 + 5);
+        assert!(dest_root.join("json").join("result.json").is_file());
+        assert!(dest_root.join("top.txt").is_file());
+        assert_eq!(
+            std::fs::read(dest_root.join("json").join("result.json")).unwrap(),
+            b"{\"a\":1}"
+        );
+    }
+
+    #[test]
+    fn copy_tree_empty_source_creates_dest() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let dest_root = dst.path().join("out");
+        let (files, bytes) = copy_tree(src.path(), &dest_root).unwrap();
+        assert_eq!((files, bytes), (0, 0));
+        assert!(dest_root.is_dir());
     }
 
     fn entry(run_id: &str, age_days: i64, root: &Path) -> RegistryEntry {

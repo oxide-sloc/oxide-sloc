@@ -28,6 +28,9 @@ include_lockfiles             = true    # include lockfiles
 binary_file_behavior          = "skip"
 decode_failure_behavior       = "warn_skip"
 parse_failure_behavior        = "warn_skip"
+attribution                   = true         # per-author code ownership via git blame (on)
+activity_window_days          = 90           # Git Hotspots window in days (0 disables)
+style_col_threshold           = 80           # column-width bucket for N-col compliance (80/100/120)
 
 [reporting]
 report_title               = "oxide-sloc Full-Scope Audit"

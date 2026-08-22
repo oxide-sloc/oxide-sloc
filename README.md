@@ -51,10 +51,11 @@ powershell -ExecutionPolicy Bypass -File scripts\internal\install.ps1
 - **IEEE 1045-1992 physical SLOC** — configurable mixed-line, continuation-line, compiler-directive, and blank-in-comment policies; symbol counting (functions, classes, variables, imports)
 - **Deep metrics** — COCOMO I effort/cost estimate, approximate cyclomatic complexity (branch-keyword count), ULOC / DRYness, and duplicate-file detection on every run
 - **Git Hotspots** — ranks refactor candidates by `code lines × commit activity` over a configurable window (90 days by default); per-file commit counts and last-changed dates from a single `git log` pass
+- **Code Ownership** — per-author line attribution via `git blame`; contributor leaderboard, per-author file drill-down, hotspot ownership, and `.mailmap` identity merge/export; on by default
 - **Test Metrics** — lexical test function detection across 60 languages; test-to-code density; multi-format coverage import (LCOV, Cobertura XML, JaCoCo XML, coverage.py JSON, Istanbul/NYC JSON)
 - **Flexible output** — HTML reports, PDF, CSV, and 4-sheet Excel export; re-render any saved JSON
-- **Git integration** — branch/tag/commit browser, GitHub/GitLab/Bitbucket webhooks and polling, submodule breakdown
-- **CI/CD** — GitHub Actions, Jenkins, GitLab CI; JSON metrics API, SVG badge endpoint, embeddable widget, SMTP/webhook delivery
+- **Git integration** — branch/tag/commit browser (remote URLs *and* local checkouts), recursive submodule scanning, GitHub/GitLab/Bitbucket webhooks and polling, submodule breakdown
+- **CI/CD** — GitHub Actions, Jenkins, GitLab CI; native Jira + Bitbucket + Confluence publishing; JSON metrics API, SVG badge endpoint, embeddable widget, SMTP/webhook delivery
 - **Offline-first** — vendored deps, Chart.js compiled in, no CDN calls; Docker on GHCR; LAN server mode with API key auth and optional TLS
 
 ## Why oxide-sloc vs cloc / tokei / scc / UCC?
@@ -68,6 +69,7 @@ powershell -ExecutionPolicy Bypass -File scripts\internal\install.ps1
 | Trend / history tracking | ✓ | — | — | — | — |
 | Coverage file import | ✓ | — | — | — | — |
 | Git Hotspots (churn × size) | ✓ | — | — | — | — |
+| Code ownership (git-blame attribution) | ✓ | — | — | — | — |
 | COCOMO + complexity¹ + DRYness | ✓ | — | — | ✓ | partial |
 | IEEE 1045-1992 compliance | ✓ | partial | — | — | partial |
 | REST API + SVG badge | ✓ | — | — | — | — |
@@ -177,6 +179,9 @@ oxide-sloc analyze ./my-repo --fail-on-warnings --fail-below 10000
 oxide-sloc analyze ./my-repo --enabled-language rust --enabled-language python
 oxide-sloc analyze ./my-repo --submodule-breakdown
 oxide-sloc analyze ./my-repo --per-file --activity-window 90    # Git Hotspots (0 disables)
+oxide-sloc analyze ./my-repo --per-file --attribution           # Code Ownership via git blame (on by default; --no-attribution skips)
+oxide-sloc analyze ./my-repo --coverage-file lcov.info          # attach test coverage into the report
+oxide-sloc analyze ./my-repo --max-complexity 15 --no-duplicates # gate on complexity (exit 6); drop duplicate files
 
 # Other commands
 oxide-sloc report result.json -H report.html --pdf-out report.pdf
@@ -197,7 +202,7 @@ oxide-sloc serve   # → http://127.0.0.1:4317
 
 A guided 4-step flow: select project → counting rules → outputs → review & run. **Quick Scan** submits from step 1 with all defaults. Reports include a ranked **Git Hotspots** table (when run against a git repo) alongside the SLOC, complexity, and COCOMO breakdowns.
 
-Additional pages: **Test Metrics** (`/test-metrics`), **Trend Reports** (`/trend-reports`), **Compare Scans** (`/compare-scans`), and the **Git Browser** (`/git-browser`) for scanning any branch, tag, or commit.
+Additional pages: **Test Metrics** (`/test-metrics`), **Trend Reports** (`/trend-reports`), **Compare Scans** (`/compare-scans`), **Code Ownership** (`/code-ownership`) for per-author blame attribution and the contributor leaderboard, **Integrations** (`/integrations`) for webhook and Jira/Bitbucket/Confluence setup, and the **Git Browser** (`/git-browser`) for scanning any branch, tag, or commit — from a remote URL or a local checkout, with recursive submodule support.
 
 ### Configuration
 
@@ -261,7 +266,7 @@ Full OpenAPI 3.1 spec: `GET /api/openapi.yaml` or [`docs/openapi.yaml`](./docs/o
 - run: echo "Code lines ${{ steps.sloc.outputs.code-lines }}"
 ```
 
-For Jenkins/GitLab setup, Confluence publishing, and artifact repository integration, see [`docs/ci-integrations.md`](./docs/ci-integrations.md).
+For Jenkins/GitLab setup, native Jira / Bitbucket / Confluence publishing, and artifact repository integration, see [`docs/ci-integrations.md`](./docs/ci-integrations.md).
 
 To scan repositories hosted on **different git instances** than the tool/pipeline (e.g. tooling on `bitbucket.instance1.com`, code on `bitbucket.instance2.com`) — with per-host credentials, corporate proxy/VLAN support, and air-gapped offline import — across local, server, and Jenkins modes, see [`docs/multi-instance.md`](./docs/multi-instance.md).
 

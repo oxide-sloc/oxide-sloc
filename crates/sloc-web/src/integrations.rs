@@ -23,6 +23,8 @@ use super::{AppState, CspNonce};
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC — Integrations</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root{--radius:14px;--bg:#f5efe8;--surface:rgba(255,255,255,0.9);--surface-2:#fbf7f2;--line:#e6d0bf;--line-strong:#d8bfad;--text:#43342d;--muted:#7b675b;--muted-2:#7b675b;--nav:#b85d33;--nav-2:#7a371b;--oxide-2:#b85d33;--shadow:0 8px 24px rgba(77,44,20,0.10);}
     body.dark-theme{--bg:#1b1511;--surface:#261c17;--surface-2:#2d221d;--line:#524238;--text:#f5ece6;--muted:#c7b7aa;--muted-2:#c7b7aa;--shadow:0 8px 24px rgba(0,0,0,0.32);}
@@ -169,7 +171,7 @@ use super::{AppState, CspNonce};
         <a class="nav-pill" href="/compare-scans">Compare Scans</a>
         <a class="nav-pill" href="/test-metrics">Test Metrics</a>
         <div class="nav-dropdown">
-          <a href="/git-browser" class="nav-dropdown-btn" style="background:rgba(255,255,255,0.22);">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
+          <a href="/git-browser" class="nav-dropdown-btn sx-8c38ef73" >Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
@@ -178,11 +180,11 @@ use super::{AppState, CspNonce};
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -247,7 +249,7 @@ use super::{AppState, CspNonce};
             <select id="fProvider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option></select>
           </div>
         </div>
-        <div class="form-row" id="pollRow" style="display:none">
+        <div class="form-row sx-6aa34d74" id="pollRow" >
           <div class="form-group">
             <div class="label-row"><label>Poll Interval (seconds, min 60)</label><button type="button" class="info-btn" aria-label="About poll interval">i<span class="info-tip">How often (in seconds) to check the branch for new commits. Minimum is 60 seconds. Recommended: 300 (5 min) for active repos, 900+ for slower ones.</span></button></div>
             <input id="fInterval" type="number" min="60" step="60" value="300"/>
@@ -264,7 +266,7 @@ use super::{AppState, CspNonce};
 
       <div class="card">
         <div class="card-title">Webhook Endpoint URLs</div>
-        <p style="font-size:13px;color:var(--muted);margin:0 0 16px">Configure these URLs in your provider and use the secret shown on each schedule for HMAC verification.</p>
+        <p class="sx-48175f5b" >Configure these URLs in your provider and use the secret shown on each schedule for HMAC verification.</p>
         <div class="url-row"><span class="url-label">GitHub</span><span id="urlGH" class="url-box">{{ server_url }}/webhooks/github</span><button class="copy-btn" type="button" data-copy-target="urlGH">Copy</button></div>
         <div class="url-row"><span class="url-label">GitLab</span><span id="urlGL" class="url-box">{{ server_url }}/webhooks/gitlab</span><button class="copy-btn" type="button" data-copy-target="urlGL">Copy</button></div>
         <div class="url-row"><span class="url-label">Bitbucket</span><span id="urlBB" class="url-box">{{ server_url }}/webhooks/bitbucket</span><button class="copy-btn" type="button" data-copy-target="urlBB">Copy</button></div>
@@ -301,7 +303,7 @@ use super::{AppState, CspNonce};
         </div>
         <div class="form-row">
           <div class="form-group">
-            <div class="label-row"><label>Parent Page ID <span style="font-weight:400;font-size:11px;">(optional)</span></label><button type="button" class="info-btn" aria-label="About parent page ID">i<span class="info-tip">Numeric ID of an existing Confluence page. Find it in the page URL: .../pages/123456/.... Leave blank to create at space root.</span></button></div>
+            <div class="label-row"><label>Parent Page ID <span class="sx-41eb337d" >(optional)</span></label><button type="button" class="info-btn" aria-label="About parent page ID">i<span class="info-tip">Numeric ID of an existing Confluence page. Find it in the page URL: .../pages/123456/.... Leave blank to create at space root.</span></button></div>
             <input id="fParentId" type="text" placeholder="Leave blank to create at space root"/>
           </div>
         </div>
@@ -314,14 +316,14 @@ use super::{AppState, CspNonce};
 
       <div class="card">
         <div class="card-title">Auto-Post on Scheduled Scan</div>
-        <p style="font-size:13px;color:var(--muted);margin:0 0 16px">When a webhook or polling schedule triggers a scan, automatically create or update the linked Confluence page.</p>
+        <p class="sx-48175f5b" >When a webhook or polling schedule triggers a scan, automatically create or update the linked Confluence page.</p>
         <div id="schedAutoList"><div class="empty-state">Loading schedules…</div></div>
-        <button class="btn btn-primary" id="saveAutoPostBtn" type="button" style="margin-top:14px;display:none">Save Auto-Post Settings</button>
+        <button class="btn btn-primary sx-e268d771" id="saveAutoPostBtn" type="button" >Save Auto-Post Settings</button>
       </div>
 
       <div class="card" id="manualPostCard">
         <div class="card-title">Manual Post</div>
-        <p style="font-size:13px;color:var(--muted);margin:0 0 16px">Post any saved scan result to Confluence right now. Enter the Run ID from the scan result page.</p>
+        <p class="sx-48175f5b" >Post any saved scan result to Confluence right now. Enter the Run ID from the scan result page.</p>
         <div class="form-row">
           <div class="form-group">
             <div class="label-row"><label>Run ID</label><button type="button" class="info-btn" aria-label="About run ID">i<span class="info-tip">The UUID of a completed scan. Copy it from the scan result page URL (/runs/result/uuid) or from the View Reports list.</span></button></div>
@@ -334,7 +336,7 @@ use super::{AppState, CspNonce};
         </div>
         <div class="form-row">
           <div class="form-group">
-            <div class="label-row"><label>Report URL <span style="font-weight:400;font-size:11px;">(optional)</span></label><button type="button" class="info-btn" aria-label="About report URL">i<span class="info-tip">A link back to the full interactive oxide-sloc HTML report. Embedded as a hyperlink in the Confluence page. Leave blank to omit.</span></button></div>
+            <div class="label-row"><label>Report URL <span class="sx-41eb337d" >(optional)</span></label><button type="button" class="info-btn" aria-label="About report URL">i<span class="info-tip">A link back to the full interactive oxide-sloc HTML report. Embedded as a hyperlink in the Confluence page. Leave blank to omit.</span></button></div>
             <input id="mReportUrl" type="url" placeholder="http://127.0.0.1:4317/runs/result/..."/>
           </div>
         </div>
@@ -564,7 +566,7 @@ use super::{AppState, CspNonce};
       el.innerHTML = list.map(function(s) {
         var checked = (savedAutoPost && savedAutoPost[s.id]) ? 'checked' : '';
         return '<div class="sched-auto-row">'
-          + '<span class="sched-auto-label">' + esc(s.label) + ' <small style="font-weight:400;color:var(--muted);">\u00b7 ' + esc(s.branch) + '</small></span>'
+          + '<span class="sched-auto-label">' + esc(s.label) + ' <small class="sx-b7896353" >\u00b7 ' + esc(s.branch) + '</small></span>'
           + '<label class="toggle-switch"><input type="checkbox" data-sched-id="' + esc(s.id) + '" ' + checked + '><span class="toggle-slider"></span></label></div>';
       }).join('');
     }
@@ -697,7 +699,7 @@ use super::{AppState, CspNonce};
   </script>
   <footer class="site-footer">
     oxide-sloc v{{ version }} — local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>

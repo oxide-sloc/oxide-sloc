@@ -31,6 +31,52 @@ inputs:
     description: Bearer token for the oxide-sloc server
     default: ''
     required: false
+  csv-out:
+    description: Path to write a CSV summary (optional)
+    default: ''
+    required: false
+  xlsx-out:
+    description: Path to write an Excel (.xlsx) workbook (optional)
+    default: ''
+    required: false
+  coverage-file:
+    description: >-
+      Path to a coverage report to attach per-file coverage (LCOV .info,
+      Cobertura XML, JaCoCo XML, coverage.py JSON, or Istanbul/NYC JSON)
+    default: ''
+    required: false
+  config:
+    description: Load configuration / preset from a TOML file (optional)
+    default: ''
+    required: false
+  mixed-line-policy:
+    description: >-
+      Override mixed-line counting policy: code-only | code-and-comment |
+      comment-only | separate-mixed-category
+    default: ''
+    required: false
+  style-col-threshold:
+    description: Column-width threshold for style N-col compliance (80, 100, 120; default 80)
+    default: ''
+    required: false
+  activity-window:
+    description: Git Hotspots activity window in days (default 90; 0 disables)
+    default: ''
+    required: false
+  attribution:
+    description: >-
+      Per-author code-ownership attribution via git blame. On by default; set to
+      'false' to skip the blame pass (emits --no-attribution)
+    default: ''
+    required: false
+  no-duplicates:
+    description: Exclude duplicate files (identical content) from SLOC totals (true/false)
+    default: ''
+    required: false
+  max-complexity:
+    description: Exit with code 6 if any file's cyclomatic complexity exceeds this threshold
+    default: ''
+    required: false
 
 outputs:
   total-lines:
@@ -106,6 +152,16 @@ runs:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_JSON_OUT: ${{ inputs.json-out }}
         INPUT_HTML_OUT: ${{ inputs.html-out }}
+        INPUT_CSV_OUT: ${{ inputs.csv-out }}
+        INPUT_XLSX_OUT: ${{ inputs.xlsx-out }}
+        INPUT_COVERAGE_FILE: ${{ inputs.coverage-file }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_MIXED_LINE_POLICY: ${{ inputs.mixed-line-policy }}
+        INPUT_STYLE_COL_THRESHOLD: ${{ inputs.style-col-threshold }}
+        INPUT_ACTIVITY_WINDOW: ${{ inputs.activity-window }}
+        INPUT_ATTRIBUTION: ${{ inputs.attribution }}
+        INPUT_NO_DUPLICATES: ${{ inputs.no-duplicates }}
+        INPUT_MAX_COMPLEXITY: ${{ inputs.max-complexity }}
       shell: bash
       run: |
         mkdir -p "$(dirname "$INPUT_JSON_OUT")"
@@ -113,6 +169,38 @@ runs:
         if [ -n "$INPUT_HTML_OUT" ]; then
           EXTRA="$EXTRA --html-out $INPUT_HTML_OUT"
         fi
+        if [ -n "$INPUT_CSV_OUT" ]; then
+          EXTRA="$EXTRA --csv-out $INPUT_CSV_OUT"
+        fi
+        if [ -n "$INPUT_XLSX_OUT" ]; then
+          EXTRA="$EXTRA --xlsx-out $INPUT_XLSX_OUT"
+        fi
+        if [ -n "$INPUT_COVERAGE_FILE" ]; then
+          EXTRA="$EXTRA --coverage-file $INPUT_COVERAGE_FILE"
+        fi
+        if [ -n "$INPUT_CONFIG" ]; then
+          EXTRA="$EXTRA --config $INPUT_CONFIG"
+        fi
+        if [ -n "$INPUT_MIXED_LINE_POLICY" ]; then
+          EXTRA="$EXTRA --mixed-line-policy $INPUT_MIXED_LINE_POLICY"
+        fi
+        if [ -n "$INPUT_STYLE_COL_THRESHOLD" ]; then
+          EXTRA="$EXTRA --style-col-threshold $INPUT_STYLE_COL_THRESHOLD"
+        fi
+        if [ -n "$INPUT_ACTIVITY_WINDOW" ]; then
+          EXTRA="$EXTRA --activity-window $INPUT_ACTIVITY_WINDOW"
+        fi
+        if [ -n "$INPUT_MAX_COMPLEXITY" ]; then
+          EXTRA="$EXTRA --max-complexity $INPUT_MAX_COMPLEXITY"
+        fi
+        # Attribution is on by default; only emit --no-attribution when explicitly disabled.
+        case "$INPUT_ATTRIBUTION" in
+          false|False|FALSE|0|no|off) EXTRA="$EXTRA --no-attribution" ;;
+          true|True|TRUE|1|yes|on)    EXTRA="$EXTRA --attribution" ;;
+        esac
+        case "$INPUT_NO_DUPLICATES" in
+          true|True|TRUE|1|yes|on)    EXTRA="$EXTRA --no-duplicates" ;;
+        esac
         oxide-sloc analyze "$INPUT_PATH" \
           --json-out "$INPUT_JSON_OUT" $EXTRA
         echo "json-path=$(realpath "$INPUT_JSON_OUT")" >> "$GITHUB_OUTPUT"

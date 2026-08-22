@@ -279,6 +279,12 @@ pub struct CleanupPolicy {
     /// Keep only the N most recent runs; delete older ones. `None` disables count-based cleanup.
     #[serde(default)]
     pub max_run_count: Option<u32>,
+    /// Cap the total on-disk size of retained scan artifacts, in megabytes. When the
+    /// artifact tree exceeds this, the oldest runs are deleted until it fits again.
+    /// `None` disables size-based cleanup. The `SLOC_MAX_DISK_MB` operator environment
+    /// variable is a separate hard ceiling; when both are set the smaller wins.
+    #[serde(default)]
+    pub max_total_mb: Option<u64>,
     /// Hours between automatic cleanup passes (minimum 1, default 24).
     #[serde(default = "default_interval_hours")]
     pub interval_hours: u32,

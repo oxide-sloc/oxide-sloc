@@ -82,6 +82,16 @@ async fn delete(app: Router, uri: &str) -> (StatusCode, String) {
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
+async fn post_body(app: Router, uri: &str) -> (StatusCode, String) {
+    let resp = app
+        .oneshot(Request::post(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn pct_encode(s: &str) -> String {
     s.bytes()
         .flat_map(|b| match b {
@@ -477,6 +487,112 @@ async fn delete_run_removes_ingested_run() {
     // A second delete of the now-unknown run still returns a handled status.
     let (st2, _) = delete(app.clone(), "/api/runs/del-gap-1").await;
     assert!(st2.as_u16() < 500, "second DELETE must not 5xx, got {st2}");
+}
+
+// ── export_run_handler (share-drive publish) ─────────────────────────────────
+
+#[tokio::test]
+async fn export_run_to_share_and_unconfigured() {
+    let app = make_test_router();
+    // A real ingested run gives export_run_handler an on-disk output dir to copy.
+    ingest(&app, &run_basic("exp-gap-1", "/test/expproj", 42)).await;
+
+    // Only this test touches SLOC_EXPORT_DIR within this binary, and auto-export is
+    // off, so no other test observes it. SAFETY: set/remove are bounded to this test.
+    unsafe {
+        std::env::remove_var("SLOC_EXPORT_DIR");
+    }
+    // Not configured → 409 Conflict.
+    let (st, _) = post_body(app.clone(), "/api/runs/exp-gap-1/export").await;
+    assert_eq!(st, StatusCode::CONFLICT);
+
+    // Configured → 200 and files land under the destination.
+    let dest = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("SLOC_EXPORT_DIR", dest.path());
+    }
+    let (st, body) = post_body(app.clone(), "/api/runs/exp-gap-1/export").await;
+    unsafe {
+        std::env::remove_var("SLOC_EXPORT_DIR");
+    }
+    assert_eq!(st, StatusCode::OK, "export body: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["target"], "share");
+    assert!(
+        v["files"].as_u64().unwrap_or(0) >= 1,
+        "expected copied files: {body}"
+    );
+    assert!(
+        std::fs::read_dir(dest.path()).unwrap().count() >= 1,
+        "export destination should contain the run's artifact subdir"
+    );
+}
+
+#[tokio::test]
+async fn export_unknown_run_is_404() {
+    let app = make_test_router();
+    let (st, _) = post_body(app.clone(), "/api/runs/no-such-run-xyz/export").await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+}
+
+// ── api_admin_config (operator-only effective config) ────────────────────────
+
+#[tokio::test]
+async fn admin_config_gated_by_admin_key() {
+    let app = make_test_router();
+    // Only this test touches SLOC_ADMIN_KEY within this binary.
+    unsafe {
+        std::env::remove_var("SLOC_ADMIN_KEY");
+    }
+    // No admin key configured → the endpoint is reachable under the normal gate.
+    let (st, body) = get(app.clone(), "/api/admin/config").await;
+    assert_eq!(st, StatusCode::OK, "config body: {body}");
+    assert!(
+        body.contains("\"disk_cap\""),
+        "expected disk_cap in: {body}"
+    );
+    assert!(body.contains("\"export\""));
+    assert!(body.contains("\"hostname\""));
+
+    // Admin key configured but not presented → 403.
+    unsafe {
+        std::env::set_var("SLOC_ADMIN_KEY", "op-admin-secret");
+    }
+    let (st, _) = get(app.clone(), "/api/admin/config").await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    // Admin key presented → 200.
+    let (st, _) = get_auth(app.clone(), "/api/admin/config", "op-admin-secret").await;
+    assert_eq!(st, StatusCode::OK);
+    unsafe {
+        std::env::remove_var("SLOC_ADMIN_KEY");
+    }
+}
+
+#[tokio::test]
+async fn export_unsupported_target_is_400() {
+    let app = make_test_router();
+    ingest(&app, &run_basic("exp-gap-3", "/test/expproj3", 21)).await;
+    let (st, _) = post_body(
+        app.clone(),
+        "/api/runs/exp-gap-3/export?target=carrier-pigeon",
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn export_confluence_target_without_config_is_400() {
+    let app = make_test_router();
+    ingest(&app, &run_basic("exp-conf-1", "/test/expconf", 12)).await;
+    let (st, body) = post_body(app.clone(), "/api/runs/exp-conf-1/export?target=confluence").await;
+    // Confluence is not configured in the test router, so the shared publish flow
+    // reports it as unconfigured (400) rather than attempting a network call.
+    assert_eq!(st, StatusCode::BAD_REQUEST, "body: {body}");
+    assert!(
+        body.contains("Confluence"),
+        "expected a Confluence-not-configured message, got: {body}"
+    );
 }
 
 // ── api_wiki_markup rendering a real run ─────────────────────────────────────

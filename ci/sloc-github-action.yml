@@ -42,7 +42,18 @@ jobs:
           mkdir -p sloc-out
           oxide-sloc analyze . \
             --json-out sloc-out/result.json \
-            --html-out sloc-out/report.html
+            --html-out sloc-out/report.html \
+            --activity-window 90 \
+            --xlsx-out sloc-out/report.xlsx
+          # Additional options you can add (all optional):
+          #   --csv-out sloc-out/report.csv          # CSV summary
+          #   --coverage-file coverage/lcov.info     # attach per-file coverage
+          #   --style-col-threshold 100              # N-col compliance chip (80|100|120)
+          #   --max-complexity 15                    # exit 6 if any file exceeds it
+          #   --no-duplicates                        # drop duplicate files from totals
+          #   --no-attribution                       # skip git-blame ownership pass
+          #   --mixed-line-policy code-and-comment   # mixed-line counting policy
+          #   --config .oxide-sloc.toml              # load a preset / config file
 
       - name: Upload to oxide-sloc server
         if: vars.SLOC_SERVER != ''

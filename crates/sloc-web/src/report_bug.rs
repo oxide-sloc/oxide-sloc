@@ -242,6 +242,8 @@ pub(crate) async fn report_bug_handler(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC — Report a Bug</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root{--radius:14px;--bg:#f5efe8;--surface:rgba(255,255,255,0.9);--surface-2:#fbf7f2;--line:#e6d0bf;--line-strong:#d8bfad;--text:#43342d;--muted:#7b675b;--muted-2:#7b675b;--nav:#b85d33;--nav-2:#7a371b;--oxide:#c45c10;--oxide-2:#b85d33;--shadow:0 8px 24px rgba(77,44,20,0.10);}
     body.dark-theme{--bg:#1b1511;--surface:#261c17;--surface-2:#2d221d;--line:#524238;--line-strong:#6b5548;--text:#f5ece6;--muted:#c7b7aa;--muted-2:#c7b7aa;--shadow:0 8px 24px rgba(0,0,0,0.32);}
@@ -291,6 +293,19 @@ pub(crate) async fn report_bug_handler(
     .diag-box{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--muted);line-height:1.7;white-space:pre-wrap;word-break:break-word;}
     .airgap-note{font-size:12.5px;color:var(--muted);line-height:1.6;margin:14px 0 0;padding-top:14px;border-top:1px solid var(--line);}
     .airgap-note strong{color:var(--text);}
+    .airgap-note code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;background:var(--surface-2);padding:1px 5px;border-radius:5px;}
+    .rb-drop{border:1.5px dashed var(--line-strong);border-radius:10px;background:var(--surface-2);padding:18px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;}
+    .rb-drop:hover,.rb-drop.drag{border-color:var(--oxide-2);background:var(--surface);}
+    .rb-drop-text{font-size:13px;color:var(--muted);}
+    .rb-drop-text strong{color:var(--oxide-2);font-weight:800;}
+    .rb-drop-hint{font-size:11px;color:var(--muted-2);margin-top:4px;}
+    .rb-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px;margin-top:12px;}
+    .rb-thumbs:empty{display:none;}
+    .rb-thumb{position:relative;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface-2);aspect-ratio:1/1;}
+    .rb-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+    .rb-thumb-name{position:absolute;bottom:0;left:0;right:0;font-size:9px;font-weight:600;color:#fff;background:rgba(0,0,0,0.55);padding:2px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rb-thumb-remove{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;border:none;background:rgba(0,0,0,0.6);color:#fff;cursor:pointer;font-size:13px;font-weight:800;line-height:1;display:flex;align-items:center;justify-content:center;padding:0;}
+    .rb-thumb-remove:hover{background:#b23030;}
     .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;gap:7px;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-wrap:hover .server-status-tip{display:block;}
     .site-footer{text-align:center;padding:12px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
@@ -348,11 +363,11 @@ pub(crate) async fn report_bug_handler(
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -389,16 +404,26 @@ pub(crate) async fn report_bug_handler(
 
     <div class="card">
       <div class="form-group">
-        <label for="rbTitle">Summary <span style="color:var(--oxide-2)">*</span></label>
+        <label for="rbTitle">Summary <span class="sx-61745c28" >*</span></label>
         <input id="rbTitle" type="text" maxlength="160" placeholder="Short one-line summary of the problem"/>
       </div>
       <div class="form-group">
-        <label for="rbDesc">What happened? <span style="color:var(--oxide-2)">*</span></label>
+        <label for="rbDesc">What happened? <span class="sx-61745c28" >*</span></label>
         <textarea id="rbDesc" placeholder="Steps to reproduce, what you expected, and what actually happened."></textarea>
       </div>
       <div class="form-group">
         <label for="rbErrors">Error codes / messages <span class="field-hint">(optional)</span></label>
         <textarea id="rbErrors" placeholder="Paste any error codes, stack traces, or console output here."></textarea>
+      </div>
+
+      <div class="form-group">
+        <label>Screenshots / images <span class="field-hint">(optional — drag, paste, or click to add)</span></label>
+        <div class="rb-drop" id="rbDrop" tabindex="0" role="button" aria-label="Add images">
+          <div class="rb-drop-text"><strong>Click to choose</strong>, drag images here, or paste from the clipboard</div>
+          <div class="rb-drop-hint">PNG, JPEG, GIF, or WebP — up to 6 images, 5 MB each</div>
+          <input id="rbFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+        </div>
+        <div class="rb-thumbs" id="rbThumbs"></div>
       </div>
 
       <div class="form-group">
@@ -423,9 +448,9 @@ pub(crate) async fn report_bug_handler(
 
       <p class="airgap-note">
         {% if prefill_supported %}
-        <strong>Online:</strong> "Open a new issue" pre-fills the {{ host_label }} form in a new tab so you can review and submit it there.<br>
+        <strong>Online:</strong> "Open a new issue" pre-fills the {{ host_label }} form in a new tab. Any images you attach are downloaded at the same time so you can drag them straight into the {{ host_label }} comment box, which uploads them for you — pre-filled issue URLs cannot carry image data themselves.<br>
         {% endif %}
-        <strong>Air-gapped:</strong> "Download report bundle" saves a portable Markdown file stamped with this build's origin remote. Carry it across the air-gap to your OxideSLOC maintainer, who can file it on the internal tracker. To point this button and page at your own internal repository, set the <code>SLOC_BUG_REPORT_URL</code> environment variable (or the <code>[reporting] bug_report_url</code> config key).
+        <strong>Air-gapped:</strong> "Download report bundle" saves a portable report stamped with this build's origin remote — a single Markdown file, or a <code>.zip</code> (the report plus an <code>images/</code> folder) when you attach images. Carry it across the air-gap to your OxideSLOC maintainer, who can file it on the internal tracker. To point this page at your own internal repository, set the <code>SLOC_BUG_REPORT_URL</code> environment variable (or the <code>[reporting] bug_report_url</code> config key).
       </p>
     </div>
   </div>
@@ -526,14 +551,113 @@ pub(crate) async fn report_bug_handler(
 
     function currentTitle() { return (titleEl.value || '').trim(); }
 
+    // ── Image attachments (kept in-browser as raw bytes until an action is taken) ─
+    var MAX_IMAGES = 6, MAX_BYTES = 5 * 1024 * 1024;
+    var OK_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+    var attachments = []; // { name, type, data (Uint8Array), url (object URL for preview) }
+    var dropEl = document.getElementById('rbDrop');
+    var fileEl = document.getElementById('rbFile');
+    var thumbsEl = document.getElementById('rbThumbs');
+
+    function baseName(n, ext, idx) {
+      var base = (n || '').replace(/\.[^.]*$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      if (!base) base = 'image-' + (idx + 1);
+      return base.slice(0, 40) + '.' + ext;
+    }
+
+    function uniqueName(name) {
+      var used = {}; attachments.forEach(function(a) { used[a.name] = true; });
+      if (!used[name]) return name;
+      var dot = name.lastIndexOf('.'), stem = name.slice(0, dot), ext = name.slice(dot), i = 2;
+      while (used[stem + '-' + i + ext]) i++;
+      return stem + '-' + i + ext;
+    }
+
+    function renderThumbs() {
+      thumbsEl.innerHTML = '';
+      attachments.forEach(function(a, i) {
+        var t = document.createElement('div'); t.className = 'rb-thumb';
+        var img = document.createElement('img'); img.src = a.url; img.alt = a.name;
+        var nm = document.createElement('div'); nm.className = 'rb-thumb-name'; nm.textContent = a.name;
+        var rm = document.createElement('button'); rm.type = 'button'; rm.className = 'rb-thumb-remove';
+        rm.setAttribute('aria-label', 'Remove ' + a.name); rm.textContent = '\u00d7';
+        rm.addEventListener('click', function(e) { e.stopPropagation(); URL.revokeObjectURL(a.url); attachments.splice(i, 1); renderThumbs(); });
+        t.appendChild(img); t.appendChild(nm); t.appendChild(rm); thumbsEl.appendChild(t);
+      });
+    }
+
+    function addFile(file) {
+      var ext = OK_TYPES[file.type];
+      if (!ext) { showStatus('Skipped ' + (file.name || 'an item') + ': only PNG, JPEG, GIF, or WebP images are allowed.', false); return; }
+      if (file.size > MAX_BYTES) { showStatus('Skipped ' + (file.name || 'an image') + ': larger than 5 MB.', false); return; }
+      if (attachments.length >= MAX_IMAGES) { showStatus('You can attach at most ' + MAX_IMAGES + ' images.', false); return; }
+      var idx = attachments.length;
+      var reader = new FileReader();
+      reader.onload = function() {
+        var data = new Uint8Array(reader.result);
+        var name = uniqueName(baseName(file.name, ext, idx));
+        attachments.push({ name: name, type: file.type, data: data, url: URL.createObjectURL(new Blob([data], { type: file.type })) });
+        renderThumbs();
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    function addFiles(list) { for (var i = 0; i < list.length; i++) addFile(list[i]); }
+
+    dropEl.addEventListener('click', function() { fileEl.click(); });
+    dropEl.addEventListener('keydown', function(e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileEl.click(); } });
+    fileEl.addEventListener('change', function() { addFiles(fileEl.files); fileEl.value = ''; });
+    dropEl.addEventListener('dragover', function(e) { e.preventDefault(); dropEl.classList.add('drag'); });
+    dropEl.addEventListener('dragleave', function() { dropEl.classList.remove('drag'); });
+    dropEl.addEventListener('drop', function(e) { e.preventDefault(); dropEl.classList.remove('drag'); if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files); });
+    // Clipboard paste anywhere on the page. Text paste carries no files, so this is a no-op then.
+    document.addEventListener('paste', function(e) { if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length) addFiles(e.clipboardData.files); });
+
+    // ── Minimal client-side ZIP (store method + CRC-32, no dependencies) ─────────
+    var CRC_T = (function() {
+      var t = [];
+      for (var n = 0; n < 256; n++) { var c = n; for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+      return t;
+    })();
+    function crc32(u8) { var c = 0xFFFFFFFF; for (var i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+    function buildZip(entries) {
+      var enc = new TextEncoder(), d = new Date();
+      var dtime = ((d.getHours() & 0x1f) << 11) | ((d.getMinutes() & 0x3f) << 5) | ((d.getSeconds() >> 1) & 0x1f);
+      var ddate = (((d.getFullYear() - 1980) & 0x7f) << 9) | (((d.getMonth() + 1) & 0x0f) << 5) | (d.getDate() & 0x1f);
+      function u16(v) { return [v & 0xFF, (v >>> 8) & 0xFF]; }
+      function u32(v) { return [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF]; }
+      var parts = [], central = [], offset = 0;
+      entries.forEach(function(e) {
+        var nameB = enc.encode(e.name), data = e.data, crc = crc32(data), sz = data.length;
+        var lfh = [].concat(u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(dtime), u16(ddate), u32(crc), u32(sz), u32(sz), u16(nameB.length), u16(0));
+        var head = new Uint8Array(lfh.length + nameB.length); head.set(lfh, 0); head.set(nameB, lfh.length);
+        parts.push(head); parts.push(data);
+        var cd = [].concat(u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(dtime), u16(ddate), u32(crc), u32(sz), u32(sz), u16(nameB.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset));
+        var cdr = new Uint8Array(cd.length + nameB.length); cdr.set(cd, 0); cdr.set(nameB, cd.length);
+        central.push(cdr);
+        offset += head.length + sz;
+      });
+      var cdSize = central.reduce(function(a, c) { return a + c.length; }, 0);
+      var eocd = [].concat(u32(0x06054b50), u16(0), u16(0), u16(entries.length), u16(entries.length), u32(cdSize), u32(offset), u16(0));
+      var all = parts.concat(central); all.push(new Uint8Array(eocd));
+      return new Blob(all, { type: 'application/zip' });
+    }
+
+    function triggerDownload(blob, name) {
+      var a = document.createElement('a'), url = URL.createObjectURL(blob);
+      a.href = url; a.download = name; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function() { URL.revokeObjectURL(url); }, 1500);
+    }
+
     function validate() {
       if (!currentTitle()) { showStatus('Please add a short summary before sending.', false); titleEl.focus(); return false; }
       if (!(descEl.value || '').trim()) { showStatus('Please describe what happened before sending.', false); descEl.focus(); return false; }
       return true;
     }
 
-    // Issue body (Markdown) shared by the pre-fill URL and the download bundle.
-    function buildBody() {
+    // Issue body (Markdown). mode 'github' emits a drag-in placeholder for screenshots (the
+    // pre-fill URL cannot carry image bytes); mode 'bundle' references the zipped image files.
+    function buildBody(mode) {
       var desc = (descEl.value || '').trim();
       var errs = (errEl.value || '').trim();
       var lines = [];
@@ -541,6 +665,15 @@ pub(crate) async fn report_bug_handler(
       lines.push(desc || '(none provided)');
       lines.push('');
       if (errs) { lines.push('## Error codes / messages'); lines.push('```'); lines.push(errs); lines.push('```'); lines.push(''); }
+      if (attachments.length) {
+        lines.push('## Screenshots');
+        if (mode === 'github') {
+          lines.push('<!-- Drag the ' + attachments.length + ' downloaded image file(s) into this box to attach them. -->');
+        } else {
+          attachments.forEach(function(a) { lines.push('![' + a.name + '](images/' + a.name + ')'); });
+        }
+        lines.push('');
+      }
       lines.push('## Environment');
       lines.push('- oxide-sloc version: ' + version);
       lines.push('- Platform: ' + platform);
@@ -557,12 +690,12 @@ pub(crate) async fn report_bug_handler(
       var footer = '\n\n---\n' +
         'Generated by the oxide-sloc "Report a Bug" page. Transfer this file to your oxide-sloc ' +
         'maintainer, who can attach it to an issue on ' + repo + '.\n';
-      return header + buildBody() + footer;
+      return header + buildBody('bundle') + footer;
     }
 
     function issueUrl() {
       var t = encodeURIComponent(currentTitle());
-      var b = encodeURIComponent(buildBody());
+      var b = encodeURIComponent(buildBody('github'));
       if (kind === 'github') { return repo + '/issues/new?labels=bug&title=' + t + '&body=' + b; }
       if (kind === 'gitlab') { return repo + '/-/issues/new?issue[title]=' + t + '&issue[description]=' + b; }
       return repo;
@@ -573,7 +706,16 @@ pub(crate) async fn report_bug_handler(
       openBtn.addEventListener('click', function() {
         if (!validate()) return;
         window.open(issueUrl(), '_blank', 'noopener');
-        showStatus('Opened a pre-filled issue on ' + hostLabel + ' in a new tab. Review and submit it there.', true);
+        if (attachments.length) {
+          // Download each image so the user can drag them into the tracker's comment box.
+          attachments.forEach(function(a, i) {
+            setTimeout(function() { triggerDownload(new Blob([a.data], { type: a.type }), a.name); }, i * 350);
+          });
+          showStatus('Opened a pre-filled issue on ' + hostLabel + ' and downloaded ' + attachments.length +
+            ' image(s). Drag the downloaded files into the ' + hostLabel + ' comment box to attach them, then submit.', true);
+        } else {
+          showStatus('Opened a pre-filled issue on ' + hostLabel + ' in a new tab. Review and submit it there.', true);
+        }
       });
     }
 
@@ -585,15 +727,17 @@ pub(crate) async fn report_bug_handler(
     document.getElementById('rbDownloadBtn').addEventListener('click', function() {
       if (!validate()) return;
       var stamp = reportedAt.replace(/[:.]/g, '-');
-      var name = 'oxide-sloc-bugreport-' + slugTitle() + '-' + stamp + '.md';
-      var blob = new Blob([buildBundle()], { type: 'text/markdown;charset=utf-8' });
-      var a = document.createElement('a');
-      var url = URL.createObjectURL(blob);
-      a.href = url; a.download = name;
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a);
-      setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-      showStatus('Saved ' + name + '. Transfer it to your oxide-sloc maintainer to file the report.', true);
+      var base = 'oxide-sloc-bugreport-' + slugTitle() + '-' + stamp;
+      if (attachments.length) {
+        var entries = [{ name: 'report.md', data: new TextEncoder().encode(buildBundle()) }];
+        attachments.forEach(function(a) { entries.push({ name: 'images/' + a.name, data: a.data }); });
+        triggerDownload(buildZip(entries), base + '.zip');
+        showStatus('Saved ' + base + '.zip (report + ' + attachments.length +
+          ' image(s)). Transfer it to your oxide-sloc maintainer to file the report.', true);
+      } else {
+        triggerDownload(new Blob([buildBundle()], { type: 'text/markdown;charset=utf-8' }), base + '.md');
+        showStatus('Saved ' + base + '.md. Transfer it to your oxide-sloc maintainer to file the report.', true);
+      }
     });
 
     document.getElementById('theme-toggle').addEventListener('click', toggleTheme);

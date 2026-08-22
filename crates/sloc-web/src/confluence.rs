@@ -730,20 +730,43 @@ pub async fn api_post_to_confluence(
     State(state): State<AppState>,
     Json(body): Json<PostToConfluenceRequest>,
 ) -> Response {
-    if body.run_id.is_empty()
-        || body.run_id.len() > 128
-        || !body
-            .run_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+    if !run_id_is_valid(&body.run_id) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "ok": false, "error": "Invalid run_id" })),
         )
             .into_response();
     }
+    publish_run(
+        &state,
+        &body.run_id,
+        &body.page_title,
+        body.report_url.as_deref(),
+    )
+    .await
+}
 
+/// Validate a run id used to look up artifacts: non-empty, bounded, and restricted to a
+/// safe alphabet so it cannot traverse paths or be abused as a lookup key.
+fn run_id_is_valid(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id.len() <= 128
+        && run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Core "publish a run to Confluence" flow, shared by the dedicated Confluence endpoint
+/// and the unified run-export action (`POST /api/runs/{id}/export?target=confluence`).
+/// Resolves the stored Confluence config and the run's artifacts, re-validates the URL,
+/// creates/updates the page, and attaches the HTML/PDF reports. Callers must validate
+/// `run_id` first (see `run_id_is_valid`).
+pub(crate) async fn publish_run(
+    state: &AppState,
+    run_id: &str,
+    page_title: &str,
+    report_url: Option<&str>,
+) -> Response {
     let config = {
         let store = state.confluence.lock().await;
         store.config.clone()
@@ -762,13 +785,13 @@ pub async fn api_post_to_confluence(
     // Locate artifacts
     let artifacts = {
         let map = state.artifacts.lock().await;
-        map.get(&body.run_id).cloned()
+        map.get(run_id).cloned()
     };
     let artifacts = if let Some(a) = artifacts {
         a
     } else {
         let reg = state.registry.lock().await;
-        match reg.find_by_run_id(&body.run_id) {
+        match reg.find_by_run_id(run_id) {
             Some(entry) => recover_artifacts_from_registry(entry),
             None => {
                 return (
@@ -813,10 +836,7 @@ pub async fn api_post_to_confluence(
 
     // Defense in depth: re-validate the stored URL before publishing.
     if let Err(msg) = validate_confluence_url(&config.base_url) {
-        tracing::warn!(
-            "Confluence publish blocked for run '{}': {msg}",
-            body.run_id
-        );
+        tracing::warn!("Confluence publish blocked for run '{}': {msg}", run_id);
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(serde_json::json!({ "ok": false, "error": msg })),
@@ -824,9 +844,8 @@ pub async fn api_post_to_confluence(
             .into_response();
     }
     let client = ConfluenceClient::new(&config);
-    let report_url = body.report_url.as_deref();
 
-    match post_to_confluence(&client, &run, &body.page_title, report_url).await {
+    match post_to_confluence(&client, &run, page_title, report_url).await {
         Ok(page_id) => {
             attach_reports(
                 &client,
@@ -838,7 +857,7 @@ pub async fn api_post_to_confluence(
             Json(serde_json::json!({ "ok": true, "page_id": page_id })).into_response()
         }
         Err(e) => {
-            tracing::warn!("Confluence publish failed for run '{}': {e:#}", body.run_id);
+            tracing::warn!("Confluence publish failed for run '{}': {e:#}", run_id);
             (
                 StatusCode::BAD_GATEWAY,
                 Json(

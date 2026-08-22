@@ -18,8 +18,9 @@ pub use history::{
     WatchedDirsStore,
 };
 pub use maintenance::{
-    PrunePlan, PruneReport, PrunedRun, dir_size_bytes, execute_run_prune, plan_run_prune,
-    resolve_output_root, resolve_registry_path, rotate_log, rotated_log_paths, run_output_dir,
+    PrunePlan, PruneReport, PrunedRun, copy_tree, dir_size_bytes, execute_run_prune,
+    plan_run_prune, resolve_output_root, resolve_registry_path, rotate_log, rotated_log_paths,
+    run_output_dir,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

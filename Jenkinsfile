@@ -291,6 +291,26 @@ pipeline {
                           'commits in a Git Hotspots section (HTML/PDF) plus Commits/Last-changed ' +
                           'columns in CSV. Set 0 to disable. Requires SCAN_PATH to be a git checkout.'
         )
+        string(
+            name:         'SCAN_MAX_COMPLEXITY',
+            defaultValue: '',
+            description:  'Complexity gate. When set to N, the analyze step exits 6 (fails the build) ' +
+                          'if any file cyclomatic complexity exceeds N. Empty = gate disabled. ' +
+                          'Numeric 1-9999.'
+        )
+        booleanParam(
+            name:         'RUN_EXCLUDE_DUPLICATES',
+            defaultValue: false,
+            description:  'Exclude duplicate (identical-content) files from SLOC totals. ' +
+                          'Duplicate groups are always reported regardless of this setting.'
+        )
+        string(
+            name:         'SCAN_COVERAGE_FILE',
+            defaultValue: '',
+            description:  'Path to a coverage report to attach per-file line/function/branch coverage ' +
+                          '(LCOV .info, Cobertura XML, JaCoCo XML, coverage.py JSON, or Istanbul/NYC JSON; ' +
+                          'format auto-detected). Empty = no coverage import.'
+        )
         booleanParam(
             name:         'FOLLOW_SYMLINKS',
             defaultValue: false,

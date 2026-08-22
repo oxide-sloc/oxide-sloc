@@ -30,6 +30,9 @@ include_lockfiles             = false
 binary_file_behavior          = "fail"    # pipeline fails if binaries found in source
 decode_failure_behavior       = "warn_skip"
 parse_failure_behavior        = "warn_skip"
+attribution                   = true         # per-author code ownership via git blame (on)
+activity_window_days          = 90           # Git Hotspots window in days (0 disables)
+style_col_threshold           = 100          # tighter N-col compliance gate than the 80 default
 
 [reporting]
 report_title               = "oxide-sloc Strict CI Gate"

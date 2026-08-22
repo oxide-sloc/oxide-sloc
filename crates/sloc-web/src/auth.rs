@@ -142,6 +142,39 @@ fn any_key_matches(candidates: &[&Option<String>], keys: &[secrecy::SecretBox<St
     })
 }
 
+/// Whether the operator admin key (`SLOC_ADMIN_KEY`) is configured. Operator-only
+/// controls fall back to the normal API-key gate when this is unset, so nothing is
+/// locked away on deployments that don't opt into a separate admin credential.
+#[must_use]
+pub(crate) fn admin_key_configured() -> bool {
+    std::env::var("SLOC_ADMIN_KEY").is_ok_and(|k| !k.trim().is_empty())
+}
+
+/// Whether this request presents the operator admin key. Checked (constant-time)
+/// against `Authorization: Bearer …`, `X-Admin-Key`, and `X-Api-Key`. Returns false
+/// when `SLOC_ADMIN_KEY` is unset, so callers must decide the unset-key policy.
+#[must_use]
+pub(crate) fn is_admin_request(headers: &header::HeaderMap) -> bool {
+    let Ok(admin) = std::env::var("SLOC_ADMIN_KEY") else {
+        return false;
+    };
+    let admin = admin.trim();
+    if admin.is_empty() {
+        return false;
+    }
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim);
+    let x_admin = headers.get("x-admin-key").and_then(|v| v.to_str().ok());
+    let x_api = headers.get("x-api-key").and_then(|v| v.to_str().ok());
+    [bearer, x_admin, x_api]
+        .into_iter()
+        .flatten()
+        .any(|candidate| ct_eq(candidate, admin))
+}
+
 /// Audit a successful authenticated request, but only for state-changing methods.
 /// Auditing every GET (assets, polling) would flood the sink with no security value;
 /// the who-did-what trail that matters is mutating requests.
@@ -854,5 +887,38 @@ mod tests {
         assert!(!any_key_matches(&[&bad, &none], &keys));
         // No candidates at all → no match.
         assert!(!any_key_matches(&[&none], &keys));
+    }
+
+    #[test]
+    fn admin_request_matches_only_configured_key() {
+        use axum::http::HeaderMap;
+        // SAFETY: only this test reads/writes SLOC_ADMIN_KEY in the auth unit tests,
+        // and it is cleared before returning, so no other test observes it.
+        unsafe {
+            std::env::remove_var("SLOC_ADMIN_KEY");
+        }
+        let mut h = HeaderMap::new();
+        h.insert("x-admin-key", "topsecret".parse().unwrap());
+        // Unset ⇒ not configured, never admin (callers fall back to the API-key gate).
+        assert!(!admin_key_configured());
+        assert!(!is_admin_request(&h));
+
+        unsafe {
+            std::env::set_var("SLOC_ADMIN_KEY", "topsecret");
+        }
+        assert!(admin_key_configured());
+        assert!(is_admin_request(&h), "x-admin-key must be accepted");
+
+        let mut hb = HeaderMap::new();
+        hb.insert(header::AUTHORIZATION, "Bearer topsecret".parse().unwrap());
+        assert!(is_admin_request(&hb), "Bearer admin key must be accepted");
+
+        let mut hw = HeaderMap::new();
+        hw.insert("x-admin-key", "wrong".parse().unwrap());
+        assert!(!is_admin_request(&hw), "wrong key must be rejected");
+
+        unsafe {
+            std::env::remove_var("SLOC_ADMIN_KEY");
+        }
     }
 }

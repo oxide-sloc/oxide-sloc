@@ -24,21 +24,33 @@ jobs:
     # Guard: only when the upstream run actually succeeded.
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - uses: actions/checkout@v4
+      # Pin to a full commit SHA — a mutable tag (@v4) can be silently repointed
+      # by the action owner (supply-chain risk). Matches the pin the oxide-sloc
+      # workflows themselves use.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Trigger oxide-sloc
+        # Untrusted github.event.* values are passed through env: (never
+        # interpolated directly into the run: shell) and referenced as quoted
+        # "$VARS" so a crafted branch/commit/workflow name cannot inject shell.
         env:
           OXIDE_SLOC_URL: ${{ secrets.OXIDE_SLOC_URL }}
           OXIDE_SLOC_SECRET: ${{ secrets.OXIDE_SLOC_SECRET }}
+          REPO_URL: ${{ github.event.repository.clone_url }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          JOB_NAME: ${{ github.event.workflow_run.name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           ci/downstream-trigger/trigger-oxide-sloc.sh \
-            --repo "${{ github.event.repository.clone_url }}" \
-            --branch "${{ github.event.workflow_run.head_branch }}" \
-            --commit "${{ github.event.workflow_run.head_sha }}" \
+            --repo "$REPO_URL" \
+            --branch "$HEAD_BRANCH" \
+            --commit "$HEAD_SHA" \
             --status success \
             --system github \
-            --job "${{ github.event.workflow_run.name }}" \
-            --build-id "${{ github.event.workflow_run.id }}" \
-            --build-url "${{ github.event.workflow_run.html_url }}"
+            --job "$JOB_NAME" \
+            --build-id "$RUN_ID" \
+            --build-url "$RUN_URL"
 
 # ── Alternative: no oxide-sloc server, dispatch a downstream pipeline instead ──
 # If oxide-sloc runs as a CI step (not a server), have the upstream repo fire a

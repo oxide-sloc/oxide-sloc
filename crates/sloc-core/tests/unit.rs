@@ -2231,6 +2231,7 @@ fn cleanup_policy_store_save_and_load() {
             enabled: true,
             max_age_days: Some(30),
             max_run_count: Some(50),
+            max_total_mb: Some(2048),
             interval_hours: 24,
         }),
         ..CleanupPolicyStore::default()

@@ -98,9 +98,10 @@ def _finding_from_message(message):
     path = _rel_path(span["file_name"])
     begin = int(span.get("line_start", 1))
     # Non-cryptographic dedup key for identical findings; not a security digest.
-    fingerprint = hashlib.sha1(
+    # SHA-256 (not SHA-1) so SAST weak-hash rules stay quiet — the value is only
+    # a stable Code Climate fingerprint, any collision-resistant hash works.
+    fingerprint = hashlib.sha256(
         f"{path}:{begin}:{check_name}:{text}".encode("utf-8"),
-        usedforsecurity=False,
     ).hexdigest()
     return {
         "description": text,

@@ -917,6 +917,13 @@ def runAnalyze() {
     if (params.ACTIVITY_WINDOW?.trim() && !(params.ACTIVITY_WINDOW.trim() ==~ /^[0-9]{1,4}$/)) {
         error("ACTIVITY_WINDOW must be a number of days (0-3650): ${params.ACTIVITY_WINDOW}")
     }
+    if (params.SCAN_MAX_COMPLEXITY?.trim() && !(params.SCAN_MAX_COMPLEXITY.trim() ==~ /^[0-9]{1,4}$/)) {
+        error("SCAN_MAX_COMPLEXITY must be a number (1-9999): ${params.SCAN_MAX_COMPLEXITY}")
+    }
+    if (params.SCAN_COVERAGE_FILE?.trim()
+            && !(params.SCAN_COVERAGE_FILE.trim() ==~ /^[a-zA-Z0-9_.\-\/]+$/)) {
+        error("SCAN_COVERAGE_FILE contains invalid characters: ${params.SCAN_COVERAGE_FILE}")
+    }
 
     // POSIX-form workspace for bash-facing paths (WS_POSIX == WORKSPACE on Unix).
     def outDir = "${env.WS_POSIX}/${params.OUTPUT_SUBDIR}"
@@ -1079,10 +1086,25 @@ def runAnalyze() {
         branchName = stripRef(selfRaw)
     }
     def branchArg = (branchName && branchName != 'HEAD') ? "--git-branch '${branchName}'" : ''
-    // Per-author code-ownership metrics (git blame). Opt-in on the CLI; ON by default
-    // here. Blame walks full history, so the scanned checkout must NOT be shallow —
-    // the Jenkinsfile Checkout stage pins CloneOption(shallow:false, depth:0) for this.
-    def attributionArg = params.RUN_ATTRIBUTION ? '--attribution' : ''
+    // Per-author code-ownership metrics (git blame). ON by default in the binary.
+    // Blame walks full history, so the scanned checkout must NOT be shallow — the
+    // Jenkinsfile Checkout stage pins CloneOption(shallow:false, depth:0) for this.
+    // Unchecked RUN_ATTRIBUTION must actually DISABLE attribution: emit
+    // --no-attribution (an empty string would be a no-op and leave it on).
+    def attributionArg = params.RUN_ATTRIBUTION ? '--attribution' : '--no-attribution'
+    // Complexity gate: exit 6 if any file's cyclomatic complexity exceeds N. Off unless
+    // the operator sets a value. CLI-only (no config key).
+    def maxComplexityArg = (params.SCAN_MAX_COMPLEXITY?.trim())
+                        ? "--max-complexity '${params.SCAN_MAX_COMPLEXITY.trim()}'"
+                        : ''
+    // Exclude duplicate (identical-content) files from SLOC totals. Duplicate groups are
+    // always still reported. CLI-only (no config key).
+    def noDuplicatesArg = params.RUN_EXCLUDE_DUPLICATES ? '--no-duplicates' : ''
+    // Coverage import: attach per-file line/function/branch coverage from a report file
+    // (LCOV/Cobertura/JaCoCo/coverage.py/Istanbul, auto-detected). Off unless set.
+    def coverageArg  = (params.SCAN_COVERAGE_FILE?.trim())
+                        ? "--coverage-file '${params.SCAN_COVERAGE_FILE.trim()}'"
+                        : ''
     // Export the resolved branch + the commit for the persistent trend CSV (Change 4).
     env.SLOC_TREND_BRANCH = branchName
     env.SLOC_TREND_COMMIT = env.GIT_COMMIT?.trim() ?: shortSha
@@ -1101,6 +1123,7 @@ def runAnalyze() {
                 --report-title "${REPORT_TITLE}" \
                 --mixed-line-policy "${MIXED_LINE_POLICY}" \
                 ''' + "${configArg} ${docArg} ${symlinkArg} ${noIgnoreArg} ${submodArg} ${styleColArg} ${activityArg}" + ''' \
+                ''' + "${maxComplexityArg} ${noDuplicatesArg} ${coverageArg}" + ''' \
                 ''' + "${langArgs} ${includeArgs} ${excludeArgs} ${branchArg} ${attributionArg}" + ''' \
                 ''' + "${jsonArg} ${csvArg} ${xlsxArg} ${htmlArg} ${pdfArg}" + ''' \
                 ''' + "${scanConfigArg} ${subHtmlArg}" + '''

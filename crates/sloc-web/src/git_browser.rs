@@ -4,7 +4,7 @@
 // Git browser: browse branches/tags/commits of a local or remote repo and
 // trigger scans or ref-to-ref comparisons directly from the web UI.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use askama::Template;
 use axum::{
@@ -14,13 +14,16 @@ use axum::{
 };
 use serde::Deserialize;
 
-use sloc_git::{RepoRefs, clone_or_fetch, create_worktree, destroy_worktree, list_refs};
+use sloc_git::{
+    RepoRefs, clone_or_fetch, create_worktree, destroy_worktree, is_local_repo_path, list_refs,
+    list_refs_local, open_local_repo, populate_submodules,
+};
 
 use sloc_report::render_html;
 
 use super::{
     AppState, CspNonce, RunArtifacts, build_run_registry_entry, git_clone_dest,
-    sanitize_project_label, scan_path_to_artifacts,
+    path_within_allowed_roots, sanitize_project_label, scan_path_to_artifacts,
 };
 
 // ── query types ───────────────────────────────────────────────────────────────
@@ -56,6 +59,8 @@ pub struct CompareRefsQuery {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC — Git Browser</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js"></script>
   <style nonce="{{ csp_nonce }}">
     :root{--radius:14px;--bg:#f5efe8;--surface:rgba(255,255,255,0.9);--surface-2:#fbf7f2;--line:#e6d0bf;--line-strong:#d8bfad;--text:#43342d;--muted:#7b675b;--nav:#b85d33;--nav-2:#7a371b;--oxide:#d37a4c;--oxide-2:#b85d33;--accent-2:#2563eb;--shadow:0 8px 24px rgba(77,44,20,0.10);}
     body.dark-theme{--bg:#1b1511;--surface:#261c17;--surface-2:#2d221d;--line:#524238;--text:#f5ece6;--muted:#c7b7aa;--shadow:0 8px 24px rgba(0,0,0,0.32);}
@@ -275,7 +280,7 @@ pub struct CompareRefsQuery {
         <a class="nav-pill" href="/compare-scans">Compare Scans</a>
         <a class="nav-pill" href="/test-metrics">Test Metrics</a>
         <div class="nav-dropdown">
-          <a href="/git-browser" class="nav-dropdown-btn" style="background:rgba(255,255,255,0.22);">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
+          <a href="/git-browser" class="nav-dropdown-btn sx-8c38ef73" >Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
           <div class="nav-dropdown-menu">
             <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
           </div>
@@ -284,11 +289,11 @@ pub struct CompareRefsQuery {
           <div class="nav-pill server-online-pill" id="server-status-pill">
             <span class="status-dot" id="status-dot"></span>
             <span id="server-status-label">Server</span>
-            <span id="server-ping-ms" style="margin-left:5px;opacity:0.75;font-size:10px;"></span>
+            <span class="sx-d60f2ef3" id="server-ping-ms" ></span>
           </div>
           <div class="server-status-tip">
             OxideSLOC is running — accessible on your network.
-            <span id="server-tip-ping" style="display:block;margin-top:4px;font-size:11px;opacity:0.75;"></span>
+            <span class="sx-238af6bc" id="server-tip-ping" ></span>
           </div>
         </div>
         <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
@@ -335,7 +340,7 @@ pub struct CompareRefsQuery {
         <div class="how-step-body"><div class="how-step-label">Scan or compare</div><div class="how-step-desc">Get SLOC counts or diff two refs</div></div>
       </div>
     </div>
-    <div class="card fetch-card" style="overflow:hidden;">
+    <div class="card fetch-card sx-1363e150" >
       <div class="fetch-card-header">
         <div class="fetch-card-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -359,16 +364,16 @@ pub struct CompareRefsQuery {
         </div>
         <button class="btn btn-primary" id="loadBtn" type="button">
           <span id="loadSpinner" class="spinner panel-hidden"></span>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          <svg class="sx-867764b6" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
           Fetch
         </button>
       </div>
-      <div id="statusMsg" style="display:none" class="status-msg"></div>
+      <div id="statusMsg"  class="status-msg sx-6aa34d74"></div>
       <div class="fetch-footer">
         <span class="fetch-footer-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
         <span class="fetch-footer-body">
-          <span>First fetch clones the repository — this may take 15-30 seconds for large repos. Subsequent fetches for the same URL are instant (cached). Browse URLs (e.g. <code style="font-family:ui-monospace,monospace;font-size:11px">/projects/PROJ/repos/REPO/browse</code>) are automatically converted to git clone URLs.</span>
-          <span>Public repos work without credentials; for private repos, configure your SSH or HTTPS credentials in git before fetching. Corporate proxy/VPN certificates are trusted automatically from your OS certificate store — no extra setup. Behind an outbound proxy, set <code style="font-family:ui-monospace,monospace;font-size:11px">HTTPS_PROXY</code>/<code style="font-family:ui-monospace,monospace;font-size:11px">HTTP_PROXY</code>.</span>
+          <span>First fetch clones the repository — this may take 15-30 seconds for large repos. Subsequent fetches for the same URL are instant (cached). Browse URLs (e.g. <code class="sx-5c545de9" >/projects/PROJ/repos/REPO/browse</code>) are automatically converted to git clone URLs.</span>
+          <span>Public repos work without credentials; for private repos, configure your SSH or HTTPS credentials in git before fetching. Corporate proxy/VPN certificates are trusted automatically from your OS certificate store — no extra setup. Behind an outbound proxy, set <code class="sx-5c545de9" >HTTPS_PROXY</code>/<code class="sx-5c545de9" >HTTP_PROXY</code>.</span>
         </span>
       </div>
     </div>
@@ -379,13 +384,13 @@ pub struct CompareRefsQuery {
       </div>
       <div class="sk-tabs">
         <div class="sk sk-tab"></div>
-        <div class="sk sk-tab" style="width:60px;"></div>
-        <div class="sk sk-tab" style="width:80px;"></div>
+        <div class="sk sk-tab sx-c5f3c1cb" ></div>
+        <div class="sk sk-tab sx-2b85ed46" ></div>
       </div>
       <div class="sk-row"><div class="sk sk-sm"></div><div class="sk sk-badge"></div><div class="sk sk-md"></div><div class="sk sk-md"></div><div class="sk sk-lg"></div><div class="sk sk-btn"></div></div>
-      <div class="sk-row" style="opacity:0.75;"><div class="sk sk-sm"></div><div class="sk sk-badge"></div><div class="sk sk-md"></div><div class="sk sk-md"></div><div class="sk sk-lg"></div><div class="sk sk-btn"></div></div>
-      <div class="sk-row" style="opacity:0.55;"><div class="sk sk-sm"></div><div class="sk sk-badge"></div><div class="sk sk-md"></div><div class="sk sk-md"></div><div class="sk sk-lg"></div><div class="sk sk-btn"></div></div>
-      <div class="sk-row" style="opacity:0.35;"><div class="sk sk-sm"></div><div class="sk sk-badge"></div><div class="sk sk-md"></div><div class="sk sk-md"></div><div class="sk sk-lg"></div><div class="sk sk-btn"></div></div>
+      <div class="sk-row sx-119016c3" ><div class="sk sk-sm"></div><div class="sk sk-badge"></div><div class="sk sk-md"></div><div class="sk sk-md"></div><div class="sk sk-lg"></div><div class="sk sk-btn"></div></div>
+      <div class="sk-row sx-5a692dc7" ><div class="sk sk-sm"></div><div class="sk sk-badge"></div><div class="sk sk-md"></div><div class="sk sk-md"></div><div class="sk sk-lg"></div><div class="sk sk-btn"></div></div>
+      <div class="sk-row sx-e583e6b9" ><div class="sk sk-sm"></div><div class="sk sk-badge"></div><div class="sk sk-md"></div><div class="sk sk-md"></div><div class="sk sk-lg"></div><div class="sk sk-btn"></div></div>
     </div>
     <div id="refPanel" class="card">
       <div class="ref-panel-topbar" id="refPanelTopbar">
@@ -424,16 +429,16 @@ pub struct CompareRefsQuery {
         </table>
         <div id="commitPag"></div>
       </div>
-      <div class="compare-bar" id="compareBar" style="display:none">
+      <div class="compare-bar sx-6aa34d74" id="compareBar" >
         <div class="compare-refs-label">
           <svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
           Compare: <span class="compare-ref-tag" id="compareA">—</span> <span class="compare-vs">vs</span> <span class="compare-ref-tag" id="compareB">—</span>
         </div>
         <button class="btn btn-compare btn-sm" id="compareBtn" type="button">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          <svg class="sx-867764b6" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
           Compare Refs
         </button>
-        <button class="btn btn-sm" id="clearBtn" style="background:var(--line);color:var(--text);" type="button">Clear</button>
+        <button class="btn btn-sm sx-822cc7d2" id="clearBtn"  type="button">Clear</button>
       </div>
     </div>
   </div>
@@ -929,7 +934,7 @@ pub struct CompareRefsQuery {
   </script>
   <footer class="site-footer">
     oxide-sloc v{{ version }} — local code analysis - metrics, history and reports
-    &nbsp;·&nbsp; <em class="footer-mode" id="footer-mode" style="font-style:italic;font-weight:700;color:var(--oxide);">Mode: Local</em>
+    &nbsp;·&nbsp; <em class="footer-mode sx-e01b0d98" id="footer-mode" >Mode: Local</em>
     &nbsp;·&nbsp; Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -975,8 +980,14 @@ pub async fn api_list_refs(
     let Some(repo) = q.repo else {
         return json_error(StatusCode::BAD_REQUEST, "missing ?repo=");
     };
+    let local_root = match resolve_local_repo(&repo, &state) {
+        Ok(r) => r,
+        Err(msg) => return json_error(StatusCode::FORBIDDEN, &msg),
+    };
     let clones_dir = state.git_clones_dir.clone();
-    match tokio::task::spawn_blocking(move || load_refs(&repo, &clones_dir)).await {
+    match tokio::task::spawn_blocking(move || load_refs(&repo, &clones_dir, local_root.as_deref()))
+        .await
+    {
         Ok(Ok(refs)) => (StatusCode::OK, Json(serde_json::json!(refs))).into_response(),
         Ok(Err(e)) => {
             tracing::warn!(event = "git_api_error", "load_refs failed: {e:#}");
@@ -1007,6 +1018,11 @@ pub async fn api_scan_ref(
     if !is_valid_git_ref(&q.ref_name) {
         return json_error(StatusCode::BAD_REQUEST, "invalid ref_name");
     }
+    let local_root = match resolve_local_repo(&q.repo, &state) {
+        Ok(r) => r,
+        Err(msg) => return json_error(StatusCode::FORBIDDEN, &msg),
+    };
+    let populate = should_populate_submodules(&state);
     let clones_dir = state.git_clones_dir.clone();
     let base_config = state.base_config.clone();
     let label = q
@@ -1018,7 +1034,17 @@ pub async fn api_scan_ref(
     let ref_name = q.ref_name.clone();
 
     match tokio::task::spawn_blocking(move || {
-        run_ref_scan(&repo, &ref_name, &clones_dir, &base_config, &label)
+        run_ref_scan(
+            &repo,
+            &ref_name,
+            &clones_dir,
+            &base_config,
+            &label,
+            RefScanCtx {
+                local_root: local_root.as_deref(),
+                populate,
+            },
+        )
     })
     .await
     {
@@ -1048,6 +1074,11 @@ pub async fn api_compare_refs(
     if !is_valid_git_ref(&q.baseline_ref) || !is_valid_git_ref(&q.current_ref) {
         return json_error(StatusCode::BAD_REQUEST, "invalid ref name").into_response();
     }
+    let local_root = match resolve_local_repo(&q.repo, &state) {
+        Ok(r) => r,
+        Err(msg) => return json_error(StatusCode::FORBIDDEN, &msg),
+    };
+    let populate = should_populate_submodules(&state);
     let clones_dir = state.git_clones_dir.clone();
     let base_config = state.base_config.clone();
     let label = q
@@ -1069,6 +1100,10 @@ pub async fn api_compare_refs(
             &clones_dir,
             &base_config,
             &label,
+            RefScanCtx {
+                local_root: local_root.as_deref(),
+                populate,
+            },
         )
     })
     .await
@@ -1118,9 +1153,95 @@ async fn register_scan(
     }
 }
 
+// ── local-repo gate + submodule policy ────────────────────────────────────────
+
+/// Decide whether `repo` names a local on-disk git repository and, if so, whether this caller
+/// may browse it. `Ok(None)` ⇒ not a local path (use the remote clone flow); `Ok(Some(root))`
+/// ⇒ a permitted local repo (canonicalized); `Err(msg)` ⇒ a local path the caller is not
+/// allowed to reach. In server mode a local path must resolve under `allowed_scan_roots`
+/// (same gate as the scan-path and preview handlers); in local mode any real repo is allowed.
+fn resolve_local_repo(repo: &str, state: &AppState) -> Result<Option<PathBuf>, String> {
+    if !is_local_repo_path(repo) {
+        return Ok(None);
+    }
+    let canonical = std::fs::canonicalize(Path::new(repo.trim()))
+        .map_err(|_| "local repository path could not be resolved".to_owned())?;
+    if state.server_mode {
+        let roots = &state.base_config.discovery.allowed_scan_roots;
+        if roots.is_empty() {
+            return Err("local-path browsing is disabled on this server \
+                        (no allowed_scan_roots configured)"
+                .to_owned());
+        }
+        if !path_within_allowed_roots(&canonical, roots) {
+            return Err("local repository path is not within an allowed scan directory".to_owned());
+        }
+    }
+    Ok(Some(canonical))
+}
+
+/// Whether ref scans should recursively populate submodules. Driven by the `submodule_breakdown`
+/// config; on a network-facing server it additionally requires a configured host allowlist,
+/// since submodule population fetches URLs recorded in `.gitmodules`.
+fn should_populate_submodules(state: &AppState) -> bool {
+    state.base_config.discovery.submodule_breakdown
+        && (!state.server_mode || sloc_git::host_allowlist_configured())
+}
+
+/// Resolve the repository directory to browse/scan: a local repo in place, or a fresh
+/// clone/fetch of a remote URL under `clones_dir`.
+fn resolve_repo_dir(
+    repo: &str,
+    clones_dir: &Path,
+    local_root: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    match local_root {
+        Some(root) => open_local_repo(root),
+        None => {
+            let dest = git_clone_dest(repo, clones_dir);
+            clone_or_fetch(repo, &dest)?;
+            Ok(dest)
+        }
+    }
+}
+
+/// Best-effort submodule population for a freshly created worktree, logging any submodule URL
+/// the SSRF gate rejected.
+fn populate_worktree_submodules(worktree: &Path) {
+    match populate_submodules(worktree) {
+        Ok(skipped) if !skipped.is_empty() => {
+            tracing::warn!(
+                event = "git_submodule_skipped",
+                "skipped unsafe submodule URL(s): {}",
+                skipped.join(", ")
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(
+                event = "git_submodule_error",
+                "submodule population failed: {e:#}"
+            );
+        }
+    }
+}
+
+/// Per-scan context: where to source the repo (a local repo in place, or a remote clone) and
+/// whether to recursively populate submodules. Bundled so the scan/compare entry points stay
+/// under clippy's argument-count limit.
+#[derive(Clone, Copy)]
+struct RefScanCtx<'a> {
+    local_root: Option<&'a Path>,
+    populate: bool,
+}
+
 // ── core logic (runs in spawn_blocking) ───────────────────────────────────────
 
-fn load_refs(repo: &str, clones_dir: &Path) -> anyhow::Result<RepoRefs> {
+fn load_refs(repo: &str, clones_dir: &Path, local_root: Option<&Path>) -> anyhow::Result<RepoRefs> {
+    if let Some(root) = local_root {
+        let repo_dir = open_local_repo(root)?;
+        return list_refs_local(&repo_dir);
+    }
     let dest = git_clone_dest(repo, clones_dir);
     clone_or_fetch(repo, &dest)?;
     list_refs(&dest)
@@ -1132,11 +1253,14 @@ fn run_ref_scan(
     clones_dir: &Path,
     base_config: &sloc_config::AppConfig,
     label: &str,
+    ctx: RefScanCtx<'_>,
 ) -> anyhow::Result<(String, String, RunArtifacts, sloc_core::AnalysisRun)> {
-    let dest = git_clone_dest(repo, clones_dir);
-    clone_or_fetch(repo, &dest)?;
+    let dest = resolve_repo_dir(repo, clones_dir, ctx.local_root)?;
     let wt_path = clones_dir.join(format!("wt-{}", uuid::Uuid::new_v4().simple()));
     create_worktree(&dest, ref_name, &wt_path)?;
+    if ctx.populate {
+        populate_worktree_submodules(&wt_path);
+    }
     let result = scan_path_to_artifacts(&wt_path, base_config, label);
     let _ = destroy_worktree(&dest, &wt_path);
     let (run_id, artifacts, mut run) = result?;
@@ -1161,6 +1285,7 @@ fn run_compare_refs(
     clones_dir: &Path,
     base_config: &sloc_config::AppConfig,
     label: &str,
+    ctx: RefScanCtx<'_>,
 ) -> anyhow::Result<(
     String,
     RunArtifacts,
@@ -1169,14 +1294,16 @@ fn run_compare_refs(
     RunArtifacts,
     sloc_core::AnalysisRun,
 )> {
-    let dest = git_clone_dest(repo, clones_dir);
-    clone_or_fetch(repo, &dest)?;
+    let dest = resolve_repo_dir(repo, clones_dir, ctx.local_root)?;
 
     let b_label = format!("{label} ({baseline_ref})");
     let c_label = format!("{label} ({current_ref})");
 
     let wt_a = clones_dir.join(format!("wt-{}", uuid::Uuid::new_v4().simple()));
     create_worktree(&dest, baseline_ref, &wt_a)?;
+    if ctx.populate {
+        populate_worktree_submodules(&wt_a);
+    }
     let b_result = scan_path_to_artifacts(&wt_a, base_config, &b_label);
     let _ = destroy_worktree(&dest, &wt_a);
     let (b_id, b_arts, mut b_run) = b_result?;
@@ -1191,6 +1318,9 @@ fn run_compare_refs(
 
     let wt_b = clones_dir.join(format!("wt-{}", uuid::Uuid::new_v4().simple()));
     create_worktree(&dest, current_ref, &wt_b)?;
+    if ctx.populate {
+        populate_worktree_submodules(&wt_b);
+    }
     let c_result = scan_path_to_artifacts(&wt_b, base_config, &c_label);
     let _ = destroy_worktree(&dest, &wt_b);
     let (c_id, c_arts, mut c_run) = c_result?;
