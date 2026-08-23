@@ -26,6 +26,7 @@ pub(crate) mod audit;
 pub use audit::{AuditVerifyReport, verify_audit_file};
 pub(crate) mod auth;
 pub(crate) mod confluence;
+pub(crate) mod connectivity;
 pub(crate) mod error;
 pub(crate) mod git_browser;
 pub(crate) mod git_webhook;
@@ -726,6 +727,112 @@ struct OwnershipRow {
     files_owned: u64,
     aliases: usize,
     color: &'static str,
+    /// Best-effort link to this contributor's profile / contributions on the hosting platform,
+    /// derived from the repo's git remote. `None` when it can't be resolved.
+    profile: Option<String>,
+    /// Lines owned in files classified as tests (subset of the totals above). The "development"
+    /// slice is derived as `total - test` on the client so the dev/test filter stays consistent.
+    test_code: u64,
+    test_comment: u64,
+    test_blank: u64,
+    test_total: u64,
+}
+
+/// Heuristic: does this file hold unit tests? True when the lexical analyzer detected test
+/// symbols / assertions / suites, or the path follows a common test-file convention.
+fn file_is_test(rec: &sloc_core::FileRecord) -> bool {
+    let rc = &rec.raw_line_categories;
+    if rc.test_count > 0 || rc.test_assertion_count > 0 || rc.test_suite_count > 0 {
+        return true;
+    }
+    let p = rec.relative_path.to_ascii_lowercase().replace('\\', "/");
+    p.contains("/tests/")
+        || p.contains("/test/")
+        || p.contains("/spec/")
+        || p.contains("__tests__")
+        || p.contains(".test.")
+        || p.contains(".spec.")
+        || p.contains("_test.")
+        || p.contains("_spec.")
+        || p.starts_with("test/")
+        || p.starts_with("tests/")
+}
+
+/// Minimal percent-encoder for a URL query-string value (RFC 3986 unreserved set kept literal).
+fn url_query_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Split a git remote URL into its raw `(host, path)` components, handling `https://`, `ssh://`,
+/// and scp-style `git@host:path` forms (credentials in the authority are dropped).
+fn split_git_remote(r: &str) -> Option<(String, String)> {
+    if let Some(rest) = r
+        .strip_prefix("https://")
+        .or_else(|| r.strip_prefix("http://"))
+    {
+        let (authority, path) = rest.split_once('/')?;
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        return Some((host.to_string(), path.to_string()));
+    }
+    if let Some(rest) = r.strip_prefix("ssh://") {
+        let rest = rest.rsplit('@').next().unwrap_or(rest);
+        let (host, path) = rest.split_once('/')?;
+        return Some((host.to_string(), path.to_string()));
+    }
+    if let Some(rest) = r.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        return Some((host.to_string(), path.to_string()));
+    }
+    None
+}
+
+/// Parse a git remote URL into `(host, slug)` where `slug` is the `owner/repo` path (subgroups
+/// preserved). Handles `https://host/owner/repo(.git)` and scp-style `git@host:owner/repo(.git)`
+/// plus `ssh://git@host/owner/repo`. Returns `None` when it can't be decomposed.
+fn parse_remote_host_slug(remote: &str) -> Option<(String, String)> {
+    let (host, path) = split_git_remote(remote.trim())?;
+    let path = path.trim().trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    if host.is_empty() || !path.contains('/') {
+        return None;
+    }
+    Some((host, path.to_string()))
+}
+
+/// Derive a best-effort profile / contributions URL for a contributor from the repo's git remote.
+/// A GitHub "noreply" commit email embeds the account login, yielding an exact profile link;
+/// otherwise we link to the host's commit history filtered by this author. Only the three public
+/// hosts (github.com, gitlab.com, bitbucket.org) are linked, so a hostile remote can never coerce
+/// a link to an arbitrary domain. Returns `None` when nothing reliable can be built.
+fn author_profile_url(remote_url: Option<&str>, name: &str, email: &str) -> Option<String> {
+    if let Some(local) = email.strip_suffix("@users.noreply.github.com") {
+        let login = local.rsplit('+').next().unwrap_or(local);
+        if !login.is_empty() {
+            return Some(format!("https://github.com/{login}"));
+        }
+    }
+    let (host, slug) = parse_remote_host_slug(remote_url?)?;
+    let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+    let email_q = url_query_encode(email);
+    let name_q = url_query_encode(name);
+    if on("github.com") {
+        Some(format!("https://{host}/{slug}/commits?author={email_q}"))
+    } else if on("gitlab.com") {
+        Some(format!("https://{host}/{slug}/-/commits?author={name_q}"))
+    } else if on("bitbucket.org") {
+        Some(format!("https://{host}/{slug}/commits/?author={email_q}"))
+    } else {
+        None
+    }
 }
 
 /// Static CSS for the Code Ownership page. Mirrors the canonical tokens/components from
@@ -767,7 +874,7 @@ body.dark-theme{--bg:#1b1511;--surface:#261c17;--surface-2:#2d221d;--line:#52423
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;margin-bottom:18px;}
 h1{margin:0 0 4px;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
 .muted{color:var(--muted);font-size:13px;line-height:1.6;margin:0 0 16px;} code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:var(--surface-2);padding:1px 5px;border-radius:5px;}
-.summary-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
+.summary-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:18px;}
 @media(max-width:800px){.summary-strip{grid-template-columns:repeat(2,1fr);}}
 .stat-chip{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;position:relative;cursor:default;transition:transform .27s cubic-bezier(.16,1,.3,1),box-shadow .27s cubic-bezier(.16,1,.3,1);}
 .stat-chip:hover{transform:translateY(-4px);box-shadow:0 12px 32px rgba(77,44,20,0.2);z-index:10;}
@@ -777,9 +884,10 @@ h1{margin:0 0 4px;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
 .chart-box{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:18px;}
 .own-chart-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
 .chart-box-title{font-size:12px;font-weight:800;color:var(--muted-2);text-transform:uppercase;letter-spacing:.06em;}
+.own-control-groups{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
 .own-controls{display:inline-flex;gap:6px;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:3px;}
-.own-filter{border:none;background:none;color:var(--muted);font-size:12px;font-weight:700;padding:5px 12px;border-radius:999px;cursor:pointer;transition:background .15s ease,color .15s ease;}
-.own-filter:hover{color:var(--text);} .own-filter.active{background:var(--oxide);color:#fff;}
+.own-filter,.own-scope{border:none;background:none;color:var(--muted);font-size:12px;font-weight:700;padding:5px 12px;border-radius:999px;cursor:pointer;transition:background .15s ease,color .15s ease;}
+.own-filter:hover,.own-scope:hover{color:var(--text);} .own-filter.active,.own-scope.active{background:var(--oxide);color:#fff;}
 .own-bar-row{display:grid;grid-template-columns:180px 1fr 78px;align-items:center;gap:12px;padding:5px 0;}
 .own-bar-name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .own-bar-track{height:14px;border-radius:7px;background:var(--surface-2);overflow:hidden;}
@@ -798,13 +906,16 @@ h1{margin:0 0 4px;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
 .own-empty svg{opacity:0.4;} .own-empty-title{font-size:16px;font-weight:800;color:var(--text);}
 .own-code{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;color:var(--oxide-2);}
 .site-footer{text-align:center;padding:12px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;} .site-footer a{color:var(--oxide-2);text-decoration:none;} .site-footer a:hover{text-decoration:underline;}
-.merge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px;margin-bottom:14px;}
-.merge-opt{display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);cursor:pointer;transition:border-color .15s ease,background .15s ease;}
-.merge-opt:hover{border-color:var(--line-strong);}
-.merge-opt input{accent-color:var(--oxide);width:15px;height:15px;flex:0 0 auto;cursor:pointer;}
-.merge-opt-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}
-.merge-opt-name{font-size:13px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.merge-opt-email{font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;}
+.merge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(325px,1fr));gap:11px;margin-bottom:14px;}
+.merge-opt{display:flex;align-items:center;gap:11px;padding:13px 17px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);cursor:pointer;transition:transform .22s cubic-bezier(.16,1,.3,1),border-color .18s ease,background .18s ease,box-shadow .22s ease;}
+.merge-opt:hover{border-color:var(--oxide);background:var(--surface);transform:translateY(-3px) scale(1.02);box-shadow:0 12px 28px rgba(77,44,20,0.18);}
+.merge-opt:hover .merge-opt-dot{transform:scale(1.35);box-shadow:0 0 0 4px rgba(196,92,16,0.15);}
+.merge-opt:hover .merge-opt-name{color:var(--oxide-2);}
+.merge-opt:active{transform:translateY(-1px) scale(1.0);}
+.merge-opt input{accent-color:var(--oxide);width:17px;height:17px;flex:0 0 auto;cursor:pointer;}
+.merge-opt-dot{width:11px;height:11px;border-radius:50%;flex:0 0 auto;transition:transform .2s ease,box-shadow .2s ease;}
+.merge-opt-name{font-size:15px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.merge-opt-email{font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;}
 .merge-controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;}
 .merge-name-input{flex:1 1 240px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);color:var(--text);font-size:13px;outline:none;}
 .merge-name-input:focus{border-color:var(--oxide);}
@@ -818,7 +929,103 @@ h1{margin:0 0 4px;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
 .merge-chip-text{font-size:12px;color:var(--muted);flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .merge-chip-text strong{color:var(--text);font-size:13px;}
 .merge-unmerge{padding:5px 12px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;}
-.merge-unmerge:hover{background:var(--surface-2);border-color:var(--oxide);color:var(--oxide-2);}"#
+.merge-unmerge:hover{background:var(--surface-2);border-color:var(--oxide);color:var(--oxide-2);}
+.merge-mailmap-note{margin:12px 0 0;font-size:12px;line-height:1.6;color:var(--muted);background:var(--surface-2);border:1px solid var(--line);border-left:3px solid var(--oxide);border-radius:8px;padding:10px 13px;}
+.merge-mailmap-note strong{color:var(--text);}
+.own-project-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 18px;}
+.own-project-label{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);}
+.own-project-select{padding:9px 34px 9px 13px;border:1px solid var(--line-strong);border-radius:10px;background:var(--surface);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;outline:none;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237b675b' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;min-width:220px;transition:border-color .15s ease;}
+.own-project-select:hover{border-color:var(--oxide);} .own-project-select:focus{border-color:var(--oxide);}
+.own-project-hint{font-size:12px;color:var(--muted-2);}
+.own-bar-row{position:relative;border-radius:8px;transition:transform .22s cubic-bezier(.16,1,.3,1),background .22s ease;}
+.own-bar-row:hover{transform:translateX(6px);background:var(--surface-2);z-index:6;}
+.own-bar-row:hover .own-bar-fill{filter:brightness(1.08) saturate(1.12);box-shadow:0 3px 12px rgba(0,0,0,.22);}
+.own-bar-row:hover .own-bar-val{color:var(--oxide);}
+.own-bar-fill{transition:width .35s ease,filter .2s ease,box-shadow .2s ease;}
+.own-bar-name a.own-profile-link{color:inherit;text-decoration:none;}
+.own-bar-name a.own-profile-link:hover{color:var(--oxide);text-decoration:underline;}
+.own-profile-link{color:var(--oxide-2);text-decoration:none;font-weight:inherit;}
+.own-profile-link:hover{text-decoration:underline;}
+.stat-chip-tip{position:absolute;top:calc(100% + 10px);left:50%;transform:translateX(-50%) translateY(4px);background:var(--text);color:var(--bg);padding:9px 13px;border-radius:9px;font-size:11.5px;font-weight:600;line-height:1.5;width:max-content;max-width:280px;pointer-events:none;opacity:0;transition:opacity .2s ease,transform .2s ease;z-index:200;box-shadow:0 10px 28px rgba(0,0,0,.28);}
+.stat-chip-tip::after{content:'';position:absolute;bottom:100%;left:50%;transform:translateX(-50%);border:6px solid transparent;border-bottom-color:var(--text);}
+.stat-chip:hover .stat-chip-tip{opacity:1;transform:translateX(-50%) translateY(0);}
+.own-charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px;}
+@media(max-width:900px){.own-charts-grid{grid-template-columns:1fr;}}
+.own-canvas-wrap{position:relative;width:100%;height:300px;margin-top:8px;}
+.own-canvas-empty{color:var(--muted-2);font-size:13px;padding:28px 4px;text-align:center;}
+.own-canvas-note{color:var(--muted-2);font-size:11.5px;margin-top:8px;text-align:center;}
+.own-legend{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:12px;}
+.own-legend-item{display:inline-flex;align-items:center;gap:7px;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:5px 13px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;transition:transform .18s cubic-bezier(.16,1,.3,1),box-shadow .18s ease,border-color .18s ease,background .18s ease;}
+.own-legend-item:hover,.own-legend-item.active{transform:translateY(-4px) scale(1.07);box-shadow:0 10px 22px rgba(77,44,20,0.22);border-color:var(--oxide);background:var(--surface);}
+.own-legend-item:active{transform:translateY(-1px) scale(1.02);}
+.own-legend-swatch{width:12px;height:12px;border-radius:3px;flex:0 0 auto;transition:transform .18s ease;}
+.own-legend-item:hover .own-legend-swatch,.own-legend-item.active .own-legend-swatch{transform:scale(1.3);}
+.own-legend-label{white-space:nowrap;}
+.own-legend-modal{margin-top:16px;}
+#own-bars{max-height:540px;overflow-y:auto;overflow-x:visible;padding-right:4px;}
+#own-bars::-webkit-scrollbar{width:9px;} #own-bars::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:6px;} #own-bars::-webkit-scrollbar-track{background:transparent;}
+.own-table-hint{font-size:12px;color:var(--muted);margin:-4px 0 10px;line-height:1.55;} .own-table-hint strong{color:var(--text);} .own-table-hint em{color:var(--oxide-2);font-style:normal;font-weight:700;}
+.own-email-copy{font-family:inherit;font-size:12px;color:var(--muted);background:none;border:none;padding:2px 6px;margin:-2px -6px;border-radius:6px;cursor:pointer;text-align:left;transition:background .15s ease,color .15s ease;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.own-email-copy:hover{background:var(--surface-2);color:var(--oxide-2);}
+.own-email-copy.copied{color:#2a6846;} body.dark-theme .own-email-copy.copied{color:#5aba8a;}
+.own-footnote{padding:16px 18px;} .own-footnote .muted{margin:0;}
+.own-copy-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(10px);background:var(--text);color:var(--bg);padding:10px 18px;border-radius:10px;font-size:13px;font-weight:700;box-shadow:0 12px 32px rgba(0,0,0,.3);z-index:9999;opacity:0;transition:opacity .2s ease,transform .2s ease;pointer-events:none;}
+.own-copy-toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+.own-float-tip{position:fixed;top:0;left:0;min-width:230px;max-width:340px;background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,.28);padding:12px 14px;pointer-events:none;opacity:0;transform:scale(.97);transition:opacity .12s ease,transform .12s ease;z-index:9999;}
+.own-float-tip.show{opacity:1;transform:scale(1);}
+.own-bar-tip-head{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:800;color:var(--text);margin-bottom:2px;}
+.own-bar-tip-swatch{width:11px;height:11px;border-radius:50%;flex:0 0 auto;}
+.own-bar-tip-email{font-size:11.5px;color:var(--muted);margin-bottom:8px;word-break:break-all;}
+.own-bar-tip-cat{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--oxide);}
+.own-bar-tip-desc{font-size:12px;line-height:1.55;color:var(--muted);margin:5px 0 9px;}
+.own-bar-tip-num{font-size:19px;font-weight:900;color:var(--text);font-variant-numeric:tabular-nums;}
+.own-bar-tip-num span{font-size:11px;font-weight:700;color:var(--muted-2);text-transform:uppercase;letter-spacing:.05em;margin-left:3px;}
+.own-charts-sub{margin:0 0 12px;}
+.chart-box .toolbar{display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;align-items:center;margin-bottom:6px;}
+.chart-box .toolbar-left{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+.chart-expand-btn{background:none;border:1px solid var(--line-strong);border-radius:6px;cursor:pointer;color:var(--muted);padding:4px 10px;font-size:13px;line-height:1;transition:background .13s,color .13s;}
+.chart-expand-btn:hover{background:var(--surface-2);color:var(--text);}
+.own-canvas-wrap-donut{height:340px;}
+.chart-select{padding:6px 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;font-weight:600;cursor:pointer;outline:none;}
+.chart-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}
+.chart-modal{background:var(--bg);border-radius:16px;padding:24px 28px;max-width:1500px;width:100%;max-height:92vh;overflow-y:auto;position:relative;box-shadow:0 24px 80px rgba(0,0,0,0.3);}
+body.dark-theme .chart-modal{background:var(--surface);}
+.chart-modal-header{display:flex;align-items:center;gap:12px;flex-wrap:nowrap;margin:0 0 16px;padding-right:44px;}
+.chart-modal-title{font-size:15px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--text);margin:0;flex:1 1 auto;min-width:0;}
+.chart-modal-subtitle{font-size:13px;font-weight:600;color:var(--muted);margin:0 0 16px;display:block;}
+.chart-modal-close{position:absolute;top:14px;right:18px;background:none;border:none;font-size:22px;cursor:pointer;color:var(--text);line-height:1;padding:0;}
+.chart-modal-close:hover{opacity:.7;}
+.own-table-scroll{overflow-x:auto;}
+.own-contrib-table{table-layout:fixed;}
+.own-contrib-table th{position:relative;cursor:pointer;user-select:none;overflow:hidden;text-overflow:ellipsis;}
+.own-contrib-table th .own-sort-ind{margin-left:5px;font-size:9px;color:var(--muted-2);}
+.own-contrib-table th.own-sorted{color:var(--oxide);}
+.own-contrib-table td{overflow:hidden;text-overflow:ellipsis;}
+.own-col-resizer{position:absolute;top:0;right:0;width:7px;height:100%;cursor:col-resize;user-select:none;touch-action:none;}
+.own-col-resizer:hover{background:var(--oxide);opacity:.35;}
+body.own-resizing{cursor:col-resize;user-select:none;}
+.own-page-intro{margin:0 0 16px;}
+.lang-cell{display:inline-flex;align-items:center;gap:9px;}
+.lang-badge{display:inline-flex;flex:0 0 auto;line-height:0;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.18));}
+.lang-badge svg{display:block;border-radius:5px;}
+.lang-cell-name{font-weight:600;}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);text-decoration:none;transition:background .12s ease;white-space:nowrap;}
+.btn:hover{background:var(--line);}
+.watched-bar{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 12px;flex-wrap:wrap;margin-bottom:16px;position:relative;z-index:1;}
+.watched-bar-left{display:flex;align-items:center;gap:8px;flex:1;min-width:0;flex-wrap:wrap;}
+.watched-bar-left>svg{color:var(--muted);flex-shrink:0;}
+.watched-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);white-space:nowrap;flex-shrink:0;}
+.watched-chips{display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0;align-items:center;}
+.watched-chip{display:inline-flex;align-items:center;gap:4px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:3px 6px 3px 8px;font-size:11px;max-width:340px;}
+.watched-chip-path{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.watched-chip form{display:inline;margin:0;}
+.watched-chip-rm{background:none;border:none;cursor:pointer;color:var(--muted);font-size:14px;line-height:1;padding:0 2px;flex-shrink:0;}
+.watched-chip-rm:hover{color:var(--oxide);}
+.watched-none{font-size:12px;color:var(--muted);font-style:italic;}
+.watched-bar-right{display:flex;gap:6px;align-items:center;flex-shrink:0;}
+.watched-bar-right form{display:inline;margin:0;}
+.watched-bar-right .btn{box-sizing:border-box;height:30px;}
+body.dark-theme .watched-chip{background:rgba(255,255,255,0.05);}"#
 }
 
 /// Static nav bar for the Code Ownership page (Git Browser dropdown active, since ownership
@@ -900,17 +1107,330 @@ fn ownership_page_scripts() -> &'static str {
   var data;try{data=JSON.parse(el.textContent);}catch(e){return;}
   var wrap=document.getElementById('own-bars');if(!wrap)return;
   var btns=document.querySelectorAll('.own-filter');
+  var scopeBtns=document.querySelectorAll('.own-scope');
+  var CAT={
+    code:{label:'Code lines',desc:'Physical lines that contain executable source code. Comment-only and blank lines are excluded.'},
+    comment:{label:'Comment lines',desc:'Physical lines that are entirely comments or documentation.'},
+    blank:{label:'Blank lines',desc:'Empty or whitespace-only lines separating code.'},
+    total:{label:'Total lines',desc:'Every physical line this contributor last touched \u2014 code, comments and blanks combined.'}
+  };
+  var SCOPE_LABEL={all:'',dev:' (development files)',test:' (test files)'};
+  var activeMetric='code',activeScope='all';
+  function val(d,metric,scope){
+    var base=Number(d[metric]||0);
+    if(scope==='test')return Number(d['test_'+metric]||0);
+    if(scope==='dev')return Math.max(0,base-Number(d['test_'+metric]||0));
+    return base;
+  }
   function fmt(n){var v=Number(n),a=Math.abs(v);if(a>=1e6)return(v/1e6).toFixed(1).replace(/\.0$/,'')+'M';if(a>=1e4)return(v/1e3).toFixed(1).replace(/\.0$/,'')+'K';return v.toLocaleString();}
   function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-  function render(metric){
-    var max=1;data.forEach(function(d){if(d[metric]>max)max=d[metric];});
-    var rows=data.slice().sort(function(x,y){return y[metric]-x[metric];});
-    var html='';
-    rows.forEach(function(d){var pct=Math.round(d[metric]/max*100);html+='<div class="own-bar-row"><div class="own-bar-name" title="'+esc(d.email)+'">'+esc(d.name)+'</div><div class="own-bar-track"><div class="own-bar-fill" data-sx-style="width:'+pct+'%;background:'+d.color+';"></div></div><div class="own-bar-val">'+fmt(d[metric])+'</div></div>';});
-    wrap.innerHTML=html;
+  // Single cursor-following tooltip, reused across renders and rows.
+  var tip=document.createElement('div');tip.className='own-float-tip';document.body.appendChild(tip);
+  var curRow=null;
+  function fillTip(d){
+    var cat=CAT[activeMetric]||CAT.code;
+    tip.innerHTML='<div class="own-bar-tip-head"><span class="own-bar-tip-swatch"></span><span class="tn"></span></div>'
+      +'<div class="own-bar-tip-email"></div>'
+      +'<div class="own-bar-tip-cat"></div>'
+      +'<div class="own-bar-tip-desc"></div>'
+      +'<div class="own-bar-tip-num"><span class="nv"></span> <span>lines</span></div>';
+    tip.querySelector('.own-bar-tip-swatch').style.background=d.color;
+    tip.querySelector('.tn').textContent=d.name;
+    tip.querySelector('.own-bar-tip-email').textContent=d.email||'';
+    tip.querySelector('.own-bar-tip-cat').textContent=cat.label+(SCOPE_LABEL[activeScope]||'');
+    tip.querySelector('.own-bar-tip-desc').textContent=cat.desc;
+    tip.querySelector('.nv').textContent=val(d,activeMetric,activeScope).toLocaleString();
   }
-  btns.forEach(function(bn){bn.addEventListener('click',function(){btns.forEach(function(x){x.classList.remove('active');});bn.classList.add('active');render(bn.getAttribute('data-metric'));});});
-  render('code');
+  function moveTip(e){
+    var x=e.clientX+16,y=e.clientY+16,w=tip.offsetWidth,h=tip.offsetHeight;
+    if(x+w>window.innerWidth-8)x=e.clientX-w-16;
+    if(y+h>window.innerHeight-8)y=e.clientY-h-16;
+    if(x<8)x=8;if(y<8)y=8;
+    tip.style.left=x+'px';tip.style.top=y+'px';
+  }
+  wrap.addEventListener('mousemove',function(e){
+    var row=e.target.closest('.own-bar-row');
+    if(!row||!row._d){tip.classList.remove('show');curRow=null;return;}
+    if(row!==curRow){curRow=row;fillTip(row._d);tip.classList.add('show');}
+    moveTip(e);
+  });
+  wrap.addEventListener('mouseleave',function(){tip.classList.remove('show');curRow=null;});
+  function render(){
+    var metric=activeMetric,scope=activeScope;
+    var max=1;data.forEach(function(d){var v=val(d,metric,scope);if(v>max)max=v;});
+    var rows=data.slice().sort(function(x,y){return val(y,metric,scope)-val(x,metric,scope);});
+    var html='';
+    rows.forEach(function(d){
+      var v=val(d,metric,scope);
+      var pct=Math.round(v/max*100);
+      var nm=d.profile?('<a class="own-profile-link" href="'+esc(d.profile)+'" target="_blank" rel="noopener">'+esc(d.name)+'</a>'):esc(d.name);
+      html+='<div class="own-bar-row">'
+        +'<div class="own-bar-name" title="'+esc(d.email)+'">'+nm+'</div>'
+        +'<div class="own-bar-track"><div class="own-bar-fill" data-sx-style="width:'+pct+'%;background:'+d.color+';"></div></div>'
+        +'<div class="own-bar-val">'+fmt(v)+'</div>'
+      +'</div>';
+    });
+    wrap.innerHTML=html;
+    if(window.sxApply)window.sxApply(wrap);
+    var els=wrap.querySelectorAll('.own-bar-row');
+    for(var i=0;i<els.length;i++){els[i]._d=rows[i];}
+    curRow=null;tip.classList.remove('show');
+  }
+  btns.forEach(function(bn){bn.addEventListener('click',function(){btns.forEach(function(x){x.classList.remove('active');});bn.classList.add('active');activeMetric=bn.getAttribute('data-metric');render();});});
+  scopeBtns.forEach(function(bn){bn.addEventListener('click',function(){scopeBtns.forEach(function(x){x.classList.remove('active');});bn.classList.add('active');activeScope=bn.getAttribute('data-scope');render();document.dispatchEvent(new CustomEvent('own-scope-change',{detail:activeScope}));});});
+  render();
+})();
+(function(){
+  var s=document.getElementById('own-project-select');if(!s)return;
+  s.addEventListener('change',function(){var v=s.value;window.location=v?('/code-ownership?project='+encodeURIComponent(v)):'/code-ownership';});
+})();
+(function(){
+  // Click any contributor email in the table to copy it to the clipboard.
+  var toast=document.getElementById('own-copy-toast');var toastT=null;
+  function showToast(msg){if(!toast)return;toast.textContent=msg;toast.hidden=false;toast.classList.add('show');if(toastT)clearTimeout(toastT);toastT=setTimeout(function(){toast.classList.remove('show');},1600);}
+  function copy(text,btn){
+    function ok(){if(btn){btn.classList.add('copied');setTimeout(function(){btn.classList.remove('copied');},1200);}showToast('Copied '+text);}
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(ok).catch(function(){fallback(text,ok);});}
+    else{fallback(text,ok);}
+  }
+  function fallback(text,ok){try{var ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);ok();}catch(e){showToast('Copy failed');}}
+  document.addEventListener('click',function(e){var b=e.target.closest('.own-email-copy');if(!b)return;var em=b.getAttribute('data-email');if(em)copy(em,b);});
+})();
+(function(){
+  if(typeof Chart==='undefined')return;
+  var el=document.getElementById('own-data');if(!el)return;
+  var data;try{data=JSON.parse(el.textContent);}catch(e){return;}
+  var comp=document.getElementById('own-canvas-composition'),share=document.getElementById('own-canvas-share');
+  var FONT='Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+  // Canonical report palette + helpers (mirrors sloc-report result charts).
+  var OX='#C45C10',GN='#2A6846',GY='#BBBBBB';
+  var PALETTE=['#C45C10','#2A6846','#4472C4','#805099','#D4A017','#B23030','#2E75B6','#70AD47','#FF9900','#9E480E','#636363','#156082','#D0743C','#5BA8A0'];
+  var TOPN=12,chartScope='all';
+  function isDark(){return document.body.classList.contains('dark-theme');}
+  function clr(){return isDark()?{text:'#d4c5b8',grid:'rgba(255,255,255,0.10)',surface:'#261c17'}:{text:'#43342d',grid:'#e6d0bf',surface:'#ffffff'};}
+  function hexAlpha(hex,a){var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);return 'rgba('+r+','+g+','+b+','+a+')';}
+  function fmt(n){var v=Number(n),a=Math.abs(v);if(a>=1e6)return(v/1e6).toFixed(1).replace(/\.0$/,'')+'M';if(a>=1e4)return Math.round(v/1e3)+'K';return v.toLocaleString();}
+  function chartCursor(e,els){var t=e.native&&e.native.target;if(t)t.style.cursor=els.length?'pointer':'default';}
+  function legendCursorOn(e){var t=e.native&&e.native.target;if(t)t.style.cursor='pointer';}
+  function legendCursorOff(e){var t=e.native&&e.native.target;if(t)t.style.cursor='default';}
+  // Cursor-following tooltip positioner so the composition tooltip tracks the mouse (and can be
+  // nudged off the bar) instead of pinning to the bar centre and blocking it.
+  if(Chart.Tooltip&&Chart.Tooltip.positioners&&!Chart.Tooltip.positioners.ownCursor){
+    Chart.Tooltip.positioners.ownCursor=function(items,evtPos){return evtPos?{x:evtPos.x,y:evtPos.y}:false;};
+  }
+  var BLANK=function(){return isDark()?'#524238':'#e6d0bf';};
+  var BLANK_H=function(){return isDark()?'#6b5548':'#d8bfad';};
+  function sval(d,metric,scope){var base=Number(d[metric]||0);if(scope==='test')return Number(d['test_'+metric]||0);if(scope==='dev')return Math.max(0,base-Number(d['test_'+metric]||0));return base;}
+  function buildView(scope){
+    var arr=data.map(function(d,i){return {name:d.name,color:d.color||PALETTE[i%PALETTE.length],profile:d.profile,
+      code:sval(d,'code',scope),comment:sval(d,'comment',scope),blank:sval(d,'blank',scope)};});
+    arr.sort(function(a,b){return b.code-a.code;});
+    if(arr.length>TOPN){
+      var head=arr.slice(0,TOPN),rest=arr.slice(TOPN);
+      var o={name:'Others ('+rest.length+')',color:(isDark()?'#6b5548':'#c9b3a1'),profile:null,code:0,comment:0,blank:0};
+      rest.forEach(function(r){o.code+=r.code;o.comment+=r.comment;o.blank+=r.blank;});
+      head.push(o);
+      return {view:head,truncated:rest.length};
+    }
+    return {view:arr,truncated:0};
+  }
+  function setNote(id,trunc){var n=document.getElementById(id);if(!n)return;if(trunc>0){n.textContent='Showing top '+TOPN+' contributors; '+trunc+' more grouped as "Others".';n.hidden=false;}else{n.hidden=true;}}
+  function openProfileFrom(view,i){var p=view[i]&&view[i].profile;if(p)window.open(p,'_blank','noopener');}
+  // Plugin: value label inside each visible stacked-bar segment (report segLabelPlugin).
+  var segLabelPlugin={afterDatasetsDraw:function(chart){var ctx=chart.ctx,nDs=chart.data.datasets.length;for(var di=0;di<nDs;di++){var meta=chart.getDatasetMeta(di);if(meta.hidden)continue;meta.data.forEach(function(elm,idx){var v=chart.data.datasets[di].data[idx]||0;if(!v)return;var w=Math.abs(elm.x-elm.base);if(w<28)return;ctx.save();ctx.font='600 10px '+FONT;ctx.fillStyle=(di===2)?(isDark()?'#f0e6dc':'#555'):'#fff';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(fmt(v),elm.base+w/2,elm.y);ctx.restore();});}}};
+  // Plugin: row total at the end of the stacked bar (report makeStackedEndPlugin).
+  function makeStackedEndPlugin(){return {afterDatasetsDraw:function(chart){var ctx=chart.ctx,tc=clr().text,nDs=chart.data.datasets.length;if(!nDs)return;var lastMeta=chart.getDatasetMeta(nDs-1);lastMeta.data.forEach(function(elm,idx){var total=0;chart.data.datasets.forEach(function(ds){total+=ds.data[idx]||0;});if(!total)return;ctx.save();ctx.font='600 11px '+FONT;ctx.fillStyle=tc;ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(fmt(total),elm.x+5,elm.y);ctx.restore();});}};}
+  // Pick readable text color for a label drawn on a colored slice.
+  function textOn(bg){if(bg&&bg.charAt(0)==='#'&&bg.length>=7){var r=parseInt(bg.slice(1,3),16),g=parseInt(bg.slice(3,5),16),b=parseInt(bg.slice(5,7),16);var lum=0.299*r+0.587*g+0.114*b;return lum>150?'#3a2a20':'#fff';}return '#fff';}
+  // Plugin: permanent on-slice name + % labels, plus a centered total in the hole.
+  var donutLabelPlugin={afterDatasetsDraw:function(chart){
+    if(chart.config.type!=='doughnut')return;
+    var ctx=chart.ctx,meta=chart.getDatasetMeta(0),ds=chart.data.datasets[0];
+    var tot=ds.data.reduce(function(a,b){return a+Number(b);},0)||1;
+    meta.data.forEach(function(arc,i){
+      var v=Number(ds.data[i]||0);if(!v)return;
+      var pct=v/tot*100,sweep=arc.endAngle-arc.startAngle;
+      var ang=(arc.startAngle+arc.endAngle)/2,r=(arc.innerRadius+arc.outerRadius)/2;
+      var x=arc.x+Math.cos(ang)*r,y=arc.y+Math.sin(ang)*r;
+      ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle=textOn(ds.backgroundColor[i]);
+      if(sweep>0.34){ctx.font='700 12px '+FONT;ctx.fillText(chart.data.labels[i],x,y-8);ctx.font='800 13px '+FONT;ctx.fillText((pct>=10?pct.toFixed(0):pct.toFixed(1))+'%',x,y+9);}
+      else if(sweep>0.13){ctx.font='800 12px '+FONT;ctx.fillText(pct.toFixed(0)+'%',x,y);}
+      ctx.restore();
+    });
+    var m0=meta.data[0];if(m0){var cc=clr();ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillStyle=cc.text;ctx.font='800 20px '+FONT;ctx.fillText(fmt(tot),m0.x,m0.y-7);
+      ctx.fillStyle=isDark()?'#b09080':'#7b675b';ctx.font='600 11px '+FONT;ctx.fillText('code lines',m0.x,m0.y+13);
+      ctx.restore();}
+  }};
+  var charts=[];
+  function destroy(){charts.forEach(function(c){try{c.destroy();}catch(e){}});charts=[];}
+  if(!data.length){
+    ['own-comp-wrap','own-share-wrap'].forEach(function(id){var w=document.getElementById(id);if(w)w.hidden=true;});
+    ['own-comp-empty','own-share-empty'].forEach(function(id){var e2=document.getElementById(id);if(e2)e2.hidden=false;});
+    var cb=document.getElementById('own-comp-expand'),sb=document.getElementById('own-share-expand');if(cb)cb.style.display='none';if(sb)sb.style.display='none';
+    return;
+  }
+  // Restore a chart's slices/datasets to their base colours (clears any legend-hover dim/pop).
+  function restoreChart(ch){
+    if(!ch||!ch.data)return;
+    ch.data.datasets.forEach(function(dst){
+      if(dst._baseBg){dst.backgroundColor=dst._baseBg.slice();}
+      else if(dst._base){dst.backgroundColor=dst._base;dst.hoverBackgroundColor=dst._baseHover;}
+    });
+    ch.setActiveElements([]);if(ch.tooltip)ch.tooltip.setActiveElements([],{});ch.update('none');
+  }
+  // Emphasise one legend entry: dim the others, pop the matching element, show its tooltip.
+  function highlight(ch,kind,idx){
+    if(kind==='datasets'){
+      ch.data.datasets.forEach(function(dst,i){var base=dst._base;var faded=(base&&base.charAt(0)==='#'&&base.length===7)?hexAlpha(base,0.15):hexAlpha('#888888',0.15);dst.backgroundColor=i===idx?base:faded;dst.hoverBackgroundColor=dst.backgroundColor;});
+      var n=ch.data.datasets.length,ae=[];for(var ii=0;ii<n;ii++){ae.push({datasetIndex:ii,index:0});}
+      var fp=ch.getDatasetMeta(idx).data[0];ch.setActiveElements([{datasetIndex:idx,index:0}]);if(ch.tooltip)ch.tooltip.setActiveElements(ae,fp?{x:fp.x,y:fp.y}:{x:0,y:0});ch.update();
+    }else{
+      var bg=ch.data.datasets[0]._baseBg||ch.data.datasets[0].backgroundColor;
+      ch.data.datasets[0].backgroundColor=bg.map(function(col,j){return j===idx?col:hexAlpha(col.charAt(0)==='#'&&col.length===7?col:'#888888',0.2);});
+      var fp2=ch.getDatasetMeta(0).data[idx];ch.setActiveElements([{datasetIndex:0,index:idx}]);var pos=fp2&&fp2.tooltipPosition?fp2.tooltipPosition():(fp2?{x:fp2.x,y:fp2.y}:{x:0,y:0});if(ch.tooltip)ch.tooltip.setActiveElements([{datasetIndex:0,index:idx}],pos);ch.update();
+    }
+  }
+  // Build the interactive HTML legend for a chart. Real mouseenter/leave events give a reliable
+  // reset (canvas legends leave the dim state stuck) and let the legend items CSS-animate on hover.
+  function buildLegend(ch,el,kind){
+    if(!el)return;el.innerHTML='';
+    var items;
+    if(kind==='datasets'){
+      items=ch.data.datasets.map(function(d,i){return {label:d.label,color:d._base||d.backgroundColor,idx:i,profile:null};});
+    }else{
+      var ds0=ch.data.datasets[0],bg=ds0._baseBg||ds0.backgroundColor,tot=ds0.data.reduce(function(a,b){return a+Number(b);},0)||1,view=ch.$view||[];
+      items=ch.data.labels.map(function(lb,i){var pct=Number(ds0.data[i]||0)/tot*100;return {label:lb+'  '+(pct>=10?pct.toFixed(0):pct.toFixed(1))+'%',color:bg[i],idx:i,profile:view[i]&&view[i].profile};});
+    }
+    items.forEach(function(it){
+      var b=document.createElement('button');b.type='button';b.className='own-legend-item'+(it.profile?' has-profile':'');
+      var sw=document.createElement('span');sw.className='own-legend-swatch';sw.style.setProperty('background',it.color);
+      var tx=document.createElement('span');tx.className='own-legend-label';tx.textContent=it.label;
+      b.appendChild(sw);b.appendChild(tx);
+      function on(){b.classList.add('active');highlight(ch,kind,it.idx);}
+      function off(){b.classList.remove('active');restoreChart(ch);}
+      b.addEventListener('mouseenter',on);b.addEventListener('mouseleave',off);
+      b.addEventListener('focus',on);b.addEventListener('blur',off);
+      if(it.profile)b.addEventListener('click',function(){window.open(it.profile,'_blank','noopener');});
+      el.appendChild(b);
+    });
+  }
+  // ── Composition (stacked horizontal bar) config, shared by inline + Full View ──
+  function compConfig(view,big){
+    var c=clr();
+    var cols=[OX,GN,BLANK()],hov=['#d97020','#3a8a5e',BLANK_H()];
+    function ds(label,key,i){return {label:label,data:view.map(function(v){return v[key];}),backgroundColor:cols[i],hoverBackgroundColor:hov[i],_base:cols[i],_baseHover:hov[i],borderRadius:0,borderSkipped:false,maxBarThickness:big?380:150};}
+    return {type:'bar',
+      data:{labels:view.map(function(v){return v.name;}),datasets:[ds('Code','code',0),ds('Comments','comment',1),ds('Blank','blank',2)]},
+      options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+        onHover:chartCursor,
+        animation:{duration:500,easing:'easeOutQuart'},transitions:{active:{animation:{duration:180,easing:'easeOutQuart'}}},
+        layout:{padding:{right:56}},
+        onClick:function(e,els){if(els&&els.length)openProfileFrom(view,els[0].index);},
+        scales:{x:{stacked:true,grid:{color:c.grid},ticks:{color:c.text,callback:function(v){return fmt(v);}}},
+                y:{stacked:true,grid:{display:false},ticks:{color:c.text}}},
+        plugins:{
+          legend:{display:false},
+          tooltip:{mode:'index',position:'ownCursor',caretPadding:16,yAlign:'bottom',callbacks:{
+            title:function(items){return items.length?items[0].label:'';},
+            label:function(ctx){return '  '+ctx.dataset.label+': '+Number(ctx.parsed.x||0).toLocaleString();},
+            footer:function(items){var t=items.reduce(function(s,i){return s+(i.parsed.x||0);},0);return 'Total: '+Number(t).toLocaleString();}}}
+        }},
+      plugins:[makeStackedEndPlugin(),segLabelPlugin,{id:'compLeave',afterEvent:function(ch,a){if(a.event&&a.event.type==='mouseout')restoreChart(ch);}}]};
+  }
+  // ── Share (doughnut) config, shared by inline + Full View ──
+  function shareConfig(view,big){
+    var c=clr();
+    var baseBg=view.map(function(v){return v.color;});
+    return {type:'doughnut',
+      data:{labels:view.map(function(v){return v.name;}),datasets:[{data:view.map(function(v){return v.code;}),
+        backgroundColor:baseBg.slice(),_baseBg:baseBg.slice(),borderColor:c.surface,borderWidth:2,hoverOffset:big?26:18,hoverBorderColor:c.surface}]},
+      options:{responsive:true,maintainAspectRatio:false,cutout:'62%',radius:big?'96%':'92%',
+        animation:{animateRotate:true,duration:600,easing:'easeOutQuart'},transitions:{active:{animation:{duration:220,easing:'easeOutQuart'}}},
+        onHover:chartCursor,
+        onClick:function(e,els){if(els&&els.length)openProfileFrom(view,els[0].index);},
+        layout:{padding:{left:6,right:6,top:6,bottom:6}},
+        plugins:{
+          legend:{display:false},
+          tooltip:{callbacks:{label:function(ctx){var t=ctx.dataset.data.reduce(function(a,b){return a+Number(b);},0);var p=t?(Number(ctx.raw)/t*100):0;return '  '+ctx.label+': '+Number(ctx.raw).toLocaleString()+' ('+p.toFixed(1)+'%)';}}}}},
+      plugins:[donutLabelPlugin,{id:'shareLeave',afterEvent:function(ch,a){if(a.event&&a.event.type==='mouseout')restoreChart(ch);}}]};
+  }
+  function build(){
+    destroy();
+    var vt=buildView(chartScope),view=vt.view;
+    setNote('own-comp-note',vt.truncated);setNote('own-share-note',vt.truncated);
+    var cwrap=document.getElementById('own-comp-wrap');
+    if(cwrap)cwrap.style.height=Math.min(640,Math.max(240,view.length*34+70))+'px';
+    if(comp){var cc=new Chart(comp.getContext('2d'),compConfig(view));cc.$view=view;charts.push(cc);buildLegend(cc,document.getElementById('own-comp-legend'),'datasets');}
+    if(share){var sc=new Chart(share.getContext('2d'),shareConfig(view));sc.$view=view;charts.push(sc);buildLegend(sc,document.getElementById('own-share-legend'),'slices');}
+  }
+  build();
+  document.addEventListener('own-scope-change',function(e){chartScope=(e&&e.detail)||'all';build();});
+  var tgl=document.getElementById('theme-toggle');
+  if(tgl)tgl.addEventListener('click',function(){setTimeout(build,70);});
+  // ── Full View modals (report makeOverlay) ──
+  function makeOverlay(title,h){
+    var overlay=document.createElement('div');overlay.className='chart-modal-overlay';
+    var maxH=Math.max(520,Math.floor(window.innerHeight*0.9)-110);
+    var hAttr='height:'+Math.min(h||620,maxH)+'px;';
+    overlay.innerHTML='<div class="chart-modal"><button class="chart-modal-close" aria-label="Close">&times;</button><div class="chart-modal-header"><span class="chart-modal-title">'+title+'</span></div><div style="position:relative;width:100%;'+hAttr+'"><canvas id="own-modal-canvas"></canvas></div><div class="own-legend own-legend-modal" id="own-modal-legend"></div></div>';
+    document.body.appendChild(overlay);
+    function close(){if(overlay.parentNode)document.body.removeChild(overlay);document.removeEventListener('keydown',onKey);}
+    function onKey(ev){if(ev.key==='Escape')close();}
+    overlay.querySelector('.chart-modal-close').addEventListener('click',close);
+    overlay.addEventListener('click',function(e){if(e.target===overlay)close();});
+    document.addEventListener('keydown',onKey);
+    return document.getElementById('own-modal-canvas');
+  }
+  function openModalChart(title,h,cfgFn,kind){var view=buildView(chartScope).view;var cv2=makeOverlay(title,h);if(cv2)requestAnimationFrame(function(){var mc=new Chart(cv2,cfgFn(view,true));mc.$view=view;buildLegend(mc,document.getElementById('own-modal-legend'),kind);});}
+  var compBtn=document.getElementById('own-comp-expand');
+  if(compBtn)compBtn.addEventListener('click',function(){var n=buildView(chartScope).view.length;openModalChart('Line composition per contributor \u2014 Full View',Math.min(1000,Math.max(640,n*92+260)),compConfig,'datasets');});
+  var shareBtn=document.getElementById('own-share-expand');
+  if(shareBtn)shareBtn.addEventListener('click',function(){openModalChart('Share of codebase (code lines) \u2014 Full View',760,shareConfig,'slices');});
+})();
+(function(){
+  // Contributors table: click a header to sort asc/desc; drag the right edge to resize a column.
+  var table=document.getElementById('own-contrib-table');if(!table)return;
+  var thead=table.tHead;if(!thead)return;
+  var ths=Array.prototype.slice.call(thead.rows[0].cells);
+  var tbody=table.tBodies[0];if(!tbody)return;
+  var sortCol=-1,sortDir=1;
+  function cellVal(row,i,kind){var td=row.cells[i];if(!td)return kind==='num'?0:'';var t=td.textContent.trim();if(kind==='num'){var n=parseFloat(t.replace(/[^0-9.\-]/g,''));return isNaN(n)?-Infinity:n;}return t.toLowerCase();}
+  function sortBy(i){
+    var kind=ths[i].getAttribute('data-sort')||'text';
+    if(sortCol===i){sortDir=-sortDir;}else{sortCol=i;sortDir=(kind==='num')?-1:1;}
+    var rows=Array.prototype.slice.call(tbody.rows);
+    rows.sort(function(a,b){var av=cellVal(a,i,kind),bv=cellVal(b,i,kind);if(av<bv)return -1*sortDir;if(av>bv)return 1*sortDir;return 0;});
+    rows.forEach(function(r){tbody.appendChild(r);});
+    ths.forEach(function(th,j){th.classList.toggle('own-sorted',j===i);var ind=th.querySelector('.own-sort-ind');if(ind)ind.textContent=j===i?(sortDir>0?'\u25B2':'\u25BC'):'';});
+  }
+  ths.forEach(function(th,i){
+    var ind=document.createElement('span');ind.className='own-sort-ind';th.appendChild(ind);
+    th.addEventListener('click',function(e){if(e.target.classList.contains('own-col-resizer'))return;sortBy(i);});
+    var res=document.createElement('div');res.className='own-col-resizer';th.appendChild(res);
+    var startX=0,startW=0;
+    res.addEventListener('mousedown',function(e){e.preventDefault();e.stopPropagation();startX=e.pageX;startW=th.offsetWidth;document.body.classList.add('own-resizing');
+      function mv(ev){var w=Math.max(48,startW+(ev.pageX-startX));th.style.width=w+'px';}
+      function up(){document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);document.body.classList.remove('own-resizing');}
+      document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});
+  });
+})();
+(function(){
+  // Watched Folders: Choose opens the native directory picker, then adds it and reloads.
+  var btn=document.getElementById('add-watched-btn');if(!btn)return;
+  btn.addEventListener('click',function(){
+    fetch('/pick-directory?kind=reports')
+      .then(function(r){return r.ok?r.json():{cancelled:true};})
+      .then(function(data){
+        if(!data.cancelled&&data.selected_path){
+          var form=document.createElement('form');form.method='POST';form.action='/watched-dirs/add';
+          var ri=document.createElement('input');ri.type='hidden';ri.name='redirect_to';ri.value='/code-ownership';
+          var fi=document.createElement('input');fi.type='hidden';fi.name='folder_path';fi.value=data.selected_path;
+          form.appendChild(ri);form.appendChild(fi);document.body.appendChild(form);form.submit();
+        }
+      })
+      .catch(function(e){alert('Could not open folder picker: '+e);});
+  });
 })();"#
 }
 
@@ -923,24 +1443,58 @@ fn identities_path(state: &AppState) -> PathBuf {
     )
 }
 
+#[derive(Deserialize, Default)]
+struct OwnershipQuery {
+    /// Selected project label; empty/absent means "all projects" (the latest scan overall).
+    project: Option<String>,
+}
+
 async fn code_ownership_handler(
     State(state): State<AppState>,
     axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
+    Query(query): Query<OwnershipQuery>,
 ) -> Response {
-    let mut latest_run: Option<AnalysisRun> = {
-        let json_path = {
-            let reg = state.registry.lock().await;
-            reg.entries.first().and_then(|e| e.json_path.clone())
-        };
-        if let Some(p) = json_path {
-            tokio::fs::read_to_string(&p)
-                .await
-                .ok()
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok())
-        } else {
-            None
+    let selected = query.project.as_deref().filter(|s| !s.is_empty());
+
+    // Pick up any new reports dropped into watched folders before rendering (mirrors the
+    // View Reports / Test Metrics pages).
+    auto_scan_watched_dirs(&state).await;
+    let watched_dirs_list: Vec<String> = {
+        let wd = state.watched_dirs.lock().await;
+        wd.dirs.iter().map(|p| p.display().to_string()).collect()
+    };
+
+    // Build the project picker list (one entry per distinct project label, newest scan first)
+    // and resolve the JSON path of the scan to display: the selected project's latest scan, or
+    // the latest scan overall when "all projects" is chosen.
+    let (projects, json_path): (Vec<String>, Option<PathBuf>) = {
+        let reg = state.registry.lock().await;
+        let mut seen = std::collections::HashSet::new();
+        let mut projects = Vec::new();
+        for e in &reg.entries {
+            if seen.insert(e.project_label.clone()) {
+                projects.push(e.project_label.clone());
+            }
         }
+        let json_path = match selected {
+            Some(label) => reg
+                .entries
+                .iter()
+                .find(|e| e.project_label == label)
+                .and_then(|e| e.json_path.clone()),
+            None => reg.entries.first().and_then(|e| e.json_path.clone()),
+        };
+        (projects, json_path)
+    };
+
+    let mut latest_run: Option<AnalysisRun> = if let Some(p) = json_path {
+        tokio::fs::read_to_string(&p)
+            .await
+            .ok()
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+    } else {
+        None
     };
 
     // Apply any operator-defined identity merges on top of the scan's authors (post-hoc, no
@@ -961,9 +1515,47 @@ async fn code_ownership_handler(
         })
         .unwrap_or_else(|| "workspace".to_string());
 
-    let html =
-        render_code_ownership_html(&csp_nonce, latest_run.as_ref(), &project_label, &map.groups);
+    let watched_bar = render_watched_bar(state.server_mode, &watched_dirs_list, "/code-ownership");
+
+    let html = render_code_ownership_html(
+        &csp_nonce,
+        latest_run.as_ref(),
+        &project_label,
+        &map.groups,
+        &projects,
+        selected,
+        &watched_bar,
+    );
     Html(html).into_response()
+}
+
+/// Render the "Watched Folders" bar shared by the ownership page (mirrors View Reports / Test
+/// Metrics). In Network Server mode the controls are replaced by a locked notice.
+fn render_watched_bar(server_mode: bool, watched: &[String], redirect_to: &str) -> String {
+    use std::fmt::Write as _;
+    if server_mode {
+        return r#"<div class="watched-bar"><div class="watched-bar-left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg><span class="watched-label">Watched Folders</span><div class="watched-chips"><span class="watched-none">Network Server mode &mdash; watched folder settings can only be modified by the host administrator.</span></div></div></div>"#.to_string();
+    }
+    let chips: String = if watched.is_empty() {
+        r#"<span class="watched-none">No folders watched &mdash; click Choose to add one</span>"#
+            .to_string()
+    } else {
+        watched.iter().fold(String::new(), |mut s, d| {
+            let esc = d.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;");
+            let _ = write!(
+                s,
+                r#"<span class="watched-chip"><span class="watched-chip-path" title="{esc}">{esc}</span><form method="POST" action="/watched-dirs/remove"><input type="hidden" name="folder_path" value="{esc}"><input type="hidden" name="redirect_to" value="{redirect}"><button type="submit" class="watched-chip-rm" title="Remove folder">&#x2715;</button></form></span>"#,
+                esc = esc,
+                redirect = redirect_to,
+            );
+            s
+        })
+    };
+    format!(
+        r#"<div class="watched-bar" id="watched-bar"><div class="watched-bar-left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg><span class="watched-label">Watched Folders</span><div class="watched-chips">{chips}</div></div><div class="watched-bar-right"><button type="button" class="btn" id="add-watched-btn"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Choose</button><form method="POST" action="/watched-dirs/refresh"><input type="hidden" name="redirect_to" value="{redirect}"><button type="submit" class="btn">&#8635; Refresh</button></form></div></div>"#,
+        chips = chips,
+        redirect = redirect_to,
+    )
 }
 
 /// Parse an `application/x-www-form-urlencoded` body into ordered key/value pairs, preserving
@@ -1071,14 +1663,11 @@ fn render_code_ownership_html(
     run: Option<&AnalysisRun>,
     project_label: &str,
     merge_groups: &[AuthorMergeGroup],
+    projects: &[String],
+    selected: Option<&str>,
+    watched_bar: &str,
 ) -> String {
     let version = env!("CARGO_PKG_VERSION");
-    let esc = |s: &str| {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-    };
 
     // ── Compute display data ──────────────────────────────────────────────────
     let authors = run.map(|r| r.authors.as_slice()).unwrap_or(&[]);
@@ -1101,12 +1690,14 @@ fn render_code_ownership_html(
             &data_json,
             merge_groups,
             nonce,
+            project_label,
         )
     };
 
     let css = ownership_page_css();
     let nav = ownership_page_nav();
     let scripts = ownership_page_scripts();
+    let project_selector = build_project_selector(projects, selected);
 
     format!(
         r#"<!doctype html>
@@ -1118,6 +1709,7 @@ fn render_code_ownership_html(
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js"></script>
+  <script src="/static/chart.js"></script>
   <style nonce="{nonce}">{css}</style>
 </head>
 <body>
@@ -1132,8 +1724,8 @@ fn render_code_ownership_html(
 <div class="code-particles" id="code-particles" aria-hidden="true"></div>
 {nav}
 <div class="page">
-  <h1>Code Ownership</h1>
-  <p class="muted">Per-author line ownership for <strong>{project}</strong>, derived from git blame. Filter the chart by line category; the table breaks down code, comments, and blanks per contributor.</p>
+  {watched_bar}
+  {project_selector}
   {content}
 </div>
 <footer class="site-footer">
@@ -1149,10 +1741,46 @@ fn render_code_ownership_html(
         nonce = nonce,
         css = css,
         nav = nav,
-        project = esc(project_label),
+        watched_bar = watched_bar,
+        project_selector = project_selector,
         content = content,
         version = version,
         scripts = scripts,
+    )
+}
+
+/// Build the project picker shown above the ownership content. Lets the user pin a specific
+/// project's latest scan, or fall back to "All projects" (the most recent scan overall). Renders
+/// nothing when the registry has no scans yet.
+fn build_project_selector(projects: &[String], selected: Option<&str>) -> String {
+    if projects.is_empty() {
+        return String::new();
+    }
+    use std::fmt::Write as _;
+    let mut opts = String::new();
+    let all_sel = if selected.is_none() { " selected" } else { "" };
+    let _ = write!(
+        opts,
+        r#"<option value=""{all_sel}>All projects (latest scan)</option>"#,
+    );
+    for p in projects {
+        let sel = if selected == Some(p.as_str()) {
+            " selected"
+        } else {
+            ""
+        };
+        let _ = write!(
+            opts,
+            r#"<option value="{v}"{sel}>{v}</option>"#,
+            v = own_esc(p),
+        );
+    }
+    format!(
+        r#"<div class="own-project-bar">
+  <label class="own-project-label" for="own-project-select">Project</label>
+  <select id="own-project-select" class="own-project-select" aria-label="Select project">{opts}</select>
+  <span class="own-project-hint">Pick a project to view its latest scan, or all projects.</span>
+</div>"#,
     )
 }
 
@@ -1164,37 +1792,236 @@ fn own_esc(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Known `(abbreviation, brand-ish hex)` for a language display name. Matched loosely (lowercased,
+/// substring) so it survives minor label variations; `None` falls back to initials + a neutral tone.
+/// Deliberately generated inline SVG badges rather than downloaded icon files — keeps the tool fully
+/// offline / air-gap friendly and sidesteps third-party icon licensing.
+fn language_badge_meta(name: &str) -> Option<(&'static str, &'static str)> {
+    let l = name.to_ascii_lowercase();
+    let has = |n: &str| l.contains(n);
+    // Order matters: disambiguate C++/C#/Objective-C before the bare "c" check.
+    let m = if has("c++") || l == "cpp" {
+        ("C++", "#F34B7D")
+    } else if has("c#") || has("csharp") || has("c-sharp") {
+        ("C#", "#178600")
+    } else if has("objective") {
+        ("ObjC", "#438EFF")
+    } else if l == "c" {
+        ("C", "#555555")
+    } else if has("typescript") {
+        ("Ts", "#3178C6")
+    } else if has("javascript") {
+        ("Js", "#F1E05A")
+    } else if has("rust") {
+        ("Rs", "#DEA584")
+    } else if has("python") {
+        ("Py", "#3572A5")
+    } else if has("kotlin") {
+        ("Kt", "#A97BFF")
+    } else if has("java") {
+        ("Jv", "#B07219")
+    } else if has("golang") || l == "go" {
+        ("Go", "#00ADD8")
+    } else if has("ruby") {
+        ("Rb", "#701516")
+    } else if has("php") {
+        ("Php", "#4F5D95")
+    } else if has("swift") {
+        ("Sw", "#F05138")
+    } else if has("scala") {
+        ("Sc", "#C22D40")
+    } else if has("shell") || has("bash") {
+        ("Sh", "#89E051")
+    } else if has("powershell") {
+        ("Ps", "#012456")
+    } else if has("html") {
+        ("Ht", "#E34C26")
+    } else if has("scss") || has("sass") {
+        ("Sa", "#C6538C")
+    } else if has("css") {
+        ("Css", "#563D7C")
+    } else if has("haskell") {
+        ("Hs", "#5E5086")
+    } else if has("lua") {
+        ("Lua", "#000080")
+    } else if has("perl") {
+        ("Pl", "#0298C3")
+    } else if has("dart") {
+        ("Dt", "#00B4AB")
+    } else if has("elixir") {
+        ("Ex", "#6E4A7E")
+    } else if has("erlang") {
+        ("Er", "#B83998")
+    } else if has("clojure") {
+        ("Cl", "#DB5855")
+    } else if has("ocaml") {
+        ("Ml", "#EF7A08")
+    } else if has("f#") || has("fsharp") {
+        ("F#", "#B845FC")
+    } else if has("zig") {
+        ("Zig", "#EC915C")
+    } else if has("nim") {
+        ("Nim", "#FFC200")
+    } else if has("julia") {
+        ("Jl", "#A270BA")
+    } else if has("solidity") {
+        ("Sol", "#AA6746")
+    } else if has("sql") {
+        ("Sql", "#E38C00")
+    } else if has("docker") {
+        ("Dk", "#384D54")
+    } else if has("makefile") {
+        ("Mk", "#427819")
+    } else if has("cmake") {
+        ("Cm", "#DA3434")
+    } else if has("vue") {
+        ("Vue", "#41B883")
+    } else if has("svelte") {
+        ("Sv", "#FF3E00")
+    } else if has("assembly") {
+        ("Asm", "#6E4C13")
+    } else if has("fortran") {
+        ("Fo", "#4D41B1")
+    } else if has("ada") {
+        ("Ada", "#02A676")
+    } else if has("groovy") {
+        ("Gv", "#4298B8")
+    } else if has("graphql") {
+        ("Gql", "#E10098")
+    } else if has("protocol") || has("protobuf") {
+        ("Pb", "#4B7A9C")
+    } else if has("terraform") || has("hcl") {
+        ("Tf", "#844FBA")
+    } else if has("nix") {
+        ("Nix", "#7E7EFF")
+    } else if has("verilog") {
+        ("V", "#7A9FE8")
+    } else if has("vhdl") {
+        ("Vh", "#8892C8")
+    } else if has("visual basic") || has("vb") {
+        ("Vb", "#945DB7")
+    } else if has("pascal") || has("delphi") {
+        ("Pas", "#B0A030")
+    } else if has("crystal") {
+        ("Cr", "#333333")
+    } else if has("elm") {
+        ("Elm", "#60B5CC")
+    } else if has("tcl") {
+        ("Tcl", "#C9A227")
+    } else if has("awk") {
+        ("Awk", "#555555")
+    } else if has("glsl") || has("hlsl") {
+        ("Sl", "#5686A5")
+    } else if has("xml") || has("svg") {
+        ("Xml", "#0060AC")
+    } else if has("lisp") || has("scheme") {
+        ("Lsp", "#3FB68B")
+    } else if l == "d" {
+        ("D", "#BA595E")
+    } else if l == "r" {
+        ("R", "#198CE7")
+    } else {
+        return None;
+    };
+    Some(m)
+}
+
+/// Render a small, uniform inline-SVG language badge (rounded square + abbreviation) for a language
+/// display name. Used in the "Ownership by language" table and reusable anywhere languages are named.
+fn language_badge(name: &str) -> String {
+    let (abbr, color): (String, &str) = match language_badge_meta(name) {
+        Some((a, c)) => (a.to_string(), c),
+        None => {
+            // Fallback keeps the same badge style with a neutral tone + the language's initials.
+            let a: String = name
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(2)
+                .collect::<String>()
+                .to_uppercase();
+            (a, "#8a756a")
+        }
+    };
+    // White text on dark badges, dark text on light badges (perceived luminance).
+    let txt = {
+        let h = color.trim_start_matches('#');
+        let r = u32::from_str_radix(&h[0..2], 16).unwrap_or(120) as f64;
+        let g = u32::from_str_radix(&h[2..4], 16).unwrap_or(120) as f64;
+        let b = u32::from_str_radix(&h[4..6], 16).unwrap_or(120) as f64;
+        if 0.299 * r + 0.587 * g + 0.114 * b > 150.0 {
+            "#2a2018"
+        } else {
+            "#ffffff"
+        }
+    };
+    let fs = if abbr.chars().count() >= 3 {
+        "7"
+    } else {
+        "8.5"
+    };
+    format!(
+        r#"<span class="lang-badge"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="0" y="0" width="20" height="20" rx="5" fill="{color}"></rect><text x="10" y="11" text-anchor="middle" font-family="Inter,ui-sans-serif,sans-serif" font-size="{fs}" font-weight="800" fill="{txt}">{abbr}</text></svg></span>"#,
+        color = color,
+        fs = fs,
+        txt = txt,
+        abbr = own_esc(&abbr),
+    )
+}
+
 /// Compute one display row per contributor. `files_owned` counts the files where each author is
 /// the single largest owner (ownership lists are pre-sorted descending). Empty when the run has no
 /// authors.
 fn build_ownership_rows(run: Option<&AnalysisRun>, total_code: u64) -> Vec<OwnershipRow> {
     let authors = run.map(|r| r.authors.as_slice()).unwrap_or(&[]);
+    let remote = run.and_then(|r| r.git_remote_url.as_deref());
     let mut files_owned: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+    // Per-author lines owned in files classified as tests (code/comment/blank/total).
+    let mut test_counts: std::collections::HashMap<u32, [u64; 4]> =
+        std::collections::HashMap::new();
     if let Some(r) = run {
         for rec in &r.per_file_records {
             if let Some(top) = rec.ownership.as_ref().and_then(|o| o.first()) {
                 *files_owned.entry(top.author_id).or_default() += 1;
+            }
+            if file_is_test(rec)
+                && let Some(own) = rec.ownership.as_ref()
+            {
+                for o in own {
+                    let e = test_counts.entry(o.author_id).or_default();
+                    e[0] += o.counts.code_lines;
+                    e[1] += o.counts.comment_lines;
+                    e[2] += o.counts.blank_lines;
+                    e[3] += o.counts.total_lines;
+                }
             }
         }
     }
     authors
         .iter()
         .enumerate()
-        .map(|(i, a)| OwnershipRow {
-            name: a.canonical_name.clone(),
-            email: a.canonical_email.clone(),
-            code: a.counts.code_lines,
-            comment: a.counts.comment_lines,
-            blank: a.counts.blank_lines,
-            total: a.counts.total_lines,
-            code_pct: if total_code > 0 {
-                a.counts.code_lines as f64 / total_code as f64 * 100.0
-            } else {
-                0.0
-            },
-            files_owned: files_owned.get(&a.id).copied().unwrap_or(0),
-            aliases: a.aliases.len(),
-            color: OWNERSHIP_PALETTE[i % OWNERSHIP_PALETTE.len()],
+        .map(|(i, a)| {
+            let tc = test_counts.get(&a.id).copied().unwrap_or_default();
+            OwnershipRow {
+                name: a.canonical_name.clone(),
+                email: a.canonical_email.clone(),
+                profile: author_profile_url(remote, &a.canonical_name, &a.canonical_email),
+                code: a.counts.code_lines,
+                comment: a.counts.comment_lines,
+                blank: a.counts.blank_lines,
+                total: a.counts.total_lines,
+                code_pct: if total_code > 0 {
+                    a.counts.code_lines as f64 / total_code as f64 * 100.0
+                } else {
+                    0.0
+                },
+                files_owned: files_owned.get(&a.id).copied().unwrap_or(0),
+                aliases: a.aliases.len(),
+                color: OWNERSHIP_PALETTE[i % OWNERSHIP_PALETTE.len()],
+                test_code: tc[0],
+                test_comment: tc[1],
+                test_blank: tc[2],
+                test_total: tc[3],
+            }
         })
         .collect()
 }
@@ -1273,6 +2100,11 @@ fn ownership_data_json(rows: &[OwnershipRow]) -> String {
                     "blank": r.blank,
                     "total": r.total,
                     "color": r.color,
+                    "profile": r.profile,
+                    "test_code": r.test_code,
+                    "test_comment": r.test_comment,
+                    "test_blank": r.test_blank,
+                    "test_total": r.test_total,
                 })
             })
             .collect::<Vec<_>>(),
@@ -1315,11 +2147,19 @@ fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) 
             name = own_esc(&r.name),
         );
     }
-    let mut merge_existing = String::new();
+    // The .mailmap export is only meaningful once at least one merge exists, so both the download
+    // link and the explanation of what a .mailmap is are shown only then.
+    let (mailmap_link, mut merge_existing) = if merge_groups.is_empty() {
+        (String::new(), String::new())
+    } else {
+        (
+            r#"<a href="/code-ownership/mailmap" class="merge-mailmap-link" title="Download a git .mailmap file capturing the merges below">&#8681; Download .mailmap</a>"#
+                .to_string(),
+            r#"<div class="merge-existing"><div class="merge-existing-title">Active merges</div>"#
+                .to_string(),
+        )
+    };
     if !merge_groups.is_empty() {
-        merge_existing.push_str(
-            r#"<div class="merge-existing"><div class="merge-existing-title">Active merges</div>"#,
-        );
         for g in merge_groups {
             let members = g
                 .members
@@ -1336,6 +2176,10 @@ fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) 
                 cemail = own_esc(&g.canonical_email),
             );
         }
+        // Explain what the .mailmap download actually does, right where it becomes actionable.
+        merge_existing.push_str(
+            r#"<p class="merge-mailmap-note"><strong>What is <code>.mailmap</code>?</strong> It is a small text file that git reads from your repository root. Downloading it and committing it as <code>.mailmap</code> makes git itself &mdash; and every future oxide-sloc scan &mdash; permanently treat the combined names and emails above as one contributor. That means <code>git shortlog</code>, <code>git blame</code>, and re-scans all show the merged identity automatically, so you never have to redo these merges. Without it, the merges above live only in this app.</p>"#,
+        );
         merge_existing.push_str("</div>");
     }
     format!(
@@ -1347,7 +2191,7 @@ fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) 
     <div class="merge-controls">
       <input type="text" name="canonical_name" class="merge-name-input" placeholder="Canonical display name (optional)">
       <button type="submit" class="merge-btn">Merge selected</button>
-      <a href="/code-ownership/mailmap" class="merge-mailmap-link">&#8681; Download .mailmap</a>
+      {mailmap_link}
     </div>
   </form>
   {merge_existing}
@@ -1355,12 +2199,16 @@ fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) 
 
 "#,
         merge_checks = merge_checks,
+        mailmap_link = mailmap_link,
         merge_existing = merge_existing,
     )
 }
 
 /// Render the populated Code Ownership content: summary chips, the per-contributor bar chart,
 /// the contributor + per-language tables, and the combine-contributors panel.
+// Each argument is a distinct pre-computed view model; bundling them into a struct would just move
+// the plumbing without improving clarity.
+#[allow(clippy::too_many_arguments)]
 fn render_ownership_populated(
     rows: &[OwnershipRow],
     bus_factor: usize,
@@ -1369,13 +2217,28 @@ fn render_ownership_populated(
     data_json: &str,
     merge_groups: &[AuthorMergeGroup],
     nonce: &str,
+    project_label: &str,
 ) -> String {
     use std::fmt::Write as _;
+    // Render a contributor's name as a clickable profile link when a URL was resolved from the
+    // repo remote, otherwise as plain escaped text. Used everywhere a name appears.
+    let name_link = |r: &OwnershipRow| -> String {
+        let name = own_esc(&r.name);
+        match r.profile.as_deref() {
+            Some(url) => format!(
+                r#"<a class="own-profile-link" href="{url}" target="_blank" rel="noopener" title="View {name}'s profile / contributions">{name}</a>"#,
+                url = own_esc(url),
+                name = name,
+            ),
+            None => name,
+        }
+    };
     let top_owner = rows.first();
-    let top_name = top_owner.map(|r| own_esc(&r.name)).unwrap_or_default();
+    let top_name = top_owner.map(&name_link).unwrap_or_default();
     let top_pct = top_owner.map(|r| r.code_pct).unwrap_or(0.0);
 
-    // Server-rendered bars (metric = code); JS re-renders on filter change.
+    // Server-rendered bars (metric = code); JS re-renders on filter change and adds the
+    // cursor-following tooltip.
     let max_code = rows.iter().map(|r| r.code).max().unwrap_or(1).max(1);
     let mut bars = String::new();
     for r in rows {
@@ -1384,7 +2247,7 @@ fn render_ownership_populated(
             bars,
             r#"<div class="own-bar-row"><div class="own-bar-name" title="{email}">{name}</div><div class="own-bar-track"><div class="own-bar-fill" data-sx-style="width:{pct}%;background:{color};"></div></div><div class="own-bar-val">{val}</div></div>"#,
             email = own_esc(&r.email),
-            name = own_esc(&r.name),
+            name = name_link(r),
             pct = pct,
             color = r.color,
             val = fmt_num(r.code as i64),
@@ -1393,13 +2256,16 @@ fn render_ownership_populated(
 
     let mut author_table = String::new();
     for r in rows {
+        let dev_code = r.code.saturating_sub(r.test_code);
         let _ = write!(
             author_table,
-            r#"<tr><td><span class="own-dot" data-sx-style="background:{color};"></span>{name}</td><td class="own-email">{email}</td><td class="num">{code}</td><td class="num">{comment}</td><td class="num">{blank}</td><td class="num">{total}</td><td class="num">{pct:.1}%</td><td class="num">{files}</td><td class="num">{aliases}</td></tr>"#,
+            r#"<tr><td><span class="own-dot" data-sx-style="background:{color};"></span>{name}</td><td><button type="button" class="own-email-copy" data-email="{email}" title="Click to copy this email">{email}</button></td><td class="num">{code}</td><td class="num">{dev_code}</td><td class="num">{test_code}</td><td class="num">{comment}</td><td class="num">{blank}</td><td class="num">{total}</td><td class="num">{pct:.1}%</td><td class="num">{files}</td><td class="num">{aliases}</td></tr>"#,
             color = r.color,
-            name = own_esc(&r.name),
+            name = name_link(r),
             email = own_esc(&r.email),
             code = fmt_num(r.code as i64),
+            dev_code = fmt_num(dev_code as i64),
+            test_code = fmt_num(r.test_code as i64),
             comment = fmt_num(r.comment as i64),
             blank = fmt_num(r.blank as i64),
             total = fmt_num(r.total as i64),
@@ -1413,7 +2279,8 @@ fn render_ownership_populated(
     for (lang, code, owner, pct) in lang_rows {
         let _ = write!(
             lang_table,
-            r#"<tr><td>{lang}</td><td class="num">{code}</td><td>{owner}</td><td class="num">{pct:.1}%</td></tr>"#,
+            r#"<tr><td><span class="lang-cell">{badge}<span class="lang-cell-name">{lang}</span></span></td><td class="num">{code}</td><td>{owner}</td><td class="num">{pct:.1}%</td></tr>"#,
+            badge = language_badge(lang),
             lang = own_esc(lang),
             code = fmt_num(*code as i64),
             owner = own_esc(owner),
@@ -1423,33 +2290,83 @@ fn render_ownership_populated(
 
     let merge_panel = render_merge_panel(merge_groups, rows);
 
+    // Derived roll-ups for the extra summary chips.
+    let total_comment: u64 = rows.iter().map(|r| r.comment).sum();
+    let total_test_code: u64 = rows.iter().map(|r| r.test_code).sum();
+    let total_dev_code = total_code.saturating_sub(total_test_code);
+    let test_pct = if total_code > 0 {
+        total_test_code as f64 / total_code as f64 * 100.0
+    } else {
+        0.0
+    };
+    // Page intro, moved here (below the summary cards, above the charts) so the page top matches
+    // the other surfaces (no big page title).
+    let intro = format!(
+        r#"<p class="muted own-page-intro">Per-author line ownership for <strong>{project}</strong>, derived from git blame. Filter the chart by line category; the table breaks down code, comments, and blanks per contributor.</p>"#,
+        project = own_esc(project_label),
+    );
+
     format!(
         r#"<div class="summary-strip">
-  <div class="stat-chip"><div class="stat-chip-val">{contributors}</div><div class="stat-chip-label">Contributors</div></div>
-  <div class="stat-chip"><div class="stat-chip-val">{top_name}</div><div class="stat-chip-label">Top Owner &middot; {top_pct:.0}% of code</div></div>
-  <div class="stat-chip"><div class="stat-chip-val">{bus_factor}</div><div class="stat-chip-label">Bus Factor (owners of 50% code)</div></div>
-  <div class="stat-chip"><div class="stat-chip-val">{total_code}</div><div class="stat-chip-label">Total Code Lines</div></div>
+  <div class="stat-chip"><div class="stat-chip-val">{contributors}</div><div class="stat-chip-label">Contributors</div><span class="stat-chip-tip">Distinct authors who own at least one line in this scan, after identity merges are applied.</span></div>
+  <div class="stat-chip"><div class="stat-chip-val">{top_name}</div><div class="stat-chip-label">Top Owner &middot; {top_pct:.0}% of code</div><span class="stat-chip-tip">The single contributor who owns the largest share of code lines, and what percentage of all code that is. Click the name to open their profile.</span></div>
+  <div class="stat-chip"><div class="stat-chip-val">{bus_factor}</div><div class="stat-chip-label">Bus Factor (owners of 50% code)</div><span class="stat-chip-tip">The fewest contributors who together own at least half of the code. A low number means knowledge is concentrated in very few people &mdash; a project risk.</span></div>
+  <div class="stat-chip"><div class="stat-chip-val">{total_code}</div><div class="stat-chip-label">Total Code Lines</div><span class="stat-chip-tip">Total physical code lines attributed across all contributors. Comments and blank lines are excluded from this figure.</span></div>
+  <div class="stat-chip"><div class="stat-chip-val">{dev_code}</div><div class="stat-chip-label">Development Code</div><span class="stat-chip-tip">Code lines owned in non-test files. This is total code minus code that lives in files detected as tests.</span></div>
+  <div class="stat-chip"><div class="stat-chip-val">{test_code}</div><div class="stat-chip-label">Test Code &middot; {test_pct:.0}% of code</div><span class="stat-chip-tip">Code lines owned in files classified as tests (detected from test functions/assertions or a test-path convention). A healthy share suggests good test coverage effort.</span></div>
+  <div class="stat-chip"><div class="stat-chip-val">{total_comment}</div><div class="stat-chip-label">Total Comment Lines</div><span class="stat-chip-tip">Physical comment / documentation lines attributed across all contributors.</span></div>
+</div>
+
+{intro}
+
+<div class="section-header">Contributor breakdown</div>
+<p class="muted own-charts-sub">Interactive charts for this scan &mdash; hover a legend entry to isolate it, click a bar or slice to open that contributor's profile, and use <strong>Full View</strong> for a larger chart. These follow the ownership scope filter below.</p>
+<div class="own-charts-grid">
+  <div class="chart-box">
+    <div class="toolbar"><div class="toolbar-left"><span class="chart-box-title">Line composition per contributor</span></div><button type="button" class="chart-expand-btn" id="own-comp-expand" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button></div>
+    <div class="own-canvas-wrap" id="own-comp-wrap"><canvas id="own-canvas-composition"></canvas></div>
+    <div class="own-legend" id="own-comp-legend"></div>
+    <div class="own-canvas-note" id="own-comp-note" hidden></div>
+    <div class="own-canvas-empty" id="own-comp-empty" hidden>No contributor data to chart.</div>
+  </div>
+  <div class="chart-box">
+    <div class="toolbar"><div class="toolbar-left"><span class="chart-box-title">Share of codebase (code lines)</span></div><button type="button" class="chart-expand-btn" id="own-share-expand" title="View full chart" aria-label="Expand chart">&#x2922; Full View</button></div>
+    <div class="own-canvas-wrap own-canvas-wrap-donut" id="own-share-wrap"><canvas id="own-canvas-share"></canvas></div>
+    <div class="own-legend" id="own-share-legend"></div>
+    <div class="own-canvas-note" id="own-share-note" hidden></div>
+    <div class="own-canvas-empty" id="own-share-empty" hidden>No contributor data to chart.</div>
+  </div>
 </div>
 
 <div class="chart-box">
   <div class="own-chart-head">
     <div class="chart-box-title">Lines owned per contributor</div>
-    <div class="own-controls">
-      <button type="button" class="own-filter active" data-metric="code">Code</button>
-      <button type="button" class="own-filter" data-metric="comment">Comment</button>
-      <button type="button" class="own-filter" data-metric="blank">Blank</button>
-      <button type="button" class="own-filter" data-metric="total">Total</button>
+    <div class="own-control-groups">
+      <div class="own-controls" id="own-scope-controls" role="group" aria-label="Ownership scope">
+        <button type="button" class="own-scope active" data-scope="all">All files</button>
+        <button type="button" class="own-scope" data-scope="dev">Development</button>
+        <button type="button" class="own-scope" data-scope="test">Tests</button>
+      </div>
+      <div class="own-controls" id="own-metric-controls" role="group" aria-label="Line category">
+        <button type="button" class="own-filter active" data-metric="code">Code</button>
+        <button type="button" class="own-filter" data-metric="comment">Comment</button>
+        <button type="button" class="own-filter" data-metric="blank">Blank</button>
+        <button type="button" class="own-filter" data-metric="total">Total</button>
+      </div>
     </div>
   </div>
   <div id="own-bars">{bars}</div>
 </div>
 
 <div class="section-header">Contributors</div>
+<p class="own-table-hint">Click a contributor's <strong>name</strong> to open their profile / contributions on the hosting platform; click an <strong>email</strong> to copy it. <em>Dev</em> and <em>Test</em> split code lines by whether the owning file is a test.</p>
 <div class="panel sx-e6a29e9c" >
-  <table class="data-table">
-    <thead><tr><th>Author</th><th>Email</th><th class="num">Code</th><th class="num">Comment</th><th class="num">Blank</th><th class="num">Total</th><th class="num">Code %</th><th class="num">Files Owned</th><th class="num">Aliases</th></tr></thead>
+  <div class="own-table-scroll">
+  <table class="data-table own-contrib-table" id="own-contrib-table">
+    <thead><tr><th data-sort="text">Author</th><th data-sort="text">Email</th><th class="num" data-sort="num">Code</th><th class="num" data-sort="num">Dev Code</th><th class="num" data-sort="num">Test Code</th><th class="num" data-sort="num">Comment</th><th class="num" data-sort="num">Blank</th><th class="num" data-sort="num">Total</th><th class="num" data-sort="num">Code %</th><th class="num" data-sort="num">Files Owned</th><th class="num" data-sort="num">Aliases</th></tr></thead>
     <tbody>{author_table}</tbody>
   </table>
+  </div>
 </div>
 
 <div class="section-header">Ownership by language</div>
@@ -1461,14 +2378,22 @@ fn render_ownership_populated(
 </div>
 
 {merge_panel}
-<p class="muted sx-8d842990" >Ownership reflects the author who last touched each physical line (<code>git blame -w -M -C</code>, <code>.mailmap</code> honoured). Counts are physical lines and sum to the file's line total; they can differ slightly from the policy-adjusted SLOC totals elsewhere. Same-email identities are auto-merged; use <strong>Combine contributors</strong> above to merge across different emails.</p>
+<div class="panel own-footnote">
+  <p class="muted sx-8d842990" >Ownership reflects the author who last touched each physical line (<code>git blame -w -M -C</code>, <code>.mailmap</code> honoured). Counts are physical lines and sum to the file's line total; they can differ slightly from the policy-adjusted SLOC totals elsewhere. Same-email identities are auto-merged; use <strong>Combine contributors</strong> above to merge across different emails. Test vs. development lines are split by classifying each <em>file</em> as a test (via detected test functions/assertions or a test-path convention), then attributing that file's owned lines accordingly.</p>
+</div>
 
+<div class="own-copy-toast" id="own-copy-toast" role="status" aria-live="polite" hidden>Email copied</div>
 <script id="own-data" type="application/json" nonce="{nonce}">{data_json}</script>"#,
         contributors = rows.len(),
+        intro = intro,
         top_name = top_name,
         top_pct = top_pct,
         bus_factor = bus_factor,
         total_code = fmt_num(total_code as i64),
+        dev_code = fmt_num(total_dev_code as i64),
+        test_code = fmt_num(total_test_code as i64),
+        test_pct = test_pct,
+        total_comment = fmt_num(total_comment as i64),
         bars = bars,
         author_table = author_table,
         lang_table = lang_table,
@@ -1631,6 +2556,9 @@ fn build_router(state: AppState) -> Router {
         .route("/readyz", get(readyz))
         .route("/api/health", get(api_health_handler))
         .route("/api/version", get(api_version_handler))
+        // Air-gap posture for the shared footer script — public so it works on every page,
+        // including authenticated servers. Non-sensitive (offline flag + repo URL).
+        .route("/api/connectivity", get(connectivity::connectivity_handler))
         .route("/api/openapi.yaml", get(openapi_yaml_handler))
         .route("/llms.txt", get(llms_txt_handler))
         .route("/llms-full.txt", get(llms_full_txt_handler))
@@ -37145,13 +38073,106 @@ mod tests_private {
 
     #[test]
     fn code_ownership_empty_state_renders_guidance() {
-        let html = render_code_ownership_html(&test_nonce(), None, "myrepo", &[]);
+        let html = render_code_ownership_html(&test_nonce(), None, "myrepo", &[], &[], None, "");
         assert!(html.contains("No ownership data"));
         assert!(html.contains("oxide-sloc analyze"));
         assert!(html.contains("myrepo"));
         assert!(html.contains("site-footer"));
         assert!(html.contains("id=\"theme-toggle\""));
         assert!(html.contains("Code Ownership"));
+    }
+
+    #[test]
+    fn code_ownership_project_selector_renders_and_marks_selection() {
+        // No projects: the picker is omitted entirely.
+        assert_eq!(build_project_selector(&[], None), "");
+
+        // Projects present, "all projects" selected (None): the All option is selected and every
+        // project is listed as an option.
+        let projects = vec!["alpha".to_string(), "beta".to_string()];
+        let all = build_project_selector(&projects, None);
+        assert!(all.contains("own-project-select"));
+        assert!(all.contains(r#"<option value="" selected>All projects (latest scan)</option>"#));
+        assert!(all.contains(r#"<option value="alpha">alpha</option>"#));
+        assert!(all.contains(r#"<option value="beta">beta</option>"#));
+
+        // A specific project selected: that option carries the selected attribute, not "All".
+        let beta = build_project_selector(&projects, Some("beta"));
+        assert!(beta.contains(r#"<option value="beta" selected>beta</option>"#));
+        assert!(beta.contains(r#"<option value="">All projects (latest scan)</option>"#));
+
+        // The selector is wired into the full page when projects exist.
+        let page = render_code_ownership_html(
+            &test_nonce(),
+            None,
+            "myrepo",
+            &[],
+            &projects,
+            Some("alpha"),
+            "",
+        );
+        assert!(page.contains("own-project-select"));
+        assert!(page.contains(r#"<option value="alpha" selected>alpha</option>"#));
+    }
+
+    #[test]
+    fn parse_remote_host_slug_handles_https_ssh_and_scp() {
+        assert_eq!(
+            parse_remote_host_slug("https://github.com/oxide-sloc/oxide-sloc.git"),
+            Some(("github.com".into(), "oxide-sloc/oxide-sloc".into()))
+        );
+        assert_eq!(
+            parse_remote_host_slug("git@github.com:owner/repo.git"),
+            Some(("github.com".into(), "owner/repo".into()))
+        );
+        assert_eq!(
+            parse_remote_host_slug("ssh://git@gitlab.com/group/sub/repo"),
+            Some(("gitlab.com".into(), "group/sub/repo".into()))
+        );
+        // Credentials in the authority are stripped.
+        assert_eq!(
+            parse_remote_host_slug("https://user:tok@bitbucket.org/team/repo"),
+            Some(("bitbucket.org".into(), "team/repo".into()))
+        );
+        assert_eq!(parse_remote_host_slug("not-a-url"), None);
+        assert_eq!(parse_remote_host_slug("https://github.com/"), None);
+    }
+
+    #[test]
+    fn author_profile_url_prefers_github_noreply_then_falls_back_to_host_filter() {
+        // GitHub noreply email carries the exact login -> direct profile, regardless of remote.
+        assert_eq!(
+            author_profile_url(None, "Nima", "12345+nimzshafie@users.noreply.github.com"),
+            Some("https://github.com/nimzshafie".into())
+        );
+        assert_eq!(
+            author_profile_url(None, "Nima", "nimzshafie@users.noreply.github.com"),
+            Some("https://github.com/nimzshafie".into())
+        );
+        // Plain email on a GitHub remote -> commit history filtered by author email.
+        assert_eq!(
+            author_profile_url(
+                Some("https://github.com/owner/repo.git"),
+                "Nima Shafie",
+                "nima@corp.com"
+            ),
+            Some("https://github.com/owner/repo/commits?author=nima%40corp.com".into())
+        );
+        // GitLab filters by name; Bitbucket by email.
+        assert_eq!(
+            author_profile_url(Some("git@gitlab.com:grp/repo.git"), "A B", "a@b.com"),
+            Some("https://gitlab.com/grp/repo/-/commits?author=A%20B".into())
+        );
+        assert_eq!(
+            author_profile_url(Some("https://bitbucket.org/t/r"), "A B", "a@b.com"),
+            Some("https://bitbucket.org/t/r/commits/?author=a%40b.com".into())
+        );
+        // Unknown host / no remote -> no link (never link to an arbitrary domain).
+        assert_eq!(
+            author_profile_url(Some("https://evil.example/x/y"), "A", "a@b.com"),
+            None
+        );
+        assert_eq!(author_profile_url(None, "A", "a@b.com"), None);
     }
 
     #[test]
@@ -37176,7 +38197,8 @@ mod tests_private {
             ]
         });
         let run: AnalysisRun = serde_json::from_value(json).expect("run deserializes");
-        let html = render_code_ownership_html(&test_nonce(), Some(&run), "myrepo", &[]);
+        let html =
+            render_code_ownership_html(&test_nonce(), Some(&run), "myrepo", &[], &[], None, "");
         assert!(html.contains("Nima Shafie"));
         assert!(html.contains("Other Dev"));
         assert!(html.contains("own-data"));
@@ -37219,6 +38241,9 @@ mod tests_private {
             Some(&run),
             "myrepo",
             std::slice::from_ref(&group),
+            &[],
+            None,
+            "",
         );
         assert!(html.contains("Active merges"));
         assert!(html.contains("/api/ownership/unmerge"));
@@ -37288,7 +38313,8 @@ mod tests_private {
             rec("b.py", Language::Python, vec![own(1, 80), own(0, 5)]),
         ];
 
-        let html = render_code_ownership_html(&test_nonce(), Some(&run), "myrepo", &[]);
+        let html =
+            render_code_ownership_html(&test_nonce(), Some(&run), "myrepo", &[], &[], None, "");
         // The per-language ownership table lists each language with its dominant owner.
         assert!(html.contains("Ownership by language"));
         assert!(html.contains("Rust"));
@@ -37296,6 +38322,108 @@ mod tests_private {
         // Each author is the top owner of exactly one file (Files Owned column populated).
         assert!(html.contains("Nima Shafie"));
         assert!(html.contains("Other Dev"));
+    }
+
+    #[test]
+    fn language_badge_maps_known_and_falls_back() {
+        // Known languages get their abbreviation + a brand-ish color.
+        assert_eq!(language_badge_meta("Rust"), Some(("Rs", "#DEA584")));
+        assert_eq!(language_badge_meta("C++"), Some(("C++", "#F34B7D")));
+        assert_eq!(language_badge_meta("C#"), Some(("C#", "#178600")));
+        assert_eq!(language_badge_meta("C"), Some(("C", "#555555")));
+        assert_eq!(language_badge_meta("TypeScript"), Some(("Ts", "#3178C6")));
+        // Unknown language → no mapping (badge falls back to initials).
+        assert_eq!(language_badge_meta("Whitespace"), None);
+
+        // The rendered badge is inline SVG with the abbreviation and no CSP-blocked inline style.
+        let svg = language_badge("Rust");
+        assert!(svg.contains("lang-badge"));
+        assert!(svg.contains("<svg"));
+        assert!(svg.contains(">Rs<"));
+        assert!(svg.contains("#DEA584"));
+        assert!(!svg.contains("style="));
+        // Fallback uses uppercased initials for an unmapped language.
+        assert!(language_badge("Whitespace").contains(">WH<"));
+    }
+
+    #[test]
+    fn ownership_dev_test_split_classifies_by_file() {
+        use sloc_core::{AuthorLineCounts, FileOwnership, FileRecord, FileStatus};
+        use sloc_languages::Language;
+
+        let own = |author_id: u32, code: u64| FileOwnership {
+            author_id,
+            counts: AuthorLineCounts {
+                code_lines: code,
+                comment_lines: 0,
+                blank_lines: 0,
+                total_lines: code,
+            },
+        };
+        let rec = |path: &str, owners: Vec<FileOwnership>| FileRecord {
+            path: path.into(),
+            relative_path: path.into(),
+            language: Some(Language::Rust),
+            size_bytes: 100,
+            detected_encoding: None,
+            raw_line_categories: Default::default(),
+            effective_counts: Default::default(),
+            status: FileStatus::AnalyzedExact,
+            warnings: vec![],
+            generated: false,
+            minified: false,
+            vendor: false,
+            parse_mode: None,
+            submodule: None,
+            coverage: None,
+            style_analysis: None,
+            cyclomatic_complexity: None,
+            lsloc: None,
+            commit_count: None,
+            last_commit_date: None,
+            ownership: Some(owners),
+            content_hash: 0,
+        };
+
+        // Path-convention classification.
+        assert!(file_is_test(&rec("tests/a.rs", vec![])));
+        assert!(file_is_test(&rec("src/foo.spec.ts", vec![])));
+        assert!(!file_is_test(&rec("src/b.rs", vec![])));
+        // Lexical classification: a detected test symbol flips a non-test path to a test.
+        let mut lexical = rec("src/c.rs", vec![]);
+        lexical.raw_line_categories.test_count = 1;
+        assert!(file_is_test(&lexical));
+
+        let json = serde_json::json!({
+            "tool": {"name":"oxide-sloc","version":"0.0.0","run_id":"t","timestamp_utc":"2026-01-01T00:00:00Z"},
+            "environment": {"operating_system":"x","architecture":"x86_64","runtime_mode":"cli","initiator_username":"u","initiator_hostname":"h"},
+            "effective_configuration": {},
+            "input_roots": ["/tmp/myrepo"],
+            "summary_totals": {"files_considered":2,"files_analyzed":2,"files_skipped":0,"total_physical_lines":130,"code_lines":130,"comment_lines":0,"blank_lines":0,"mixed_lines_separate":0},
+            "totals_by_language": [],
+            "per_file_records": [],
+            "skipped_file_records": [],
+            "warnings": [],
+            "authors": [
+                {"id":0,"canonical_name":"Nima Shafie","canonical_email":"nima@corp.com","aliases":[],
+                 "counts":{"code_lines":130,"comment_lines":0,"blank_lines":0,"total_lines":130}}
+            ]
+        });
+        let mut run: AnalysisRun = serde_json::from_value(json).expect("run deserializes");
+        run.per_file_records = vec![
+            rec("src/b.rs", vec![own(0, 100)]),
+            rec("tests/a.rs", vec![own(0, 30)]),
+        ];
+        let rows = build_ownership_rows(Some(&run), 130);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].code, 130);
+        // 30 code lines live in the test file; 100 are development.
+        assert_eq!(rows[0].test_code, 30);
+        assert_eq!(rows[0].code.saturating_sub(rows[0].test_code), 100);
+
+        // The data island exposes the test split for the client filter.
+        let dj = ownership_data_json(&rows);
+        assert!(dj.contains("\"test_code\":30"));
     }
 
     #[test]

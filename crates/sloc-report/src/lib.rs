@@ -462,6 +462,7 @@ fn render_html_inner(
     // than the 15-row PDF page.
     let hotspot_rows = build_hotspot_rows(run, 200);
     let author_rows = build_author_rows(run);
+    let own_summary = build_ownership_summary(run);
 
     let template = ReportTemplate {
         // Empty nonce for disk-saved reports; patch_html_nonce replaces it
@@ -688,6 +689,15 @@ fn render_html_inner(
         hotspot_rows,
         has_ownership: !author_rows.is_empty(),
         ownership_rows: author_rows,
+        own_contributors: own_summary.contributors,
+        own_top_name: own_summary.top_name,
+        own_top_pct_str: own_summary.top_pct_str,
+        own_bus_factor: own_summary.bus_factor,
+        own_total_code: own_summary.total_code,
+        own_dev_code: own_summary.dev_code,
+        own_test_code: own_summary.test_code,
+        own_test_pct_str: own_summary.test_pct_str,
+        own_total_comment: own_summary.total_comment,
     };
 
     template.render().context("failed to render HTML report")
@@ -929,6 +939,91 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
         row.color = REPORT_PALETTE[(rank - 1) % REPORT_PALETTE.len()];
     }
     rows
+}
+
+/// Headline code-ownership statistics surfaced above the ownership table in the report (mirrors the
+/// web `/code-ownership` summary chips). All zero / empty when attribution did not run.
+#[derive(Default)]
+struct OwnershipSummary {
+    contributors: usize,
+    top_name: String,
+    top_pct_str: String,
+    bus_factor: usize,
+    total_code: u64,
+    dev_code: u64,
+    test_code: u64,
+    test_pct_str: String,
+    total_comment: u64,
+}
+
+/// Heuristic: does this file hold unit tests? Mirrors the web layer's `file_is_test` — the lexical
+/// analyzer's test-symbol counts, else a common test-path convention.
+fn report_file_is_test(rec: &sloc_core::FileRecord) -> bool {
+    let rc = &rec.raw_line_categories;
+    if rc.test_count > 0 || rc.test_assertion_count > 0 || rc.test_suite_count > 0 {
+        return true;
+    }
+    let p = rec.relative_path.to_ascii_lowercase().replace('\\', "/");
+    p.contains("/tests/")
+        || p.contains("/test/")
+        || p.contains("/spec/")
+        || p.contains("__tests__")
+        || p.contains(".test.")
+        || p.contains(".spec.")
+        || p.contains("_test.")
+        || p.contains("_spec.")
+        || p.starts_with("test/")
+        || p.starts_with("tests/")
+}
+
+/// Compute the ownership summary stats (contributors, top owner, bus factor, dev/test split,
+/// comment lines) from a completed run. Empty when attribution did not populate `run.authors`.
+fn build_ownership_summary(run: &AnalysisRun) -> OwnershipSummary {
+    if run.authors.is_empty() {
+        return OwnershipSummary::default();
+    }
+    let total_code: u64 = run.authors.iter().map(|a| a.counts.code_lines).sum();
+    let total_comment: u64 = run.authors.iter().map(|a| a.counts.comment_lines).sum();
+    // Bus factor: fewest top contributors (already ordered by code owned) covering >= 50% of code.
+    let mut acc = 0u64;
+    let mut bus_factor = 0usize;
+    for a in &run.authors {
+        acc += a.counts.code_lines;
+        bus_factor += 1;
+        if total_code > 0 && acc * 2 >= total_code {
+            break;
+        }
+    }
+    // Test code = code lines owned in files classified as tests.
+    let test_code: u64 = run
+        .per_file_records
+        .iter()
+        .filter(|rec| report_file_is_test(rec))
+        .filter_map(|rec| rec.ownership.as_ref())
+        .flat_map(|own| own.iter().map(|o| o.counts.code_lines))
+        .sum();
+    let top = &run.authors[0];
+    let top_pct = if total_code > 0 {
+        top.counts.code_lines as f64 / total_code as f64 * 100.0
+    } else {
+        0.0
+    };
+    let test_pct = if total_code > 0 {
+        test_code as f64 / total_code as f64 * 100.0
+    } else {
+        0.0
+    };
+    OwnershipSummary {
+        contributors: run.authors.len(),
+        top_name: top.canonical_name.clone(),
+        top_pct_str: format!("{top_pct:.0}"),
+        bus_factor,
+        total_code,
+        dev_code: total_code.saturating_sub(test_code),
+        test_code,
+        test_pct_str: format!("{test_pct:.0}"),
+        total_comment,
+    }
 }
 
 /// Render an HTML report and write it to `output_path`.
@@ -6606,6 +6701,15 @@ struct WarningOpportunityRow {
       <section class="panel" id="ownership-section">
         <div class="toolbar"><div class="toolbar-left"><h2>Code Ownership</h2><input id="ownership-search" class="search" type="search" placeholder="Filter authors..." /></div></div>
         <p class="section-desc">Per-author line ownership from <strong>git blame</strong> &mdash; each physical line is attributed to the author who last touched it (<code>-w -M -C</code>, <code>.mailmap</code> honoured), split into <strong>code / comment / blank</strong>. Same-email identities are merged automatically; cross-account merging is a later step.</p>
+        <div class="summary-strip own-summary-strip">
+          <div class="stat-chip"><div class="stat-chip-val">{{ own_contributors|commas }}</div><div class="stat-chip-label">Contributors</div><div class="stat-chip-tip">Distinct authors owning at least one line in this scan, after identity merges.</div></div>
+          <div class="stat-chip"><div class="stat-chip-val">{{ own_top_name }}</div><div class="stat-chip-label">Top Owner &middot; {{ own_top_pct_str }}% of code</div><div class="stat-chip-tip">The single contributor owning the largest share of code lines.</div></div>
+          <div class="stat-chip"><div class="stat-chip-val">{{ own_bus_factor }}</div><div class="stat-chip-label">Bus Factor</div><div class="stat-chip-tip">Fewest contributors who together own at least half of the code &mdash; a low number means knowledge is concentrated in very few people.</div></div>
+          <div class="stat-chip"><div class="stat-chip-val" data-fmt="{{ own_total_code }}">{{ own_total_code|commas }}</div><div class="stat-chip-label">Total Code Lines</div><div class="stat-chip-tip">Physical code lines attributed across all contributors.</div></div>
+          <div class="stat-chip"><div class="stat-chip-val" data-fmt="{{ own_dev_code }}">{{ own_dev_code|commas }}</div><div class="stat-chip-label">Development Code</div><div class="stat-chip-tip">Code lines owned in non-test files (total code minus code in files detected as tests).</div></div>
+          <div class="stat-chip"><div class="stat-chip-val" data-fmt="{{ own_test_code }}">{{ own_test_code|commas }}</div><div class="stat-chip-label">Test Code &middot; {{ own_test_pct_str }}% of code</div><div class="stat-chip-tip">Code lines owned in files classified as tests (detected test functions/assertions or a test-path convention).</div></div>
+          <div class="stat-chip"><div class="stat-chip-val" data-fmt="{{ own_total_comment }}">{{ own_total_comment|commas }}</div><div class="stat-chip-label">Total Comment Lines</div><div class="stat-chip-tip">Physical comment / documentation lines attributed across all contributors.</div></div>
+        </div>
         <p class="table-hint hs-hint">Click a column header to sort; drag its right edge to resize.</p>
         <div class="table-shell">
           <table id="ownership-table" data-sort-table class="table-resizable">
@@ -10373,6 +10477,16 @@ struct ReportTemplate<'a> {
     has_ownership: bool,
     /// Per-contributor ownership rows (empty unless attribution ran on a git repo).
     ownership_rows: Vec<AuthorReportRow>,
+    /// Headline ownership summary stats (mirrors the web /code-ownership chips).
+    own_contributors: usize,
+    own_top_name: String,
+    own_top_pct_str: String,
+    own_bus_factor: usize,
+    own_total_code: u64,
+    own_dev_code: u64,
+    own_test_code: u64,
+    own_test_pct_str: String,
+    own_total_comment: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

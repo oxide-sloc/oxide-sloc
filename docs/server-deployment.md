@@ -231,6 +231,8 @@ A sliding-window rate limiter enforces **60 requests per 60-second window per cl
 | `SLOC_EXPORT_GIT_REPO` | Repository URL for the `git` export target (artifacts are committed under a per-run subdirectory and pushed). Uses the same host-allowlist / credential / SSRF gates as git scanning. | unset |
 | `SLOC_EXPORT_GIT_BRANCH` | Branch the `git` export target pushes to. | `oxide-sloc-reports` |
 | `SLOC_EXPORT_AUTO` | Set to `1` to auto-publish each finished scan to the `share` target. | unset ⇒ manual export only |
+| `SLOC_AIRGAP` | Force the web UI's air-gapped presentation. `1`/`true` marks the deployment offline: the shared footer repoints "View on GitHub" at this build's own repository (when it is a reachable internal fork) and renders the author / AGPL-licence links as plain text, since those point at the public internet; an "Air-gapped" pill appears next to the Local/Server status indicator. `0`/`false` forces the online presentation. Overrides the `[reporting] offline_mode` config key and the automatic detection. Detection never makes an outbound connection. | unset ⇒ auto-detect from the build's git origin (a non-public/internal host ⇒ offline) |
+| `SLOC_BUG_REPORT_URL` | Repository / issue-tracker URL the "Report a Bug" page (and the offline footer repoint) targets. Air-gapped forks set this to their internal GitLab/Bitbucket repo. Setting it to an internal host also auto-flips the UI into offline mode. Overrides `[reporting] bug_report_url` and the build-time origin. | unset ⇒ build-time origin, then upstream default |
 | `RUST_LOG` | Tracing log level (`info`, `debug`, `warn`) | `info` |
 
 > The full menu of hardening knobs (mTLS, audit-log HMAC, CORS, frame-ancestors,

@@ -68,7 +68,7 @@ impl BugTrackerKind {
 /// How the target repository was determined — surfaced to the user so they understand where a
 /// report will go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TargetSource {
+pub(crate) enum TargetSource {
     /// `SLOC_BUG_REPORT_URL` env var or `[reporting] bug_report_url` config key.
     Configured,
     /// The origin remote captured at build time.
@@ -94,6 +94,18 @@ pub(crate) struct ResolvedTarget {
     raw: String,
     kind: BugTrackerKind,
     source: TargetSource,
+}
+
+impl ResolvedTarget {
+    /// Browsable web URL of the repository this build reports against.
+    pub(crate) fn web_url(&self) -> &str {
+        &self.web_url
+    }
+
+    /// How the target was determined (config/env, build origin, or upstream default).
+    pub(crate) fn source(&self) -> TargetSource {
+        self.source
+    }
 }
 
 /// Pick the raw target string and record where it came from. Split out from [`resolve_target`]

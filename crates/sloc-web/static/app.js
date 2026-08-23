@@ -71,3 +71,80 @@
     }).observe(document.documentElement, { childList: true, subtree: true });
   }
 })();
+
+// ── Air-gap / connectivity footer handling ──────────────────────────────────
+// Several footer links point at the public internet (the author's profile, "View on
+// GitHub", the AGPL licence page) and are dead links on an air-gapped network. The
+// CSP forbids the browser from probing the internet directly, so ask the server
+// (same-origin) whether this deployment is air-gapped, then repoint or plain-text
+// those links. Runs on every page because this script is loaded everywhere.
+(function () {
+  "use strict";
+  // Replace a dead <a> with its own text, preserving the credit without a broken link.
+  function plainText(a) {
+    if (!a || !a.parentNode) return;
+    var span = document.createElement("span");
+    span.textContent = a.textContent;
+    a.parentNode.replaceChild(span, a);
+  }
+
+  function normalizeFooters(info) {
+    if (!info || !info.offline) return;
+    document.body.classList.add("sloc-offline");
+    var repo = info.repo_reachable && info.repo_url ? info.repo_url : "";
+    var links = document.querySelectorAll(".site-footer a");
+    for (var i = 0; i < links.length; i++) {
+      var a = links[i];
+      var href = a.getAttribute("href") || "";
+      if (!href || href.charAt(0) === "/") continue; // same-origin links stay clickable
+      // "View on GitHub" points at the upstream oxide-sloc repo. Repoint it at the repo
+      // this build actually came from when that is a reachable fork/mirror; otherwise drop it.
+      var isViewRepo =
+        /^https?:\/\/(www\.)?github\.com\/oxide-sloc(\/|$)/i.test(href) ||
+        /view on github/i.test(a.textContent || "");
+      if (isViewRepo) {
+        if (repo) {
+          a.setAttribute("href", repo);
+          a.setAttribute("title", "Repository this build came from");
+          a.textContent = "View repository";
+        } else {
+          plainText(a);
+        }
+        continue;
+      }
+      // Author profile, licence page, or any other internet-only link: plain-text it.
+      plainText(a);
+    }
+    addAirgapBadge();
+  }
+
+  // Surface the air-gapped posture next to the "Local / Server" status pill in the nav.
+  function addAirgapBadge() {
+    var wrap = document.getElementById("server-status-wrap");
+    if (!wrap || !wrap.parentNode || document.getElementById("airgap-pill")) return;
+    var pill = document.createElement("span");
+    pill.id = "airgap-pill";
+    pill.className = "nav-pill"; // reuse the shared nav-pill style present on every page
+    pill.textContent = "Air-gapped";
+    pill.setAttribute(
+      "title",
+      "No internet access for this deployment — external links are disabled"
+    );
+    wrap.parentNode.insertBefore(pill, wrap);
+  }
+
+  function run(info) {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", function () { normalizeFooters(info); });
+    } else {
+      normalizeFooters(info);
+    }
+  }
+
+  try {
+    fetch("/api/connectivity", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (info) { run(info); })
+      .catch(function () { /* endpoint unreachable: leave links as-is */ });
+  } catch (e) { /* fetch unavailable */ }
+})();

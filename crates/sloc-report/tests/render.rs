@@ -225,6 +225,25 @@ fn html_report_includes_ownership_section() {
     assert!(html.contains("lb-r1")); // top contributor gets the gold medal class
     // Git Hotspots gains an Author column populated with the file's primary author.
     assert!(html.contains(">Author<"));
+    // Headline ownership summary chips (mirrors the web /code-ownership page).
+    assert!(html.contains("own-summary-strip"));
+    assert!(html.contains(">Contributors<"));
+    assert!(html.contains(">Bus Factor<"));
+    assert!(html.contains(">Development Code<"));
+    assert!(html.contains(">Total Comment Lines<"));
+    // Top owner is Nima (120 of 150 code lines = 80%); comments total 20 + 5 = 25.
+    assert!(html.contains("Top Owner"));
+}
+
+#[test]
+fn html_report_ownership_summary_splits_dev_and_test_code() {
+    let mut run = make_run_with_ownership();
+    // Reclassify the owned file as a test file via its path so its code counts as test code.
+    run.per_file_records[0].relative_path = "tests/integration.rs".into();
+    let html = render_html(&run).expect("render html");
+    assert!(html.contains(">Test Code"));
+    // All 150 owned code lines live in the test file, so Development Code is 0.
+    assert!(html.contains("own-summary-strip"));
 }
 
 #[test]

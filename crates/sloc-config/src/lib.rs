@@ -351,6 +351,15 @@ pub struct ReportingConfig {
     /// which takes precedence over this value.
     #[serde(default)]
     pub bug_report_url: Option<String>,
+    /// Force the web UI into (or out of) air-gapped / offline presentation. When set, this
+    /// overrides the automatic build-origin heuristic. `Some(true)` = always treat the host
+    /// as air-gapped (the shared footer script repoints "View on GitHub" at this build's own
+    /// repository and renders the author/licence links as plain text, since they point at the
+    /// public internet); `Some(false)` = always treat the host as internet-connected;
+    /// `None` = auto-detect from the build's origin remote. Also settable via the
+    /// `SLOC_AIRGAP` environment variable, which takes precedence over this value.
+    #[serde(default)]
+    pub offline_mode: Option<bool>,
 }
 
 impl Default for ReportingConfig {
@@ -367,6 +376,7 @@ impl Default for ReportingConfig {
             accent_color: None,
             report_header_footer: None,
             bug_report_url: None,
+            offline_mode: None,
         }
     }
 }
