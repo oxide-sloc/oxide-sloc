@@ -119,18 +119,50 @@ integration — particularly as an MCP tool callable by Claude, Copilot, and oth
 
 ### Docker
 
+A container image is published to the GitHub Container Registry on every push to `main` and
+every release tag:
+
+```bash
+docker pull ghcr.io/oxide-sloc/oxide-sloc:latest
+```
+
+Tags: `latest` (current `main`), a minor series (e.g. `1.6`), and exact versions (e.g. `1.6.17`).
+
+**Web UI** — the image runs `serve --server` by default, binding `0.0.0.0:4317`. Server mode is
+fail-closed, so provide an API key (sent as `Authorization: Bearer <key>`):
+
+```bash
+docker run --rm -p 4317:4317 \
+  -e SLOC_API_KEY=$(openssl rand -hex 32) \
+  ghcr.io/oxide-sloc/oxide-sloc:latest
+# then open http://localhost:4317
+```
+
+For a quick throwaway trial on a trusted local machine, opt out of auth explicitly:
+
+```bash
+docker run --rm -p 4317:4317 \
+  -e SLOC_ALLOW_UNAUTHENTICATED=1 \
+  ghcr.io/oxide-sloc/oxide-sloc:latest
+```
+
+**CLI** — append a subcommand to override the default and mount the repo read-only:
+
+```bash
+docker run --rm -v /path/to/your/repo:/repo:ro \
+  ghcr.io/oxide-sloc/oxide-sloc:latest analyze /repo --plain
+```
+
+**docker compose** (builds the image locally):
+
 ```bash
 export SLOC_API_KEY=$(openssl rand -hex 32)
 docker compose up
 ```
 
-```bash
-# CLI via Docker
-docker run --rm -v /path/to/your/repo:/repo:ro \
-  ghcr.io/nimashafie/oxide-sloc:latest analyze /repo --plain
-```
-
-Set `SLOC_API_KEY`, `SLOC_ALLOWED_ROOTS`, and `SLOC_TLS_CERT`/`SLOC_TLS_KEY` as needed. See [`docs/server-deployment.md`](./docs/server-deployment.md).
+Set `SLOC_ALLOWED_ROOTS` and `SLOC_TLS_CERT`/`SLOC_TLS_KEY` as needed; for PDF export in a
+container without `SYS_ADMIN`, add `-e SLOC_BROWSER_NOSANDBOX=1`. See
+[`docs/server-deployment.md`](./docs/server-deployment.md).
 
 ### Windows without Git Bash
 
