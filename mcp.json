@@ -1,7 +1,7 @@
 {
   "name": "oxide-sloc",
   "description": "IEEE 1045-1992 SLOC analysis across 60 languages. Counts source lines, comments, blank lines, functions, classes, and unit tests. Built entirely by AI (Claude).",
-  "version": "1.6.15",
+  "version": "1.6.17",
   "homepage": "https://github.com/oxide-sloc/oxide-sloc",
   "repository": "https://github.com/oxide-sloc/oxide-sloc",
   "license": "AGPL-3.0-or-later",
@@ -19,6 +19,14 @@
     },
     "SLOC_API_KEY": {
       "description": "Bearer token for the oxide-sloc server when SLOC_API_KEY authentication is enabled on the server.",
+      "required": false
+    },
+    "SLOC_MCP_ALLOWED_ROOTS": {
+      "description": "Allowlist of directories that analyze_path and compare_runs may read (colon-separated on Unix, semicolon on Windows). Fail-closed: if unset, path-based tools are rejected unless SLOC_MCP_UNRESTRICTED=1.",
+      "required": false
+    },
+    "SLOC_MCP_UNRESTRICTED": {
+      "description": "Set to '1' to disable the SLOC_MCP_ALLOWED_ROOTS path restriction entirely (trusted local single-user use only).",
       "required": false
     }
   },
