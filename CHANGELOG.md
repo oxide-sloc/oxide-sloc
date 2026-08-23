@@ -10,6 +10,38 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.17] — 2026-08-22
+
+### Added
+
+- **Code Ownership**: per-author blame attribution across HTML, PDF, and CSV reports, a
+  dedicated Code Ownership page in the web UI, and a scan-form toggle (attribution on by
+  default). Ownership is integrated with Git Hotspots for per-author file drill-down, with
+  after-the-fact identity merging (`.mailmap` export) to combine authors.
+- **Contributor leaderboard**: a gamified contributor leaderboard in reports, with
+  contributors linked to their profiles and warm-theme info callouts.
+- **Native Jira + Bitbucket integrations**: first-class Jira and Bitbucket publishing with
+  GitHub Actions parity, plus a CMake integration module.
+- **Git-push run export**: export a completed run directly via git push, with LAN-hosting
+  documentation for sharing a local instance on a trusted network.
+- **"Report a Bug" page**: a dedicated in-app page for filing issues.
+
+### Changed
+
+- **New brand mark**: replaced the logo with the new "O + quill" mark and refreshed the
+  shared static asset pipeline (consolidated run export and static assets).
+- **Toolchain**: bumped the bundled Rust toolchain to 1.98 and refreshed dependencies.
+- **Refactors**: reduced cognitive complexity across five hotspots and added coverage tests;
+  slimmed git history of superseded vendor/toolchain/dist archive generations.
+
+### Fixed
+
+- **Security**: upgraded `h2` 0.4.15 → 0.4.16 (RUSTSEC-2026-0258).
+- Cleared CodeQL code-quality findings (empty-except, unused-import, useless-assignment) and
+  fixed a hard-coded nonce in the ownership tests.
+
+---
+
 ## [1.6.16] — 2026-08-15
 
 ### Added

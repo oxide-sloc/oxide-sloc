@@ -14,7 +14,7 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "AGPL-3.0-or-later"
-version = "1.6.16"
+version = "1.6.17"
 authors = ["Nima Shafie"]
 description = "Source line analysis tool — CLI, web UI, HTML/PDF reports, test metrics, git hotspots & code ownership, and CI/CD integration"
 keywords = ["sloc", "code-analysis", "mcp", "static-analysis", "metrics"]
