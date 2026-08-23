@@ -63,10 +63,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # Derive the channel from rust-toolchain.toml so the toolchain we install
+      # (and add the cross target's std to) is the SAME one rust-toolchain.toml
+      # forces at build time. Hardcoding it here drifts every time the toolchain
+      # bump bot edits rust-toolchain.toml, leaving the target std on the wrong
+      # toolchain and breaking cross builds with "can't find crate for core".
+      - name: Resolve Rust channel from rust-toolchain.toml
+        id: rust
+        shell: bash
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # pinned action; Rust version set by toolchain input (matches rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # pinned action; Rust version from rust-toolchain.toml
         with:
-          toolchain: "1.97"
+          toolchain: ${{ steps.rust.outputs.channel }}
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
@@ -277,10 +287,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # pinned action; Rust version set by toolchain input (matches rust-toolchain.toml)
+      - name: Resolve Rust channel from rust-toolchain.toml
+        id: rust
+        shell: bash
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # pinned action; Rust version from rust-toolchain.toml
         with:
-          toolchain: "1.97"
+          toolchain: ${{ steps.rust.outputs.channel }}
 
       - name: Generate vendor archive
         run: bash scripts/internal/update-vendor.sh
@@ -303,10 +318,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # pinned action; Rust version set by toolchain input (matches rust-toolchain.toml)
+      - name: Resolve Rust channel from rust-toolchain.toml
+        id: rust
+        shell: bash
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # pinned action; Rust version from rust-toolchain.toml
         with:
-          toolchain: "1.97"
+          toolchain: ${{ steps.rust.outputs.channel }}
 
       - name: Install cargo-cyclonedx
         # Pin to a known-good version so a future upstream release can't silently
@@ -831,7 +851,7 @@ jobs:
             bash scripts/internal/airgap-build.sh
             ```
 
-            ## Or build from source (requires Rust 1.97+)
+            ## Or build from source (requires Rust 1.98+)
 
             ```bash
             cargo install --git https://github.com/oxide-sloc/oxide-sloc oxide-sloc
@@ -948,10 +968,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      - name: Resolve Rust channel from rust-toolchain.toml
+        id: rust
+        shell: bash
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # pinned action; Rust version set by toolchain input (matches rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # pinned action; Rust version from rust-toolchain.toml
         with:
-          toolchain: "1.97"
+          toolchain: ${{ steps.rust.outputs.channel }}
 
       - name: Disable vendor source redirect for publish
         run: |
