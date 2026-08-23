@@ -2510,6 +2510,66 @@ mod git_integration {
         git(dir, &["commit", "--no-gpg-sign", "-m", "initial"]);
     }
 
+    // ── publish_dir (git-push export) ─────────────────────────────────────────
+
+    #[test]
+    fn publish_dir_pushes_snapshot_to_local_bare_repo() {
+        let _g = env_lock();
+        let root = tempdir().unwrap();
+        // A bare target repo under the allowed local root plays the role of the remote.
+        let bare = root.path().join("target.git");
+        git(root.path(), &["init", "--bare", bare.to_str().unwrap()]);
+
+        // Artifacts to publish (nested, to exercise the recursive copy).
+        let src = tempdir().unwrap();
+        std::fs::write(src.path().join("result.json"), b"{\"ok\":true}").unwrap();
+        std::fs::create_dir_all(src.path().join("html")).unwrap();
+        std::fs::write(src.path().join("html").join("r.html"), b"<html></html>").unwrap();
+
+        let work = root.path().join("work");
+        // SAFETY: single-threaded under ENV_LOCK; the local-source gate is required so
+        // publish_dir accepts a filesystem path as the target.
+        unsafe {
+            std::env::set_var("SLOC_GIT_ALLOW_LOCAL", "1");
+            std::env::set_var("SLOC_GIT_LOCAL_ROOT", root.path());
+        }
+        let res = publish_dir(
+            bare.to_str().unwrap(),
+            "reports",
+            "run-1",
+            src.path(),
+            "publish run-1",
+            &work,
+        );
+        // SAFETY: see above.
+        unsafe {
+            std::env::remove_var("SLOC_GIT_ALLOW_LOCAL");
+            std::env::remove_var("SLOC_GIT_LOCAL_ROOT");
+        }
+        assert!(res.is_ok(), "publish_dir failed: {res:?}");
+
+        // The bare repo now carries the branch with the artifacts under the subdir.
+        let out = std::process::Command::new("git")
+            .args([
+                &format!("--git-dir={}", bare.to_str().unwrap()),
+                "ls-tree",
+                "-r",
+                "--name-only",
+                "reports",
+            ])
+            .output()
+            .expect("git must be on PATH");
+        let listing = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            listing.contains("run-1/result.json"),
+            "expected run-1/result.json in: {listing}"
+        );
+        assert!(
+            listing.contains("run-1/html/r.html"),
+            "expected run-1/html/r.html in: {listing}"
+        );
+    }
+
     // ── run_git ───────────────────────────────────────────────────────────────
 
     #[test]

@@ -8309,11 +8309,94 @@ async fn export_run_to_share(output_dir: PathBuf) -> Response {
     }
 }
 
+/// Operator-configured git export target: `SLOC_EXPORT_GIT_REPO` (repo URL, required),
+/// `SLOC_EXPORT_GIT_BRANCH` (default `oxide-sloc-reports`). `None` repo ⇒ not configured.
+fn export_git_target() -> Option<(String, String)> {
+    let repo = std::env::var("SLOC_EXPORT_GIT_REPO")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())?;
+    let branch = std::env::var("SLOC_EXPORT_GIT_BRANCH")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "oxide-sloc-reports".to_string());
+    Some((repo, branch))
+}
+
+/// Publish a run's artifacts to the operator-configured git repository, under a per-run
+/// subdirectory on the configured branch. Reuses `sloc-git`'s clone/credential/SSRF gates.
+async fn export_run_to_git(output_dir: PathBuf) -> Response {
+    let Some((repo, branch)) = export_git_target() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "Git export is not configured. Set SLOC_EXPORT_GIT_REPO (and \
+                          optionally SLOC_EXPORT_GIT_BRANCH) and restart."
+            })),
+        )
+            .into_response();
+    };
+    let subdir = output_dir.file_name().map_or_else(
+        || "export".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let work_dir = std::env::temp_dir()
+        .join("oxide-sloc-export")
+        .join(uuid::Uuid::new_v4().to_string());
+    let message = format!("oxide-sloc: publish {subdir}");
+    let (repo_c, branch_c, subdir_c) = (repo.clone(), branch.clone(), subdir.clone());
+    let src = output_dir.clone();
+    let work_for_task = work_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        sloc_git::publish_dir(
+            &repo_c,
+            &branch_c,
+            &subdir_c,
+            &src,
+            &message,
+            &work_for_task,
+        )
+    })
+    .await;
+    let _ = tokio::fs::remove_dir_all(&work_dir).await; // best-effort scratch cleanup
+    match result {
+        Ok(Ok(())) => {
+            audit::record(
+                "run_exported",
+                "success",
+                &[("target", "git"), ("repo", &repo), ("branch", &branch)],
+            );
+            Json(serde_json::json!({
+                "target": "git", "repo": repo, "branch": branch, "subdir": subdir,
+            }))
+            .into_response()
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(event = "export_error", "git export failed: {e:#}");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("Git export failed: {e}")})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(event = "export_task_panic", "git export task panicked: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal server error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// POST /api/runs/{run_id}/export
 ///
-/// Publish a completed run's artifacts to an operator-configured export target. The only
-/// target so far is `share` (copy to `SLOC_EXPORT_DIR`). Auth-gated like the other
-/// `/api/runs/*` mutating routes; a read-only key cannot invoke it (it is a POST).
+/// Publish a completed run's artifacts to an operator-configured export target: `share`
+/// (copy to `SLOC_EXPORT_DIR`), `git` (push to `SLOC_EXPORT_GIT_REPO`), or `confluence`
+/// (the configured Confluence space). Auth-gated like the other `/api/runs/*` mutating
+/// routes; a read-only key cannot invoke it (it is a POST).
 async fn export_run_handler(
     State(state): State<AppState>,
     AxumPath(run_id): AxumPath<String>,
@@ -8329,6 +8412,7 @@ async fn export_run_handler(
     }
     match query.target.as_deref().unwrap_or("share") {
         "share" => export_run_to_share(output_dir).await,
+        "git" => export_run_to_git(output_dir).await,
         "confluence" => {
             // Reuse the shared Confluence publish flow; derive a stable page title from
             // the run's project label so re-exports update the same page.
@@ -8344,7 +8428,7 @@ async fn export_run_handler(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": format!(
-                    "Unsupported export target '{other}'. Supported: share, confluence"
+                    "Unsupported export target '{other}'. Supported: share, git, confluence"
                 )
             })),
         )

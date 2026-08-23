@@ -582,6 +582,22 @@ async fn export_unsupported_target_is_400() {
 }
 
 #[tokio::test]
+async fn export_git_target_without_config_is_409() {
+    let app = make_test_router();
+    ingest(&app, &run_basic("exp-git-1", "/test/expgit", 15)).await;
+    // Ensure no git export target is configured within this binary.
+    unsafe {
+        std::env::remove_var("SLOC_EXPORT_GIT_REPO");
+    }
+    let (st, body) = post_body(app.clone(), "/api/runs/exp-git-1/export?target=git").await;
+    assert_eq!(st, StatusCode::CONFLICT, "body: {body}");
+    assert!(
+        body.contains("Git export"),
+        "expected git-not-configured msg: {body}"
+    );
+}
+
+#[tokio::test]
 async fn export_confluence_target_without_config_is_400() {
     let app = make_test_router();
     ingest(&app, &run_basic("exp-conf-1", "/test/expconf", 12)).await;

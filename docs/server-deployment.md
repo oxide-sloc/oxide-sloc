@@ -28,6 +28,14 @@ message instead.
 
 The scan registry and report artifacts are shared across all sessions.
 
+> **Network-facing binds always get server-mode protections.** If you bind to a
+> non-loopback address (`0.0.0.0`, a LAN IP, or a hostname) via `SLOC_BIND` / `--bind`
+> *without* `--server`, oxide-sloc automatically enables server mode anyway: it
+> refuses to start without `SLOC_API_KEY` (unless `SLOC_ALLOW_UNAUTHENTICATED=1`),
+> enforces the `SLOC_ALLOWED_ROOTS` scan-path allowlist, disables the desktop-only
+> routes, and applies the tighter rate limit and CORS. Loopback binds keep the open
+> single-user desktop model.
+
 ---
 
 ## Option A — Docker Compose (recommended)
@@ -215,11 +223,102 @@ A sliding-window rate limiter enforces **60 requests per 60-second window per cl
 | `SLOC_AUTH_LOCKOUT_SECS` | Lockout duration in seconds after `SLOC_AUTH_LOCKOUT_FAILS` failures | `3600` |
 | `SLOC_TLS_CERT` | Path to PEM certificate file for native TLS | unset |
 | `SLOC_TLS_KEY` | Path to PEM private key file for native TLS | unset |
+| `SLOC_ALLOWED_HOSTS` | Comma/space-separated `Host` header allowlist. When set (server mode), requests with any other `Host` are rejected `421` — blocks DNS-rebinding / Host-header injection. Health/metrics/webhook paths are exempt; the `SLOC_PUBLIC_URL` host is auto-trusted. | unset ⇒ any Host accepted |
+| `SLOC_PUBLIC_URL` | Canonical URL clients use (e.g. `https://sloc.corp.local`). Printed at startup with a DNS-resolution check and the exact A-record / hosts-file line to add so LAN users can reach the server by name. | unset |
+| `SLOC_ADMIN_KEY` | Separate operator admin credential. When set, `GET /api/admin/config` (effective-config view) requires it specifically, not a regular user key. | unset ⇒ falls back to the API-key gate |
+| `SLOC_MAX_DISK_MB` | Hard ceiling (MB) on the total size of retained scan artifacts. A background guard deletes the oldest runs when the tree exceeds it, uploads are refused `507` when staging is full, and the UI cleanup policy can only tighten below it. | unset ⇒ no size cap |
+| `SLOC_EXPORT_DIR` | Destination directory (a mounted network/SMB share or any path) for the `share` export target. | unset |
+| `SLOC_EXPORT_GIT_REPO` | Repository URL for the `git` export target (artifacts are committed under a per-run subdirectory and pushed). Uses the same host-allowlist / credential / SSRF gates as git scanning. | unset |
+| `SLOC_EXPORT_GIT_BRANCH` | Branch the `git` export target pushes to. | `oxide-sloc-reports` |
+| `SLOC_EXPORT_AUTO` | Set to `1` to auto-publish each finished scan to the `share` target. | unset ⇒ manual export only |
 | `RUST_LOG` | Tracing log level (`info`, `debug`, `warn`) | `info` |
 
 > The full menu of hardening knobs (mTLS, audit-log HMAC, CORS, frame-ancestors,
 > read-only keys, session idle timeout) lives in
 > [`deploy/corp.env.example`](../deploy/corp.env.example).
+
+---
+
+## Hosting on a corporate LAN / VLAN / VPN / air-gap
+
+Everything below is configured by the **host operator** (environment / systemd unit /
+config TOML). LAN users never touch these settings — the watched-folder, cleanup, disk,
+export, and hostname controls are all operator-owned.
+
+### Let users reach the server by hostname (not a bare IP)
+
+oxide-sloc runs unprivileged, so it does **not** edit host DNS itself. Instead, set the
+canonical URL and it validates + guides you:
+
+```bash
+SLOC_PUBLIC_URL=https://sloc.corp.local:4317
+```
+
+At startup the server prints whether `sloc.corp.local` resolves to this machine and, if
+not, the exact record to add — either a DNS **A record** on your DNS server, or a
+per-client `hosts` line (`C:\Windows\System32\drivers\etc\hosts` / `/etc/hosts`). Then
+pin the names the server will answer to (defense against DNS-rebinding / Host-header
+injection):
+
+```bash
+SLOC_ALLOWED_HOSTS=sloc.corp.local,10.20.0.5   # the SLOC_PUBLIC_URL host is auto-added
+```
+
+Requests whose `Host` header isn't on the list get `421 Misdirected Request`. Health,
+metrics, and webhook endpoints are exempt so load-balancer probes keep working.
+
+### Cap disk usage (garbage collection)
+
+Bound how much disk retained artifacts can consume — a background guard deletes the
+**oldest** runs when the tree exceeds the cap, and uploads are refused with `507` when
+the staging area is full:
+
+```bash
+SLOC_MAX_DISK_MB=20000     # 20 GB hard ceiling
+```
+
+This is the operator ceiling. The in-UI auto-cleanup policy (age / count / size) can only
+set an *equal or tighter* size cap — never loosen beyond `SLOC_MAX_DISK_MB`.
+
+### Publish reports off-box
+
+Point finished runs at a destination that survives host cleanup. Three targets, invoked
+per run via `POST /api/runs/{run_id}/export?target=<share|git|confluence>`:
+
+```bash
+# 1) Mounted network / SMB share (simplest, air-gap friendly)
+SLOC_EXPORT_DIR=/mnt/reports-share
+SLOC_EXPORT_AUTO=1                       # optional: auto-publish every scan to the share
+
+# 2) Git repository (committed under a per-run subdir, pushed to a branch)
+SLOC_EXPORT_GIT_REPO=https://git.corp.local/team/sloc-reports.git
+SLOC_EXPORT_GIT_BRANCH=oxide-sloc-reports   # default shown
+
+# 3) Confluence — uses the existing Confluence integration (configure at /integrations)
+```
+
+Git export reuses the same host-allowlist, per-host credential resolution
+(`SLOC_GIT_CRED_<HOST>`), and SSRF gates as git scanning, so it works the same on a
+locked-down VLAN or through a corporate proxy.
+
+### Operator-only config view
+
+With `SLOC_ADMIN_KEY` set, `GET /api/admin/config` returns the effective security posture
+(which controls are active, the disk ceiling, export target, hostname settings) and
+requires that admin key specifically — a regular user key is not enough:
+
+```bash
+curl -H "X-Admin-Key: $SLOC_ADMIN_KEY" https://sloc.corp.local:4317/api/admin/config
+```
+
+### Air-gap notes
+
+- No outbound internet is required: a plain `git clone` builds and runs offline (vendored
+  crates + bundled toolchain). Export to a **share** or an **internal** git repo needs no
+  external connectivity.
+- Behind a TLS-inspecting proxy, the OS trust store is used automatically; set
+  `HTTPS_PROXY` / `NO_PROXY` for git operations as usual.
+- For a fully closed network, prefer `SLOC_EXPORT_DIR` (a mounted share) over git/Confluence.
 
 ---
 
