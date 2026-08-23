@@ -892,7 +892,12 @@ pub struct CompareRefsQuery {
             var el = document.createElement('span');
             el.className = 'code-particle';
             el.textContent = snippets[idx % snippets.length];
-            el.style.cssText = 'left:' + (Math.random() * 94 + 2).toFixed(1) + '%;top:' + (Math.random() * 88 + 6).toFixed(1) + '%;--rot:' + (Math.random() * 26 - 13).toFixed(1) + 'deg;--op:' + (Math.random() * 0.09 + 0.06).toFixed(3) + ';animation-duration:' + (Math.random() * 10 + 9).toFixed(1) + 's;animation-delay:-' + (Math.random() * 18).toFixed(1) + 's;';
+            el.style.left = (Math.random() * 94 + 2).toFixed(1) + '%';
+            el.style.top = (Math.random() * 88 + 6).toFixed(1) + '%';
+            el.style.setProperty('--rot', (Math.random() * 26 - 13).toFixed(1) + 'deg');
+            el.style.setProperty('--op', (Math.random() * 0.09 + 0.06).toFixed(3));
+            el.style.animationDuration = (Math.random() * 10 + 9).toFixed(1) + 's';
+            el.style.animationDelay = '-' + (Math.random() * 18).toFixed(1) + 's';
             container.appendChild(el);
           })(i);
         }

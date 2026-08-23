@@ -492,7 +492,7 @@ pub(crate) async fn report_bug_handler(
       var container = document.getElementById('code-particles');
       if (!container) return;
       var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
-      for (var i=0;i<38;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snippets[idx%snippets.length];el.style.cssText='left:'+(Math.random()*94+2).toFixed(1)+'%;top:'+(Math.random()*88+6).toFixed(1)+'%;--rot:'+(Math.random()*26-13).toFixed(1)+'deg;--op:'+(Math.random()*0.09+0.06).toFixed(3)+';animation-duration:'+(Math.random()*10+9).toFixed(1)+'s;animation-delay:-'+(Math.random()*18).toFixed(1)+'s;';container.appendChild(el);})(i);}
+      for (var i=0;i<38;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snippets[idx%snippets.length];el.style.left=(Math.random()*94+2).toFixed(1)+'%';el.style.top=(Math.random()*88+6).toFixed(1)+'%';el.style.setProperty('--rot',(Math.random()*26-13).toFixed(1)+'deg');el.style.setProperty('--op',(Math.random()*0.09+0.06).toFixed(3));el.style.animationDuration=(Math.random()*10+9).toFixed(1)+'s';el.style.animationDelay='-'+(Math.random()*18).toFixed(1)+'s';container.appendChild(el);})(i);}
     })();
 
     // ── Server ping ───────────────────────────────────────────────────────────

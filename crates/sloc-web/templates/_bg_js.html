@@ -53,9 +53,12 @@
       var delay = (Math.random() * 18).toFixed(1);
       var rot = (Math.random() * 26 - 13).toFixed(1);
       var op = (Math.random() * 0.09 + 0.06).toFixed(3);
-      el.style.cssText = 'left:' + left.toFixed(1) + '%;top:' + top.toFixed(1) + '%;'
-        + '--rot:' + rot + 'deg;--op:' + op + ';'
-        + 'animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
+      el.style.left = left.toFixed(1) + '%';
+      el.style.top = top.toFixed(1) + '%';
+      el.style.setProperty('--rot', rot + 'deg');
+      el.style.setProperty('--op', op);
+      el.style.animationDuration = dur + 's';
+      el.style.animationDelay = '-' + delay + 's';
       container.appendChild(el);
     })(i);
   }

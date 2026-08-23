@@ -871,7 +871,7 @@ fn ownership_page_scripts() -> &'static str {
 (function(){
   var container=document.getElementById('code-particles');if(!container)return;
   var snippets = ['NUM sloc','fn analyze()','code_lines','0 mixed','blanks: NUM','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','NUM physical','files: NUM','NUM comments','cargo build','Ok(run)','Vec<GEN>','match lang','fn main()','.rs .go .py','sloc_core','render_html','NUM code','HashMap<GEN, GN2>','Option<GEN>','&str','author AUT','last_change','ratio 0.CPX','complexity CPX','tokens: NUM','?; // try','let owner','commits: NUM','#[tokio::test]','assert_eq!','PCT% cover','blame AUT','churn PCT%','HEAD~CPX','dedup PCT%','cyclomatic CPX','impl Iterator','.await','+NUM -NM2','ownership','Span<GEN>','pub struct','trait Lang','unsafe','mixed: NUM','anyhow::Result','fn detect()','PathBuf','+NUM loc','coverage PCT%','physical: NUM','ULOC NUM','dup PCT%','let mut run']; var __GT=['Author','String','Token','FileRecord','Lang','u32','usize','PathBuf','Commit','Line','Span','Metric','Record','u64','char','Utf8','Ratio','Blame']; var __AN=['nima','core','web','cli','git','lang','ci','bot','sloc'];
-  for(var i=0;i<38;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snippets[idx%snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));var left=Math.random()*94+2,top=Math.random()*88+6,dur=(Math.random()*10+9).toFixed(1),delay=(Math.random()*18).toFixed(1),rot=(Math.random()*26-13).toFixed(1),op=(Math.random() * 0.108 + 0.072).toFixed(3);el.style.cssText='left:'+left.toFixed(1)+'%;top:'+top.toFixed(1)+'%;--rot:'+rot+'deg;--op:'+op+';animation-duration:'+dur+'s;animation-delay:-'+delay+'s;';container.appendChild(el);})(i);}
+  for(var i=0;i<38;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snippets[idx%snippets.length].split('NUM').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('NM2').join(Math.floor(Math.random()*9700+140).toLocaleString()).split('GEN').join(__GT[Math.floor(Math.random()*__GT.length)]).split('GN2').join(__GT[Math.floor(Math.random()*__GT.length)]).split('AUT').join(__AN[Math.floor(Math.random()*__AN.length)]).split('CPX').join(''+Math.floor(Math.random()*40+1)).split('PCT').join(''+Math.floor(Math.random()*44+1));var left=Math.random()*94+2,top=Math.random()*88+6,dur=(Math.random()*10+9).toFixed(1),delay=(Math.random()*18).toFixed(1),rot=(Math.random()*26-13).toFixed(1),op=(Math.random() * 0.108 + 0.072).toFixed(3);el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';container.appendChild(el);})(i);}
 })();
 (function(){
   var S=[{n:'Classic',a:'#b85d33',b:'#7a371b'},{n:'Navy',a:'#283790',b:'#1e1e24'},{n:'Ember',a:'#ce5d3d',b:'#1e1e24'},{n:'Ocean',a:'#1f439b',b:'#1e1e24'},{n:'Royal',a:'#003184',b:'#1e1e24'}];
@@ -15268,7 +15268,7 @@ async fn trend_report_handler(
           var delay = (Math.random() * 18).toFixed(1);
           var rot = (Math.random() * 26 - 13).toFixed(1);
           var op = (Math.random() * 0.108 + 0.072).toFixed(3);
-          el.style.cssText = 'left:'+left.toFixed(1)+'%;top:'+top.toFixed(1)+'%;--rot:'+rot+'deg;--op:'+op+';animation-duration:'+dur+'s;animation-delay:-'+delay+'s;';
+          el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
           container.appendChild(el);
         }})(i);
       }}
@@ -24538,9 +24538,12 @@ struct IndexTemplate {
             var delay = (Math.random() * 18).toFixed(1);
             var rot = (Math.random() * 26 - 13).toFixed(1);
             var op = (Math.random() * 0.108 + 0.072).toFixed(3);
-            el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';
-              + '--rot:' + rot + 'deg;--op:' + op + ';'
-              + 'animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
+            el.style.left = left.toFixed(1) + '%';
+            el.style.top = top.toFixed(1) + '%';
+            el.style.setProperty('--rot', rot + 'deg');
+            el.style.setProperty('--op', op);
+            el.style.animationDuration = dur + 's';
+            el.style.animationDelay = '-' + delay + 's';
             container.appendChild(el);
           })(i);
         }
@@ -33238,7 +33241,7 @@ struct CompareTemplate {
         var delay = (Math.random() * 18).toFixed(1);
         var rot = (Math.random() * 26 - 13).toFixed(1);
         var op = (Math.random() * 0.108 + 0.072).toFixed(3);
-        el.style.cssText = 'left:'+left.toFixed(1)+'%;top:'+top.toFixed(1)+'%;--rot:'+rot+'deg;--op:'+op+';animation-duration:'+dur+'s;animation-delay:-'+delay+'s;';
+        el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
         container.appendChild(el);
       })(i);
     }
@@ -34783,7 +34786,7 @@ Content-Disposition: attachment; filename="sloc-run-&lt;run_id&gt;.zip"
             var delay = (Math.random() * 18).toFixed(1);
             var rot = (Math.random() * 26 - 13).toFixed(1);
             var op = (Math.random() * 0.108 + 0.072).toFixed(3);
-            el.style.cssText = 'left:'+left.toFixed(1)+'%;top:'+top.toFixed(1)+'%;--rot:'+rot+'deg;--op:'+op+';animation-duration:'+dur+'s;animation-delay:-'+delay+'s;';
+            el.style.left=left.toFixed(1)+'%';el.style.top=top.toFixed(1)+'%';el.style.setProperty('--rot',rot+'deg');el.style.setProperty('--op',op);el.style.animationDuration=dur+'s';el.style.animationDelay='-'+delay+'s';
             container.appendChild(el);
           })(i);
         }
