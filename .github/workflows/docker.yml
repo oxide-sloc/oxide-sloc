@@ -7,6 +7,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview GHCR pruning without deleting anything'
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -121,3 +126,37 @@ jobs:
           cosign verify "${IMAGE_REF}" \
             --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+
+  # Prune superseded image versions so the GHCR package does not grow without bound.
+  # Runs only after the new image is fully pushed, signed, and verified (needs: build-push),
+  # so the current release and its signature/attestation are safely in place before any
+  # deletion. The action is cosign/referrer-aware: deleting an image also removes its paired
+  # `sha256-<digest>.sig` and attestation manifests, and it preserves the multi-arch children
+  # + referrers of every KEPT image — a plain version-count or "delete untagged" prune would
+  # orphan signatures or break the index.
+  cleanup-ghcr:
+    name: Prune old GHCR image versions
+    needs: build-push
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write     # required to delete package versions
+    # Serialize prunes so two overlapping pushes can't race on the same package graph.
+    concurrency:
+      group: ghcr-cleanup
+      cancel-in-progress: false
+    steps:
+      - name: Prune old image versions (cosign-signature aware)
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f  # v1.2.2
+        with:
+          owner: ${{ github.repository_owner }}
+          packages: ${{ github.event.repository.name }}
+          # Keep the 15 most-recent tagged images, matching the release-retention policy.
+          keep-n-tagged: 15
+          # Moving tags that must always survive regardless of age.
+          exclude-tags: latest,main
+          # Reclaim digests left untagged when 'latest'/'main' move forward each push.
+          delete-untagged: true
+          # Fail loudly on an inconsistent result instead of leaving a partial prune.
+          validate: true
+          # Manual `workflow_dispatch` can preview deletions first; automatic runs delete.
+          dry-run: ${{ inputs.dry_run || false }}
