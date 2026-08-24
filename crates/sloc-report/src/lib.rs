@@ -956,26 +956,6 @@ struct OwnershipSummary {
     total_comment: u64,
 }
 
-/// Heuristic: does this file hold unit tests? Mirrors the web layer's `file_is_test` — the lexical
-/// analyzer's test-symbol counts, else a common test-path convention.
-fn report_file_is_test(rec: &sloc_core::FileRecord) -> bool {
-    let rc = &rec.raw_line_categories;
-    if rc.test_count > 0 || rc.test_assertion_count > 0 || rc.test_suite_count > 0 {
-        return true;
-    }
-    let p = rec.relative_path.to_ascii_lowercase().replace('\\', "/");
-    p.contains("/tests/")
-        || p.contains("/test/")
-        || p.contains("/spec/")
-        || p.contains("__tests__")
-        || p.contains(".test.")
-        || p.contains(".spec.")
-        || p.contains("_test.")
-        || p.contains("_spec.")
-        || p.starts_with("test/")
-        || p.starts_with("tests/")
-}
-
 /// Compute the ownership summary stats (contributors, top owner, bus factor, dev/test split,
 /// comment lines) from a completed run. Empty when attribution did not populate `run.authors`.
 fn build_ownership_summary(run: &AnalysisRun) -> OwnershipSummary {
@@ -998,7 +978,7 @@ fn build_ownership_summary(run: &AnalysisRun) -> OwnershipSummary {
     let test_code: u64 = run
         .per_file_records
         .iter()
-        .filter(|rec| report_file_is_test(rec))
+        .filter(|rec| rec.is_test_file())
         .filter_map(|rec| rec.ownership.as_ref())
         .flat_map(|own| own.iter().map(|o| o.counts.code_lines))
         .sum();

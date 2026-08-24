@@ -995,14 +995,8 @@ pub async fn api_list_refs(
         .await
     {
         Ok(Ok(refs)) => (StatusCode::OK, Json(serde_json::json!(refs))).into_response(),
-        Ok(Err(e)) => {
-            tracing::warn!(event = "git_api_error", "load_refs failed: {e:#}");
-            json_error(StatusCode::BAD_GATEWAY, &git_error_message(&e))
-        }
-        Err(e) => {
-            tracing::error!(event = "git_task_panic", "load_refs task panicked: {e}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-        }
+        Ok(Err(e)) => git_task_error_response(Ok(e), "load_refs"),
+        Err(e) => git_task_error_response(Err(e), "load_refs"),
     }
 }
 
@@ -1062,14 +1056,8 @@ pub async fn api_scan_ref(
             )
                 .into_response()
         }
-        Ok(Err(e)) => {
-            tracing::warn!(event = "git_api_error", "ref scan failed: {e:#}");
-            json_error(StatusCode::BAD_GATEWAY, &git_error_message(&e))
-        }
-        Err(e) => {
-            tracing::error!(event = "git_task_panic", "ref scan task panicked: {e}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-        }
+        Ok(Err(e)) => git_task_error_response(Ok(e), "ref scan"),
+        Err(e) => git_task_error_response(Err(e), "ref scan"),
     }
 }
 
@@ -1128,14 +1116,8 @@ pub async fn api_compare_refs(
             )
                 .into_response()
         }
-        Ok(Err(e)) => {
-            tracing::warn!(event = "git_api_error", "ref compare failed: {e:#}");
-            json_error(StatusCode::BAD_GATEWAY, &git_error_message(&e))
-        }
-        Err(e) => {
-            tracing::error!(event = "git_task_panic", "ref compare task panicked: {e}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-        }
+        Ok(Err(e)) => git_task_error_response(Ok(e), "ref compare"),
+        Err(e) => git_task_error_response(Err(e), "ref compare"),
     }
 }
 
@@ -1366,6 +1348,26 @@ fn make_label(repo: &str, ref_name: &str) -> String {
 
 fn json_error(status: StatusCode, msg: &str) -> axum::response::Response {
     (status, Json(serde_json::json!({ "error": msg }))).into_response()
+}
+
+/// Map the failing half of a `spawn_blocking` git outcome to a JSON error response, sharing the
+/// warn/error logging + status mapping across the ref handlers. `op` names the operation for the
+/// log line (e.g. `"load_refs"`, `"ref scan"`, `"ref compare"`). Pass `Ok(err)` for a git-op
+/// failure (`Ok(Err(e))` arm) and `Err(join)` for a task panic (`Err(e)` arm).
+fn git_task_error_response(
+    outcome: std::result::Result<anyhow::Error, tokio::task::JoinError>,
+    op: &str,
+) -> axum::response::Response {
+    match outcome {
+        Ok(e) => {
+            tracing::warn!(event = "git_api_error", "{op} failed: {e:#}");
+            json_error(StatusCode::BAD_GATEWAY, &git_error_message(&e))
+        }
+        Err(e) => {
+            tracing::error!(event = "git_task_panic", "{op} task panicked: {e}");
+            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+        }
+    }
 }
 
 /// Render a git-operation error for the API response body. The Git Browser UI classifies

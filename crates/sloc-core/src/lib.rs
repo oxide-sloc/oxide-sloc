@@ -314,6 +314,29 @@ pub struct FileRecord {
     pub content_hash: u64,
 }
 
+impl FileRecord {
+    /// Heuristic: does this file hold unit tests? True when the lexical analyzer detected test
+    /// symbols / assertions / suites, or the path follows a common test-file convention. Shared by
+    /// the report and web layers so the classification stays identical across surfaces.
+    pub fn is_test_file(&self) -> bool {
+        let rc = &self.raw_line_categories;
+        if rc.test_count > 0 || rc.test_assertion_count > 0 || rc.test_suite_count > 0 {
+            return true;
+        }
+        let p = self.relative_path.to_ascii_lowercase().replace('\\', "/");
+        p.contains("/tests/")
+            || p.contains("/test/")
+            || p.contains("/spec/")
+            || p.contains("__tests__")
+            || p.contains(".test.")
+            || p.contains(".spec.")
+            || p.contains("_test.")
+            || p.contains("_spec.")
+            || p.starts_with("test/")
+            || p.starts_with("tests/")
+    }
+}
+
 /// Per-language-family style aggregation within a `StyleSummary`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LanguageStyleGroup {

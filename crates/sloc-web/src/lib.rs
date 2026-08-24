@@ -740,26 +740,6 @@ struct OwnershipRow {
     test_total: u64,
 }
 
-/// Heuristic: does this file hold unit tests? True when the lexical analyzer detected test
-/// symbols / assertions / suites, or the path follows a common test-file convention.
-fn file_is_test(rec: &sloc_core::FileRecord) -> bool {
-    let rc = &rec.raw_line_categories;
-    if rc.test_count > 0 || rc.test_assertion_count > 0 || rc.test_suite_count > 0 {
-        return true;
-    }
-    let p = rec.relative_path.to_ascii_lowercase().replace('\\', "/");
-    p.contains("/tests/")
-        || p.contains("/test/")
-        || p.contains("/spec/")
-        || p.contains("__tests__")
-        || p.contains(".test.")
-        || p.contains(".spec.")
-        || p.contains("_test.")
-        || p.contains("_spec.")
-        || p.starts_with("test/")
-        || p.starts_with("tests/")
-}
-
 /// Minimal percent-encoder for a URL query-string value (RFC 3986 unreserved set kept literal).
 fn url_query_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -1797,138 +1777,88 @@ fn own_esc(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Ordered `(needles, abbreviation, brand-ish hex)` badge table. A needle is matched as a
+/// lowercased substring, except one prefixed with `=`, which must match the whole (lowercased)
+/// name exactly. Order matters: disambiguate C++/C#/Objective-C before the bare `=c` check, and
+/// the exact single-letter needles (`=c`, `=d`, `=r`, `=go`, `=cpp`) sit after their substring
+/// siblings so e.g. "cpp" never trips the bare `=c`.
+static LANGUAGE_BADGES: &[(&[&str], &str, &str)] = &[
+    (&["c++", "=cpp"], "C++", "#F34B7D"),
+    (&["c#", "csharp", "c-sharp"], "C#", "#178600"),
+    (&["objective"], "ObjC", "#438EFF"),
+    (&["=c"], "C", "#555555"),
+    (&["typescript"], "Ts", "#3178C6"),
+    (&["javascript"], "Js", "#F1E05A"),
+    (&["rust"], "Rs", "#DEA584"),
+    (&["python"], "Py", "#3572A5"),
+    (&["kotlin"], "Kt", "#A97BFF"),
+    (&["java"], "Jv", "#B07219"),
+    (&["golang", "=go"], "Go", "#00ADD8"),
+    (&["ruby"], "Rb", "#701516"),
+    (&["php"], "Php", "#4F5D95"),
+    (&["swift"], "Sw", "#F05138"),
+    (&["scala"], "Sc", "#C22D40"),
+    (&["shell", "bash"], "Sh", "#89E051"),
+    (&["powershell"], "Ps", "#012456"),
+    (&["html"], "Ht", "#E34C26"),
+    (&["scss", "sass"], "Sa", "#C6538C"),
+    (&["css"], "Css", "#563D7C"),
+    (&["haskell"], "Hs", "#5E5086"),
+    (&["lua"], "Lua", "#000080"),
+    (&["perl"], "Pl", "#0298C3"),
+    (&["dart"], "Dt", "#00B4AB"),
+    (&["elixir"], "Ex", "#6E4A7E"),
+    (&["erlang"], "Er", "#B83998"),
+    (&["clojure"], "Cl", "#DB5855"),
+    (&["ocaml"], "Ml", "#EF7A08"),
+    (&["f#", "fsharp"], "F#", "#B845FC"),
+    (&["zig"], "Zig", "#EC915C"),
+    (&["nim"], "Nim", "#FFC200"),
+    (&["julia"], "Jl", "#A270BA"),
+    (&["solidity"], "Sol", "#AA6746"),
+    (&["sql"], "Sql", "#E38C00"),
+    (&["docker"], "Dk", "#384D54"),
+    (&["makefile"], "Mk", "#427819"),
+    (&["cmake"], "Cm", "#DA3434"),
+    (&["vue"], "Vue", "#41B883"),
+    (&["svelte"], "Sv", "#FF3E00"),
+    (&["assembly"], "Asm", "#6E4C13"),
+    (&["fortran"], "Fo", "#4D41B1"),
+    (&["ada"], "Ada", "#02A676"),
+    (&["groovy"], "Gv", "#4298B8"),
+    (&["graphql"], "Gql", "#E10098"),
+    (&["protocol", "protobuf"], "Pb", "#4B7A9C"),
+    (&["terraform", "hcl"], "Tf", "#844FBA"),
+    (&["nix"], "Nix", "#7E7EFF"),
+    (&["verilog"], "V", "#7A9FE8"),
+    (&["vhdl"], "Vh", "#8892C8"),
+    (&["visual basic", "vb"], "Vb", "#945DB7"),
+    (&["pascal", "delphi"], "Pas", "#B0A030"),
+    (&["crystal"], "Cr", "#333333"),
+    (&["elm"], "Elm", "#60B5CC"),
+    (&["tcl"], "Tcl", "#C9A227"),
+    (&["awk"], "Awk", "#555555"),
+    (&["glsl", "hlsl"], "Sl", "#5686A5"),
+    (&["xml", "svg"], "Xml", "#0060AC"),
+    (&["lisp", "scheme"], "Lsp", "#3FB68B"),
+    (&["=d"], "D", "#BA595E"),
+    (&["=r"], "R", "#198CE7"),
+];
+
 /// Known `(abbreviation, brand-ish hex)` for a language display name. Matched loosely (lowercased,
 /// substring) so it survives minor label variations; `None` falls back to initials + a neutral tone.
 /// Deliberately generated inline SVG badges rather than downloaded icon files — keeps the tool fully
-/// offline / air-gap friendly and sidesteps third-party icon licensing.
+/// offline / air-gap friendly and sidesteps third-party icon licensing. See [`LANGUAGE_BADGES`] for
+/// the ordered lookup table and needle-matching rules.
 fn language_badge_meta(name: &str) -> Option<(&'static str, &'static str)> {
     let l = name.to_ascii_lowercase();
-    let has = |n: &str| l.contains(n);
-    // Order matters: disambiguate C++/C#/Objective-C before the bare "c" check.
-    let m = if has("c++") || l == "cpp" {
-        ("C++", "#F34B7D")
-    } else if has("c#") || has("csharp") || has("c-sharp") {
-        ("C#", "#178600")
-    } else if has("objective") {
-        ("ObjC", "#438EFF")
-    } else if l == "c" {
-        ("C", "#555555")
-    } else if has("typescript") {
-        ("Ts", "#3178C6")
-    } else if has("javascript") {
-        ("Js", "#F1E05A")
-    } else if has("rust") {
-        ("Rs", "#DEA584")
-    } else if has("python") {
-        ("Py", "#3572A5")
-    } else if has("kotlin") {
-        ("Kt", "#A97BFF")
-    } else if has("java") {
-        ("Jv", "#B07219")
-    } else if has("golang") || l == "go" {
-        ("Go", "#00ADD8")
-    } else if has("ruby") {
-        ("Rb", "#701516")
-    } else if has("php") {
-        ("Php", "#4F5D95")
-    } else if has("swift") {
-        ("Sw", "#F05138")
-    } else if has("scala") {
-        ("Sc", "#C22D40")
-    } else if has("shell") || has("bash") {
-        ("Sh", "#89E051")
-    } else if has("powershell") {
-        ("Ps", "#012456")
-    } else if has("html") {
-        ("Ht", "#E34C26")
-    } else if has("scss") || has("sass") {
-        ("Sa", "#C6538C")
-    } else if has("css") {
-        ("Css", "#563D7C")
-    } else if has("haskell") {
-        ("Hs", "#5E5086")
-    } else if has("lua") {
-        ("Lua", "#000080")
-    } else if has("perl") {
-        ("Pl", "#0298C3")
-    } else if has("dart") {
-        ("Dt", "#00B4AB")
-    } else if has("elixir") {
-        ("Ex", "#6E4A7E")
-    } else if has("erlang") {
-        ("Er", "#B83998")
-    } else if has("clojure") {
-        ("Cl", "#DB5855")
-    } else if has("ocaml") {
-        ("Ml", "#EF7A08")
-    } else if has("f#") || has("fsharp") {
-        ("F#", "#B845FC")
-    } else if has("zig") {
-        ("Zig", "#EC915C")
-    } else if has("nim") {
-        ("Nim", "#FFC200")
-    } else if has("julia") {
-        ("Jl", "#A270BA")
-    } else if has("solidity") {
-        ("Sol", "#AA6746")
-    } else if has("sql") {
-        ("Sql", "#E38C00")
-    } else if has("docker") {
-        ("Dk", "#384D54")
-    } else if has("makefile") {
-        ("Mk", "#427819")
-    } else if has("cmake") {
-        ("Cm", "#DA3434")
-    } else if has("vue") {
-        ("Vue", "#41B883")
-    } else if has("svelte") {
-        ("Sv", "#FF3E00")
-    } else if has("assembly") {
-        ("Asm", "#6E4C13")
-    } else if has("fortran") {
-        ("Fo", "#4D41B1")
-    } else if has("ada") {
-        ("Ada", "#02A676")
-    } else if has("groovy") {
-        ("Gv", "#4298B8")
-    } else if has("graphql") {
-        ("Gql", "#E10098")
-    } else if has("protocol") || has("protobuf") {
-        ("Pb", "#4B7A9C")
-    } else if has("terraform") || has("hcl") {
-        ("Tf", "#844FBA")
-    } else if has("nix") {
-        ("Nix", "#7E7EFF")
-    } else if has("verilog") {
-        ("V", "#7A9FE8")
-    } else if has("vhdl") {
-        ("Vh", "#8892C8")
-    } else if has("visual basic") || has("vb") {
-        ("Vb", "#945DB7")
-    } else if has("pascal") || has("delphi") {
-        ("Pas", "#B0A030")
-    } else if has("crystal") {
-        ("Cr", "#333333")
-    } else if has("elm") {
-        ("Elm", "#60B5CC")
-    } else if has("tcl") {
-        ("Tcl", "#C9A227")
-    } else if has("awk") {
-        ("Awk", "#555555")
-    } else if has("glsl") || has("hlsl") {
-        ("Sl", "#5686A5")
-    } else if has("xml") || has("svg") {
-        ("Xml", "#0060AC")
-    } else if has("lisp") || has("scheme") {
-        ("Lsp", "#3FB68B")
-    } else if l == "d" {
-        ("D", "#BA595E")
-    } else if l == "r" {
-        ("R", "#198CE7")
-    } else {
-        return None;
-    };
-    Some(m)
+    LANGUAGE_BADGES.iter().find_map(|(needles, label, color)| {
+        let hit = needles.iter().any(|n| match n.strip_prefix('=') {
+            Some(exact) => l == exact,
+            None => l.contains(n),
+        });
+        hit.then_some((*label, *color))
+    })
 }
 
 /// Render a small, uniform inline-SVG language badge (rounded square + abbreviation) for a language
@@ -1973,14 +1903,17 @@ fn language_badge(name: &str) -> String {
     )
 }
 
-/// Compute one display row per contributor. `files_owned` counts the files where each author is
-/// the single largest owner (ownership lists are pre-sorted descending). Empty when the run has no
-/// authors.
-fn build_ownership_rows(run: Option<&AnalysisRun>, total_code: u64) -> Vec<OwnershipRow> {
-    let authors = run.map(|r| r.authors.as_slice()).unwrap_or(&[]);
-    let remote = run.and_then(|r| r.git_remote_url.as_deref());
+/// Fold the run's per-file records into two per-author maps: `files_owned` (count of files where
+/// the author is the single largest owner) and `test_counts` (`[code, comment, blank, total]` lines
+/// owned in files classified as tests). Both empty when the run is `None`.
+#[allow(clippy::type_complexity)] // two small, self-describing per-author maps
+fn accumulate_ownership(
+    run: Option<&AnalysisRun>,
+) -> (
+    std::collections::HashMap<u32, u64>,
+    std::collections::HashMap<u32, [u64; 4]>,
+) {
     let mut files_owned: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
-    // Per-author lines owned in files classified as tests (code/comment/blank/total).
     let mut test_counts: std::collections::HashMap<u32, [u64; 4]> =
         std::collections::HashMap::new();
     if let Some(r) = run {
@@ -1988,7 +1921,7 @@ fn build_ownership_rows(run: Option<&AnalysisRun>, total_code: u64) -> Vec<Owner
             if let Some(top) = rec.ownership.as_ref().and_then(|o| o.first()) {
                 *files_owned.entry(top.author_id).or_default() += 1;
             }
-            if file_is_test(rec)
+            if rec.is_test_file()
                 && let Some(own) = rec.ownership.as_ref()
             {
                 for o in own {
@@ -2001,6 +1934,16 @@ fn build_ownership_rows(run: Option<&AnalysisRun>, total_code: u64) -> Vec<Owner
             }
         }
     }
+    (files_owned, test_counts)
+}
+
+/// Compute one display row per contributor. `files_owned` counts the files where each author is
+/// the single largest owner (ownership lists are pre-sorted descending). Empty when the run has no
+/// authors.
+fn build_ownership_rows(run: Option<&AnalysisRun>, total_code: u64) -> Vec<OwnershipRow> {
+    let authors = run.map(|r| r.authors.as_slice()).unwrap_or(&[]);
+    let remote = run.and_then(|r| r.git_remote_url.as_deref());
+    let (files_owned, test_counts) = accumulate_ownership(run);
     authors
         .iter()
         .enumerate()
@@ -3359,18 +3302,16 @@ fn load_runtime_security_config(server_mode: bool) -> RuntimeSecurityConfig {
 ///
 /// Panics if the Axum router fails to build (only occurs on misconfigured routes).
 #[allow(clippy::too_many_lines)]
-pub async fn serve(mut config: AppConfig) -> Result<()> {
-    // Anchor the uptime clock at launch so /api/health reports true process uptime.
-    process_start();
-    let bind_address = config.web.bind_address.clone();
-    // A network-facing (non-loopback) bind is treated as server mode regardless of the
-    // `--server` flag: the fail-closed auth gate, the scan-path allowlist, disabled
-    // desktop-only routes, tighter rate limits, and restricted CORS must all apply the
-    // moment the UI is reachable off-box. Without this, `SLOC_BIND=0.0.0.0:4317` (or
-    // `--bind`) with no `--server` would expose an open, allowlist-free filesystem-read
-    // surface to the whole LAN. Loopback binds keep the open single-user desktop model.
+/// A network-facing (non-loopback) bind is treated as server mode regardless of the
+/// `--server` flag: the fail-closed auth gate, the scan-path allowlist, disabled
+/// desktop-only routes, tighter rate limits, and restricted CORS must all apply the
+/// moment the UI is reachable off-box. Without this, `SLOC_BIND=0.0.0.0:4317` (or
+/// `--bind`) with no `--server` would expose an open, allowlist-free filesystem-read
+/// surface to the whole LAN. Loopback binds keep the open single-user desktop model.
+/// Mutates `config.web.server_mode` in place and returns the effective flag.
+fn enforce_network_facing_server_mode(config: &mut AppConfig, bind_address: &str) -> bool {
     let mut server_mode = config.web.server_mode;
-    if !server_mode && bind_is_network_facing(&bind_address) {
+    if !server_mode && bind_is_network_facing(bind_address) {
         server_mode = true;
         config.web.server_mode = true;
         println!(
@@ -3382,9 +3323,65 @@ pub async fn serve(mut config: AppConfig) -> Result<()> {
         audit::record(
             "server_mode_auto_enabled",
             "info",
-            &[("bind", bind_address.as_str())],
+            &[("bind", bind_address)],
         );
     }
+    server_mode
+}
+
+/// Bind the preferred address, stepping up through the next 9 ports if it is busy. On Windows a
+/// killed process can leave its LISTEN socket as an unkillable kernel zombie (visible in netstat
+/// but owned by no living process); rather than failing we auto-select the next free port.
+async fn bind_with_port_fallback(
+    preferred: SocketAddr,
+    bind_address: &str,
+) -> Result<(tokio::net::TcpListener, SocketAddr)> {
+    for offset in 0u16..=9 {
+        let mut candidate = preferred;
+        candidate.set_port(preferred.port().saturating_add(offset));
+        if let Ok(l) = tokio::net::TcpListener::bind(candidate).await {
+            return Ok((l, candidate));
+        }
+    }
+    anyhow::bail!(
+        "failed to bind local web UI on {} (tried ports {}-{}): all in use",
+        bind_address,
+        preferred.port(),
+        preferred.port().saturating_add(9)
+    )
+}
+
+/// Terminate TLS natively and serve over HTTPS. Split out of `serve` so the cleartext and
+/// encrypted paths stay individually simple.
+async fn serve_https(
+    cert_path: String,
+    key_path: String,
+    listener: tokio::net::TcpListener,
+    app: Router,
+    addr: SocketAddr,
+    server_mode: bool,
+) -> Result<()> {
+    let tls_config =
+        build_tls_config(&cert_path, &key_path).context("failed to load TLS certificate/key")?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
+
+    let url = format!("https://{addr}/");
+    println!("OxideSLOC server running at {url} (TLS)");
+    if let Some(lan) = wildcard_lan_url(&url) {
+        println!("  Reachable on the LAN at {lan} (sign in at {lan}auth/login)");
+    }
+    if server_mode {
+        emit_hostname_guidance(addr);
+    }
+    println!("Use Ctrl+C to stop.");
+    serve_tls(listener, app, acceptor, server_mode).await
+}
+
+pub async fn serve(mut config: AppConfig) -> Result<()> {
+    // Anchor the uptime clock at launch so /api/health reports true process uptime.
+    process_start();
+    let bind_address = config.web.bind_address.clone();
+    let server_mode = enforce_network_facing_server_mode(&mut config, &bind_address);
     let output_root = resolve_output_root(None);
     // SLOC_REGISTRY_PATH overrides the registry location — useful for shared drives/mounts.
     let registry_path = std::env::var("SLOC_REGISTRY_PATH")
@@ -3493,10 +3490,6 @@ pub async fn serve(mut config: AppConfig) -> Result<()> {
 
     let app = build_router(state.clone());
 
-    // Try the configured port first, then step up through a few alternatives.
-    // On Windows, a killed process can leave its LISTEN socket as an unkillable
-    // kernel zombie (visible in netstat but owned by no living process).  Rather
-    // than failing, we auto-select the next free port and tell the user.
     let preferred: SocketAddr = bind_address
         .parse()
         .with_context(|| format!("invalid bind address: {bind_address}"))?;
@@ -3518,28 +3511,7 @@ pub async fn serve(mut config: AppConfig) -> Result<()> {
         );
     }
 
-    let (listener, addr) = {
-        let candidates = (0u16..=9).map(|offset| {
-            let mut a = preferred;
-            a.set_port(preferred.port().saturating_add(offset));
-            a
-        });
-        let mut found = None;
-        for candidate in candidates {
-            if let Ok(l) = tokio::net::TcpListener::bind(candidate).await {
-                found = Some((l, candidate));
-                break;
-            }
-        }
-        found.ok_or_else(|| {
-            anyhow::anyhow!(
-                "failed to bind local web UI on {} (tried ports {}-{}): all in use",
-                bind_address,
-                preferred.port(),
-                preferred.port().saturating_add(9)
-            )
-        })?
-    };
+    let (listener, addr) = bind_with_port_fallback(preferred, &bind_address).await?;
     if addr != preferred {
         eprintln!(
             "NOTE: port {} is blocked by a system socket (Windows zombie); \
@@ -3556,21 +3528,7 @@ pub async fn serve(mut config: AppConfig) -> Result<()> {
         let key_path = sec
             .tls_key
             .expect("tls_enabled guarantees SLOC_TLS_KEY is Some");
-        let tls_config = build_tls_config(&cert_path, &key_path)
-            .context("failed to load TLS certificate/key")?;
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
-
-        let url = format!("https://{addr}/");
-        println!("OxideSLOC server running at {url} (TLS)");
-        if let Some(lan) = wildcard_lan_url(&url) {
-            println!("  Reachable on the LAN at {lan} (sign in at {lan}auth/login)");
-        }
-        if server_mode {
-            emit_hostname_guidance(addr);
-        }
-        println!("Use Ctrl+C to stop.");
-
-        return serve_tls(listener, app, acceptor, server_mode).await;
+        return serve_https(cert_path, key_path, listener, app, addr, server_mode).await;
     }
 
     let url = format!("http://{addr}/");
@@ -5021,6 +4979,51 @@ struct PickDirectoryResponse {
     is_git_repo: bool,
 }
 
+/// Open the native folder/file picker (blocking), including the Windows attach-to-foreground focus
+/// and flash-when-ready dance. Extracted from `pick_directory_handler` so the async handler keeps
+/// only the guards + response mapping; always invoked inside `spawn_blocking`.
+#[cfg(feature = "native-dialog")]
+fn run_directory_dialog(
+    title: String,
+    current: Option<String>,
+    is_coverage: bool,
+) -> Option<PathBuf> {
+    // Windows: attach to the foreground thread so the dialog inherits focus,
+    // and kick off a watcher that flashes the dialog once it appears.
+    #[cfg(all(target_os = "windows", feature = "native-dialog"))]
+    let fg_tid = win_dialog_focus::attach_to_foreground();
+    #[cfg(all(target_os = "windows", feature = "native-dialog"))]
+    win_dialog_focus::flash_dialog_when_ready(title.clone());
+
+    let mut dialog = rfd::FileDialog::new().set_title(&title);
+    if let Some(current) = current.as_deref() {
+        let resolved = resolve_input_path(current);
+        let seed = if resolved.is_dir() {
+            Some(resolved)
+        } else {
+            resolved.parent().map(Path::to_path_buf)
+        };
+        if let Some(seed_dir) = seed.filter(|p| p.exists()) {
+            dialog = dialog.set_directory(seed_dir);
+        }
+    }
+    let result = if is_coverage {
+        dialog
+            .add_filter(
+                "Coverage files (LCOV, Cobertura/JaCoCo XML, coverage.py/Istanbul JSON)",
+                &["info", "lcov", "xml", "json"],
+            )
+            .pick_file()
+    } else {
+        dialog.pick_folder()
+    };
+
+    #[cfg(all(target_os = "windows", feature = "native-dialog"))]
+    win_dialog_focus::detach_from_foreground(fg_tid);
+
+    result
+}
+
 #[cfg(feature = "native-dialog")]
 async fn pick_directory_handler(
     State(state): State<AppState>,
@@ -5045,44 +5048,10 @@ async fn pick_directory_handler(
     .to_owned();
     let current = query.current.clone();
 
-    let picked = tokio::task::spawn_blocking(move || {
-        // Windows: attach to the foreground thread so the dialog inherits focus,
-        // and kick off a watcher that flashes the dialog once it appears.
-        #[cfg(all(target_os = "windows", feature = "native-dialog"))]
-        let fg_tid = win_dialog_focus::attach_to_foreground();
-        #[cfg(all(target_os = "windows", feature = "native-dialog"))]
-        win_dialog_focus::flash_dialog_when_ready(title.clone());
-
-        let mut dialog = rfd::FileDialog::new().set_title(&title);
-        if let Some(current) = current.as_deref() {
-            let resolved = resolve_input_path(current);
-            let seed = if resolved.is_dir() {
-                Some(resolved)
-            } else {
-                resolved.parent().map(Path::to_path_buf)
-            };
-            if let Some(seed_dir) = seed.filter(|p| p.exists()) {
-                dialog = dialog.set_directory(seed_dir);
-            }
-        }
-        let result = if is_coverage {
-            dialog
-                .add_filter(
-                    "Coverage files (LCOV, Cobertura/JaCoCo XML, coverage.py/Istanbul JSON)",
-                    &["info", "lcov", "xml", "json"],
-                )
-                .pick_file()
-        } else {
-            dialog.pick_folder()
-        };
-
-        #[cfg(all(target_os = "windows", feature = "native-dialog"))]
-        win_dialog_focus::detach_from_foreground(fg_tid);
-
-        result
-    })
-    .await
-    .unwrap_or(None);
+    let picked =
+        tokio::task::spawn_blocking(move || run_directory_dialog(title, current, is_coverage))
+            .await
+            .unwrap_or(None);
 
     // Offer the "Browse branches" shortcut only for a picked project folder that is a git repo.
     let is_git_repo = !is_coverage
@@ -7182,37 +7151,42 @@ pub(crate) fn path_within_allowed_roots(canonical: &Path, allowed_roots: &[PathB
 }
 
 /// Validate a scan path in server mode. Returns `Err(response)` if rejected.
-#[allow(clippy::result_large_err)]
+/// Build a `403 Forbidden` HTML response from the shared `ErrorTemplate`, falling back to `fallback`
+/// if template rendering fails. Centralises the boilerplate shared by the scan-path guards.
+fn forbidden_html_response(message: &str, csp_nonce: &str, fallback: &str) -> Response {
+    let template = ErrorTemplate {
+        message: message.to_string(),
+        last_report_url: None,
+        last_report_label: None,
+        run_id: None,
+        error_code: Some(403),
+        csp_nonce: csp_nonce.to_owned(),
+        version: env!("CARGO_PKG_VERSION"),
+    };
+    (
+        StatusCode::FORBIDDEN,
+        Html(template.render().unwrap_or_else(|_| fallback.to_string())),
+    )
+        .into_response()
+}
+
+#[allow(clippy::result_large_err)] // axum Response is unavoidably large; boxing adds indirection
 fn validate_server_scan_path(
     config: &sloc_config::AppConfig,
     resolved_path: &Path,
     csp_nonce: &str,
 ) -> Result<(), Response> {
     if config.discovery.allowed_scan_roots.is_empty() {
-        let template = ErrorTemplate {
-            message: "Scan path rejected: this server has no scan roots configured, so \
-                      scanning server-side paths is disabled. Set the SLOC_ALLOWED_ROOTS \
-                      environment variable (colon-separated absolute paths) — or \
-                      allowed_scan_roots in the config TOML — then restart. Tip: the \
-                      Browse / directory-upload flow works without this; uploaded folders \
-                      are scanned from the server's temp area and bypass this check."
-                .to_string(),
-            last_report_url: None,
-            last_report_label: None,
-            run_id: None,
-            error_code: Some(403),
-            csp_nonce: csp_nonce.to_owned(),
-            version: env!("CARGO_PKG_VERSION"),
-        };
-        return Err((
-            StatusCode::FORBIDDEN,
-            Html(
-                template
-                    .render()
-                    .unwrap_or_else(|_| "<pre>Forbidden.</pre>".to_string()),
-            ),
-        )
-            .into_response());
+        return Err(forbidden_html_response(
+            "Scan path rejected: this server has no scan roots configured, so \
+             scanning server-side paths is disabled. Set the SLOC_ALLOWED_ROOTS \
+             environment variable (colon-separated absolute paths) — or \
+             allowed_scan_roots in the config TOML — then restart. Tip: the \
+             Browse / directory-upload flow works without this; uploaded folders \
+             are scanned from the server's temp area and bypass this check.",
+            csp_nonce,
+            "<pre>Forbidden.</pre>",
+        ));
     }
     // Fail closed: if the path cannot be canonicalised (does not resolve to a real
     // location) we must NOT fall back to the raw, un-normalised path — a textual
@@ -7221,47 +7195,21 @@ fn validate_server_scan_path(
     let Ok(canonical) = fs::canonicalize(resolved_path) else {
         tracing::warn!(event = "path_rejected", path = %resolved_path.display(),
             "Scan path does not resolve to a real location");
-        let template = ErrorTemplate {
-            message: "The requested path could not be resolved to a real directory.".to_string(),
-            last_report_url: None,
-            last_report_label: None,
-            run_id: None,
-            error_code: Some(403),
-            csp_nonce: csp_nonce.to_owned(),
-            version: env!("CARGO_PKG_VERSION"),
-        };
-        return Err((
-            StatusCode::FORBIDDEN,
-            Html(
-                template
-                    .render()
-                    .unwrap_or_else(|_| "<pre>Forbidden.</pre>".to_string()),
-            ),
-        )
-            .into_response());
+        return Err(forbidden_html_response(
+            "The requested path could not be resolved to a real directory.",
+            csp_nonce,
+            "<pre>Forbidden.</pre>",
+        ));
     };
     let allowed = path_within_allowed_roots(&canonical, &config.discovery.allowed_scan_roots);
     if !allowed {
         tracing::warn!(event = "path_rejected", path = %canonical.display(),
             "Scan path not in allowed_scan_roots");
-        let template = ErrorTemplate {
-            message: "The requested path is not within an allowed scan directory.".to_string(),
-            last_report_url: None,
-            last_report_label: None,
-            run_id: None,
-            error_code: Some(403),
-            csp_nonce: csp_nonce.to_owned(),
-            version: env!("CARGO_PKG_VERSION"),
-        };
-        return Err((
-            StatusCode::FORBIDDEN,
-            Html(
-                template
-                    .render()
-                    .unwrap_or_else(|_| "<pre>Path not allowed.</pre>".to_string()),
-            ),
-        )
-            .into_response());
+        return Err(forbidden_html_response(
+            "The requested path is not within an allowed scan directory.",
+            csp_nonce,
+            "<pre>Path not allowed.</pre>",
+        ));
     }
     Ok(())
 }
@@ -7493,6 +7441,34 @@ fn apply_coverage_path(config: &mut sloc_config::AppConfig, form: &AnalyzeForm) 
 /// Fire-and-forget: generate the PDF in a background task if one is pending.
 /// On failure, clears `pdf_path` in the artifacts map so the results page shows
 /// an error instead of spinning indefinitely.
+/// Shared tail for the background PDF tasks: inspect the `spawn_blocking` join result and, on any
+/// failure/panic, clear the run's `pdf_path` so the result page surfaces an error instead of
+/// spinning. `label` distinguishes the log line ("background PDF" vs "on-demand PDF").
+async fn finalize_pdf_task(
+    result: std::result::Result<anyhow::Result<()>, tokio::task::JoinError>,
+    label: &str,
+    run_id: String,
+    artifacts: Arc<Mutex<HashMap<String, RunArtifacts>>>,
+) {
+    let failed = match result {
+        Ok(Ok(())) => false,
+        Ok(Err(err)) => {
+            eprintln!("[oxide-sloc][pdf] {label} failed: {err}");
+            true
+        }
+        Err(err) => {
+            eprintln!("[oxide-sloc][pdf] {label} task panicked: {err}");
+            true
+        }
+    };
+    if failed {
+        let mut map = artifacts.lock().await;
+        if let Some(entry) = map.get_mut(&run_id) {
+            entry.pdf_path = None;
+        }
+    }
+}
+
 fn spawn_pdf_background(
     pending_pdf: PendingPdf,
     run_id: String,
@@ -7508,23 +7484,7 @@ fn spawn_pdf_background(
                 r
             })
             .await;
-            let failed = match result {
-                Ok(Ok(())) => false,
-                Ok(Err(err)) => {
-                    eprintln!("[oxide-sloc][pdf] background PDF failed: {err}");
-                    true
-                }
-                Err(err) => {
-                    eprintln!("[oxide-sloc][pdf] background PDF task panicked: {err}");
-                    true
-                }
-            };
-            if failed {
-                let mut map = artifacts.lock().await;
-                if let Some(entry) = map.get_mut(&run_id) {
-                    entry.pdf_path = None;
-                }
-            }
+            finalize_pdf_task(result, "background PDF", run_id, artifacts).await;
         });
     }
 }
@@ -7544,23 +7504,7 @@ fn spawn_native_pdf_background(
             write_pdf_from_run(&run, &pdf_dest)
         })
         .await;
-        let failed = match result {
-            Ok(Ok(())) => false,
-            Ok(Err(err)) => {
-                eprintln!("[oxide-sloc][pdf] on-demand PDF failed: {err}");
-                true
-            }
-            Err(err) => {
-                eprintln!("[oxide-sloc][pdf] on-demand PDF task panicked: {err}");
-                true
-            }
-        };
-        if failed {
-            let mut map = artifacts.lock().await;
-            if let Some(entry) = map.get_mut(&run_id) {
-                entry.pdf_path = None;
-            }
-        }
+        finalize_pdf_task(result, "on-demand PDF", run_id, artifacts).await;
     });
 }
 
@@ -38750,13 +38694,13 @@ mod tests_private {
         };
 
         // Path-convention classification.
-        assert!(file_is_test(&rec("tests/a.rs", vec![])));
-        assert!(file_is_test(&rec("src/foo.spec.ts", vec![])));
-        assert!(!file_is_test(&rec("src/b.rs", vec![])));
+        assert!(rec("tests/a.rs", vec![]).is_test_file());
+        assert!(rec("src/foo.spec.ts", vec![]).is_test_file());
+        assert!(!rec("src/b.rs", vec![]).is_test_file());
         // Lexical classification: a detected test symbol flips a non-test path to a test.
         let mut lexical = rec("src/c.rs", vec![]);
         lexical.raw_line_categories.test_count = 1;
-        assert!(file_is_test(&lexical));
+        assert!(lexical.is_test_file());
 
         let json = serde_json::json!({
             "tool": {"name":"oxide-sloc","version":"0.0.0","run_id":"t","timestamp_utc":"2026-01-01T00:00:00Z"},

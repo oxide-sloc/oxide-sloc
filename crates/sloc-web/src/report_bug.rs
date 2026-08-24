@@ -908,4 +908,20 @@ mod tests {
     fn empty_raw_falls_back_to_default_repo() {
         assert_eq!(to_web_url("   "), DEFAULT_REPO);
     }
+
+    #[test]
+    fn resolve_target_from_config_exposes_accessors() {
+        // Exercise the end-to-end resolver plus the ResolvedTarget accessors, which the
+        // `choose_source`/`to_web_url` unit tests above do not reach on their own.
+        let mut state = crate::test_app_state("rb_resolve_test");
+        // SAFETY: single-threaded test; ensure the higher-priority env override is absent so the
+        // config value wins deterministically regardless of the ambient environment.
+        unsafe { std::env::remove_var("SLOC_BUG_REPORT_URL") };
+        state.base_config.reporting.bug_report_url =
+            Some("git@gitlab.corp:team/oxide-sloc-fork.git".to_string());
+
+        let target = resolve_target(&state);
+        assert_eq!(target.web_url(), "https://gitlab.corp/team/oxide-sloc-fork");
+        assert_eq!(target.source(), TargetSource::Configured);
+    }
 }
