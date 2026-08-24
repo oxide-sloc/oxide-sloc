@@ -68,6 +68,18 @@ pub struct ProgressCounters {
     pub files_done: Arc<AtomicUsize>,
     /// Total candidate files discovered (set before parallel analysis begins).
     pub files_total: Arc<AtomicUsize>,
+    /// Current high-level phase label, shared with the web poll endpoint so the UI can show which
+    /// stage the scan is in. Set by `analyze()` when it enters the long per-file `git blame`
+    /// attribution pass — otherwise the caller looks frozen after file counting finishes. Optional
+    /// so non-web callers can leave it out.
+    pub phase: Option<Arc<std::sync::Mutex<String>>>,
+    /// Files blamed so far during the authorship-attribution pass. Tracked separately from
+    /// `files_done` (the discovery/analysis pass) because the two passes overlap the same files but
+    /// run at very different speeds.
+    pub attrib_done: Arc<AtomicUsize>,
+    /// Total files to blame during attribution — 0 until the pass starts, and it stays 0 when
+    /// attribution is disabled or the scanned path is not a git repository.
+    pub attrib_total: Arc<AtomicUsize>,
 }
 
 /// Three-way outcome for metadata-level policy checks.
@@ -799,34 +811,67 @@ fn parse_activity_log(out: &str) -> HashMap<String, (u32, Option<String>)> {
     map
 }
 
+/// Update the shared phase label (if the caller supplied one) so a polling UI can show which
+/// stage the scan is in. No-op when `progress` or its phase handle is absent.
+fn set_progress_phase(progress: Option<&ProgressCounters>, label: &str) {
+    if let Some(phase) = progress.and_then(|p| p.phase.as_ref())
+        && let Ok(mut current) = phase.lock()
+    {
+        *current = label.to_string();
+    }
+}
+
+/// One physical line's classification paired with the git identity that last touched it.
+type BlamePairs = Vec<(LineCategory, RawIdentity)>;
+
 /// Blame every analyzed file under `root`, attribute each physical line to its last author,
 /// bucket it as code / comment / blank, and roll the tallies up per resolved contributor.
 ///
 /// Mutates each `FileRecord` in place (populating `ownership`) and returns the repo-wide author
 /// list ordered by code lines owned (descending). Best-effort: files that fail to blame or read
-/// are silently skipped, so a partial result is always safe. Runs one `git blame` per file — the
-/// reason this whole pass is opt-in behind `analysis.attribution`.
-fn attribute_ownership(root: &Path, records: &mut [FileRecord]) -> Vec<Author> {
+/// are silently skipped, so a partial result is always safe.
+///
+/// The `git blame` subprocess per file dominates the whole scan on large repositories, so the
+/// blame calls are fanned out across the analysis thread pool. Only the folding into the shared
+/// `AuthorResolver` runs sequentially (in stable index order) to keep author ids deterministic.
+/// Progress is reported via `progress.attrib_done`/`attrib_total`, and `cancel` is honoured
+/// between files so an aborted scan stops promptly. The whole pass is opt-in behind
+/// `analysis.attribution`.
+fn attribute_ownership(
+    root: &Path,
+    records: &mut [FileRecord],
+    progress: Option<&ProgressCounters>,
+    cancel: Option<&AtomicBool>,
+) -> Vec<Author> {
+    // Surface the phase to any polling UI: after file counting ends the blame pass is by far the
+    // longest stage, and without this the scan looks finished-but-stalled with no updates.
+    set_progress_phase(progress, "Attributing authorship");
+
+    // Only files with a detected language are blameable. Collect their indices up front so the
+    // attribution total is exact and the parallel pass has a stable work-list.
+    let indices: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, rec)| rec.language.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    if let Some(p) = progress {
+        p.attrib_total.store(indices.len(), Ordering::Relaxed);
+        p.attrib_done.store(0, Ordering::Relaxed);
+    }
+
+    let attrib_done = progress.map(|p| p.attrib_done.as_ref());
+    let blamed = parallel_blame(root, records, &indices, cancel, attrib_done);
+
+    // Fold per-file results into the resolver sequentially, in index order, so author ids stay
+    // deterministic regardless of which thread finished which file first.
     let mut resolver = AuthorResolver::default();
-
-    for rec in records.iter_mut() {
-        let Some(language) = rec.language else {
+    for (pos, &idx) in indices.iter().enumerate() {
+        let Some(pairs) = blamed.get(pos).and_then(Option::as_ref) else {
             continue;
         };
-        // Blame reports the working-tree file; classify the same bytes so line numbers align.
-        let Ok(bytes) = std::fs::read(&rec.path) else {
-            continue;
-        };
-        let text = String::from_utf8_lossy(&bytes);
-        let categories = classify_physical_lines(language, &text);
-        let blame = blame_line_identities(root, &rec.relative_path);
-        if blame.is_empty() {
-            continue;
-        }
-
-        // Zip by the shorter of the two — trailing-newline / CRLF quirks can differ by one line.
         let mut per_file: HashMap<u32, AuthorLineCounts> = HashMap::new();
-        for (category, ident) in categories.iter().zip(blame.iter()) {
+        for (category, ident) in pairs {
             let id = resolver.resolve(ident);
             per_file.entry(id).or_default().add_category(*category);
         }
@@ -839,10 +884,206 @@ fn attribute_ownership(root: &Path, records: &mut [FileRecord]) -> Vec<Author> {
             })
             .collect();
         ownership.sort_by_key(|entry| std::cmp::Reverse(entry.counts.total_lines));
-        rec.ownership = Some(ownership);
+        records[idx].ownership = Some(ownership);
     }
 
     resolver.finish(records)
+}
+
+/// Blame a single record: read the working-tree bytes, classify each physical line, and pair it
+/// with the git identity that last touched it. `None` when the file has no language, can't be
+/// read, or `git blame` produced nothing (non-git path, shallow clone). The category/identity
+/// lists are zipped by the shorter of the two — trailing-newline / CRLF quirks can differ by one.
+fn blame_one(root: &Path, rec: &FileRecord) -> Option<BlamePairs> {
+    let language = rec.language?;
+    let bytes = std::fs::read(&rec.path).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let categories = classify_physical_lines(language, &text);
+    let blame = blame_line_identities(root, &rec.relative_path);
+    if blame.is_empty() {
+        return None;
+    }
+    Some(categories.into_iter().zip(blame).collect())
+}
+
+/// Run `blame_one` over `indices` (into `records`) across a work-stealing thread pool, returning
+/// results index-aligned with `indices`. Each worker atomically claims the next file, so a slow
+/// blame on one huge file never stalls the others. `attrib_done` is bumped per file for live
+/// progress; `cancel` is polled between files so an aborted scan stops without finishing the pool.
+fn parallel_blame(
+    root: &Path,
+    records: &[FileRecord],
+    indices: &[usize],
+    cancel: Option<&AtomicBool>,
+    attrib_done: Option<&AtomicUsize>,
+) -> Vec<Option<BlamePairs>> {
+    let n = indices.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let thread_count = std::thread::available_parallelism().map_or(DEFAULT_ANALYSIS_THREADS, |t| {
+        t.get().min(MAX_ANALYSIS_THREADS)
+    });
+    let next_index = AtomicUsize::new(0);
+
+    let chunks: Vec<Vec<(usize, Option<BlamePairs>)>> = std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(thread_count);
+        for _ in 0..thread_count {
+            handles.push(s.spawn(|| {
+                let mut local: Vec<(usize, Option<BlamePairs>)> = Vec::new();
+                loop {
+                    if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                        break;
+                    }
+                    let pos = next_index.fetch_add(1, Ordering::Relaxed);
+                    if pos >= n {
+                        break;
+                    }
+                    let payload = blame_one(root, &records[indices[pos]]);
+                    if let Some(done) = attrib_done {
+                        done.fetch_add(1, Ordering::Relaxed);
+                    }
+                    local.push((pos, payload));
+                }
+                local
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_default())
+            .collect()
+    });
+
+    let mut out: Vec<Option<BlamePairs>> = (0..n).map(|_| None).collect();
+    for chunk in chunks {
+        for (pos, payload) in chunk {
+            out[pos] = payload;
+        }
+    }
+    out
+}
+
+/// How costly the per-author attribution (git blame) pass is expected to be for a repository,
+/// used to warn the user and to auto-default attribution off on pathologically large trees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttributionSeverity {
+    /// Small repo — attribution finishes in seconds. Recommended on.
+    Light,
+    /// Mid-size repo — attribution adds up to a couple of minutes. On, but flagged.
+    Moderate,
+    /// Very large repo (e.g. a monorepo with many submodules) — attribution can take many
+    /// minutes. Recommended off by default; the user can still opt in.
+    Heavy,
+}
+
+/// A cheap up-front estimate of the attribution (git blame) cost for a repository, computed from
+/// git metadata alone (no filesystem walk, no file reads) so it can run while the user is still
+/// configuring the scan. [`Self::blameable_files`] counts tracked files — including submodule
+/// working trees via `--recurse-submodules` — whose name maps to a supported language, which is
+/// exactly the set the blame pass would process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttributionEstimate {
+    /// Whether the path is a git repository at all (attribution is a no-op otherwise).
+    pub is_git: bool,
+    /// Number of tracked, language-detected files that would be blamed (submodules included).
+    pub blameable_files: u64,
+    /// Total commit depth of `HEAD` — a rough proxy for how much history each blame walks.
+    pub commit_count: u64,
+    /// Bucketed severity used to drive the UI warning and the auto-default.
+    pub severity: AttributionSeverity,
+    /// Whether attribution should default to on for this repo (false only for [`Heavy`]).
+    ///
+    /// [`Heavy`]: AttributionSeverity::Heavy
+    pub recommend_attribution: bool,
+    /// Rough wall-clock estimate for the blame pass, in seconds (order-of-magnitude only).
+    pub estimated_seconds: u64,
+}
+
+/// Files-per-second throughput assumed for the blame pass when estimating its duration. Derived
+/// from real runs of the parallel blame path; deliberately conservative so the estimate errs high
+/// rather than surprising the user. Only ever used for a human-facing "~N minutes" hint.
+const BLAME_FILES_PER_SEC: u64 = 50;
+/// At or above this many blameable files, attribution is treated as [`AttributionSeverity::Heavy`]
+/// and defaulted off. Below [`ATTRIB_MODERATE_FILES`] it is [`Light`]; in between, [`Moderate`].
+///
+/// [`Light`]: AttributionSeverity::Light
+/// [`Moderate`]: AttributionSeverity::Moderate
+const ATTRIB_HEAVY_FILES: u64 = 10_000;
+/// Lower bound of the [`AttributionSeverity::Moderate`] band (files).
+const ATTRIB_MODERATE_FILES: u64 = 2_000;
+/// A deep history makes each blame walk more commits; combined with a merely-moderate file count
+/// it still adds up, so a repo past this commit depth is promoted one severity band.
+const ATTRIB_DEEP_HISTORY_COMMITS: u64 = 50_000;
+
+/// Estimate the attribution cost for `root` from git metadata alone. Best-effort and fast (two
+/// `git` calls, no walk): a non-git path or any git failure yields a zero-cost, attribution-on
+/// estimate so nothing is ever blocked. See [`AttributionEstimate`].
+#[must_use]
+pub fn estimate_attribution_cost(root: &Path) -> AttributionEstimate {
+    if find_git_dir(root).is_none() {
+        return AttributionEstimate {
+            is_git: false,
+            blameable_files: 0,
+            commit_count: 0,
+            severity: AttributionSeverity::Light,
+            recommend_attribution: true,
+            estimated_seconds: 0,
+        };
+    }
+
+    // One fast git call lists every tracked file, descending into submodule working trees. Count
+    // only those whose name maps to a supported language — the exact set the blame pass touches.
+    let overrides = std::collections::BTreeMap::new();
+    let blameable_files = run_git_cmd(root, &["ls-files", "--recurse-submodules"])
+        .map(|out| {
+            out.lines()
+                .filter(|line| {
+                    !line.is_empty()
+                        && detect_language(Path::new(line), None, &overrides, false).is_some()
+                })
+                .count() as u64
+        })
+        .unwrap_or(0);
+
+    let commit_count = run_git_cmd(root, &["rev-list", "--count", "HEAD"])
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let severity = classify_attribution_severity(blameable_files, commit_count);
+    AttributionEstimate {
+        is_git: true,
+        blameable_files,
+        commit_count,
+        severity,
+        recommend_attribution: severity != AttributionSeverity::Heavy,
+        estimated_seconds: blameable_files.div_ceil(BLAME_FILES_PER_SEC),
+    }
+}
+
+/// Bucket a repo into an [`AttributionSeverity`] from its blameable-file count and commit depth.
+/// Severity is driven primarily by file count (one blame subprocess per file dominates the cost),
+/// then promoted one band when the history is very deep — a merely-moderate file count over a huge
+/// history still adds up. Pure, so it is unit-tested directly without needing a git fixture.
+#[must_use]
+fn classify_attribution_severity(blameable_files: u64, commit_count: u64) -> AttributionSeverity {
+    let base = if blameable_files >= ATTRIB_HEAVY_FILES {
+        AttributionSeverity::Heavy
+    } else if blameable_files >= ATTRIB_MODERATE_FILES {
+        AttributionSeverity::Moderate
+    } else {
+        AttributionSeverity::Light
+    };
+    if commit_count < ATTRIB_DEEP_HISTORY_COMMITS {
+        return base;
+    }
+    match base {
+        AttributionSeverity::Light if blameable_files >= ATTRIB_MODERATE_FILES / 2 => {
+            AttributionSeverity::Moderate
+        }
+        AttributionSeverity::Moderate => AttributionSeverity::Heavy,
+        other => other,
+    }
 }
 
 /// Accumulates raw git identities into deduplicated [`Author`]s keyed by normalized email.
@@ -936,16 +1177,19 @@ fn normalize_email_key(ident: &RawIdentity) -> String {
 }
 
 /// Run `git blame` on `rel` (relative to `root`) and return one raw identity per physical line,
-/// in file order. `-w` ignores whitespace-only reblame, `-M`/`-C` follow moved/copied code so a
+/// in file order. `-w` ignores whitespace-only reblame and `-M` follows moves within the file so a
 /// refactor doesn't misattribute ownership; the repo `.mailmap` is honoured by git. Returns an
 /// empty vec on any failure (non-git path, shallow clone, unreadable file).
+///
+/// `-C` (cross-file copy detection) is deliberately *not* passed: it forces git to re-scan every
+/// other file touched in each commit and is by far the most expensive blame flag — on a large repo
+/// with submodules it turns a minutes-long pass into a tens-of-minutes one, while rarely changing
+/// the dominant author. `-M` alone keeps intra-file move tracking, which is what matters for
+/// "who last owns this line".
 fn blame_line_identities(root: &Path, rel: &str) -> Vec<RawIdentity> {
-    run_git_cmd(
-        root,
-        &["blame", "--line-porcelain", "-w", "-M", "-C", "--", rel],
-    )
-    .map(|out| parse_blame_porcelain(&out))
-    .unwrap_or_default()
+    run_git_cmd(root, &["blame", "--line-porcelain", "-w", "-M", "--", rel])
+        .map(|out| parse_blame_porcelain(&out))
+        .unwrap_or_default()
 }
 
 /// Parse `git blame --line-porcelain` output into one [`RawIdentity`] per source line. In
@@ -1612,6 +1856,9 @@ fn find_duplicate_groups(analyzed: &[FileRecord]) -> Vec<Vec<String>> {
 }
 
 /// Assemble the final `AnalysisRun` from collected records and metadata.
+// Progress + cancel are threaded in so the long attribution pass can report live progress and
+// abort promptly; folding them into a struct would add indirection without real clarity.
+#[allow(clippy::too_many_arguments)]
 fn assemble_run(
     config: &AppConfig,
     runtime_mode: &str,
@@ -1619,7 +1866,10 @@ fn assemble_run(
     skipped: Vec<FileRecord>,
     warnings: Vec<String>,
     submodule_summaries: Vec<SubmoduleSummary>,
+    progress: Option<&ProgressCounters>,
+    cancel: Option<&AtomicBool>,
 ) -> AnalysisRun {
+    set_progress_phase(progress, "Computing metrics");
     let summary = build_summary(&analyzed, &skipped);
     let language_summaries = build_language_summaries(&analyzed);
     let col_threshold = config.analysis.style_col_threshold;
@@ -1648,6 +1898,7 @@ fn assemble_run(
     // best-effort). A window of 0 (or None) disables it; a non-git path yields an empty result.
     let activity_window = config.analysis.activity_window_days.unwrap_or(0);
     if let (true, Some(root)) = (activity_window > 0, first_root.as_deref()) {
+        set_progress_phase(progress, "Reading git history");
         apply_file_activity(root, activity_window, &mut analyzed);
     }
 
@@ -1656,7 +1907,7 @@ fn assemble_run(
     let authors = if config.analysis.attribution {
         first_root
             .as_deref()
-            .map(|root| attribute_ownership(root, &mut analyzed))
+            .map(|root| attribute_ownership(root, &mut analyzed, progress, cancel))
             .unwrap_or_default()
     } else {
         Vec::new()
@@ -1806,6 +2057,7 @@ pub fn analyze(
 
     // Submodule detection: label each file with its submodule and build per-submodule summaries.
     let submodule_summaries = if config.discovery.submodule_breakdown {
+        set_progress_phase(progress, "Summarizing submodules");
         process_submodules(config, &mut analyzed)
     } else {
         Vec::new()
@@ -1820,6 +2072,8 @@ pub fn analyze(
         skipped,
         warnings,
         submodule_summaries,
+        progress,
+        cancel,
     ))
 }
 
@@ -2722,9 +2976,16 @@ fn build_submodule_summaries(
     submodules: &[(String, PathBuf)],
     root: &Path,
 ) -> Vec<SubmoduleSummary> {
+    // Detect each submodule's git metadata concurrently: every call spawns several git
+    // subprocesses (author, date, tags, describe), and on Windows process spawn is slow — running
+    // a dozen-plus submodules sequentially added seconds of dead time to the "Summarizing
+    // submodules" stage. The file aggregation below is cheap and stays sequential.
+    let git_infos = parallel_submodule_git(submodules, root);
+
     submodules
         .iter()
-        .map(|(name, path)| {
+        .zip(git_infos)
+        .map(|((name, path), git)| {
             let files: Vec<&FileRecord> = analyzed
                 .iter()
                 .filter(|f| f.submodule.as_deref() == Some(name.as_str()))
@@ -2739,8 +3000,6 @@ fn build_submodule_summaries(
             let comment_lines = files.iter().map(|f| f.effective_counts.comment_lines).sum();
             let blank_lines = files.iter().map(|f| f.effective_counts.blank_lines).sum();
             let language_summaries = build_language_summaries_from_slice(&files);
-
-            let git = detect_git_for_run(&root.join(path));
 
             SubmoduleSummary {
                 name: name.clone(),
@@ -2761,6 +3020,52 @@ fn build_submodule_summaries(
         })
         .filter(|s| s.files_analyzed > 0)
         .collect()
+}
+
+/// Run [`detect_git_for_run`] for every submodule concurrently, returning the results index-aligned
+/// with `submodules`. Bounded work-stealing over a small thread pool: each item does several git
+/// subprocess calls, so fanning them out cuts the sequential spawn latency. A panicked worker
+/// yields `GitInfo::default()` for its items (best-effort — a missing submodule SHA is non-fatal).
+fn parallel_submodule_git(submodules: &[(String, PathBuf)], root: &Path) -> Vec<GitInfo> {
+    let n = submodules.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let thread_count = std::thread::available_parallelism()
+        .map_or(DEFAULT_ANALYSIS_THREADS, |t| {
+            t.get().min(MAX_ANALYSIS_THREADS)
+        })
+        .min(n);
+    let next_index = AtomicUsize::new(0);
+
+    let chunks: Vec<Vec<(usize, GitInfo)>> = std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(thread_count);
+        for _ in 0..thread_count {
+            handles.push(s.spawn(|| {
+                let mut local: Vec<(usize, GitInfo)> = Vec::new();
+                loop {
+                    let i = next_index.fetch_add(1, Ordering::Relaxed);
+                    if i >= n {
+                        break;
+                    }
+                    local.push((i, detect_git_for_run(&root.join(&submodules[i].1))));
+                }
+                local
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_default())
+            .collect()
+    });
+
+    let mut out: Vec<GitInfo> = (0..n).map(|_| GitInfo::default()).collect();
+    for chunk in chunks {
+        for (i, info) in chunk {
+            out[i] = info;
+        }
+    }
+    out
 }
 
 /// Dominant indent label from vote counts.
@@ -3471,6 +3776,72 @@ mod tests {
     #[test]
     fn parse_activity_log_empty_is_empty() {
         assert!(parse_activity_log("").is_empty());
+    }
+
+    // ── Attribution cost estimate ─────────────────────────────────────────────
+    #[test]
+    fn attribution_severity_buckets_by_file_count() {
+        assert_eq!(
+            classify_attribution_severity(0, 0),
+            AttributionSeverity::Light
+        );
+        assert_eq!(
+            classify_attribution_severity(1_999, 0),
+            AttributionSeverity::Light
+        );
+        assert_eq!(
+            classify_attribution_severity(2_000, 0),
+            AttributionSeverity::Moderate
+        );
+        assert_eq!(
+            classify_attribution_severity(9_999, 0),
+            AttributionSeverity::Moderate
+        );
+        assert_eq!(
+            classify_attribution_severity(10_000, 0),
+            AttributionSeverity::Heavy
+        );
+    }
+
+    #[test]
+    fn attribution_severity_promoted_by_deep_history() {
+        // A moderate file count over a huge history is promoted to heavy.
+        assert_eq!(
+            classify_attribution_severity(3_000, 60_000),
+            AttributionSeverity::Heavy
+        );
+        // A small-but-not-tiny repo with deep history becomes moderate.
+        assert_eq!(
+            classify_attribution_severity(1_500, 60_000),
+            AttributionSeverity::Moderate
+        );
+        // A truly tiny repo stays light even with deep history.
+        assert_eq!(
+            classify_attribution_severity(100, 60_000),
+            AttributionSeverity::Light
+        );
+        // Deep history never downgrades an already-heavy repo.
+        assert_eq!(
+            classify_attribution_severity(20_000, 60_000),
+            AttributionSeverity::Heavy
+        );
+    }
+
+    #[test]
+    fn attribution_estimate_holds_invariants() {
+        // Exercises the full estimate body against a real path. Assertions are limited to
+        // invariants that hold whether or not `.git` is present in the test environment, so the
+        // test is robust in CI, offline tarball builds, and local dev alike.
+        let est = estimate_attribution_cost(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+        assert_eq!(
+            est.recommend_attribution,
+            est.severity != AttributionSeverity::Heavy
+        );
+        assert_eq!(est.estimated_seconds, est.blameable_files.div_ceil(50));
+        if !est.is_git {
+            assert_eq!(est.blameable_files, 0);
+            assert_eq!(est.commit_count, 0);
+        }
     }
 
     // ── Code-ownership attribution ────────────────────────────────────────────

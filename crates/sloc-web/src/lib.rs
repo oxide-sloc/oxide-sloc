@@ -586,6 +586,8 @@ enum AsyncRunState {
         phase: Arc<std::sync::Mutex<String>>,
         files_done: Arc<std::sync::atomic::AtomicUsize>,
         files_total: Arc<std::sync::atomic::AtomicUsize>,
+        attrib_done: Arc<std::sync::atomic::AtomicUsize>,
+        attrib_total: Arc<std::sync::atomic::AtomicUsize>,
     },
     /// `run_id` so the status endpoint can redirect to /`runs/result/{run_id`}.
     Complete {
@@ -962,7 +964,7 @@ h1{margin:0 0 4px;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
 .own-legend-item:hover .own-legend-swatch,.own-legend-item.active .own-legend-swatch{transform:scale(1.3);}
 .own-legend-label{white-space:nowrap;}
 .own-legend-modal{margin-top:16px;}
-#own-bars{max-height:540px;overflow-y:auto;overflow-x:visible;padding-right:4px;}
+#own-bars{max-height:540px;overflow-y:auto;overflow-x:clip;padding-right:4px;}
 #own-bars::-webkit-scrollbar{width:9px;} #own-bars::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:6px;} #own-bars::-webkit-scrollbar-track{background:transparent;}
 .own-table-hint{font-size:12px;color:var(--muted);margin:-4px 0 10px;line-height:1.55;} .own-table-hint strong{color:var(--text);} .own-table-hint em{color:var(--oxide-2);font-style:normal;font-weight:700;}
 .own-email-copy{font-family:inherit;font-size:12px;color:var(--muted);background:none;border:none;padding:2px 6px;margin:-2px -6px;border-radius:6px;cursor:pointer;text-align:left;transition:background .15s ease,color .15s ease;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -1307,13 +1309,16 @@ fn ownership_page_scripts() -> &'static str {
       var sw=document.createElement('span');sw.className='own-legend-swatch';sw.style.setProperty('background',it.color);
       var tx=document.createElement('span');tx.className='own-legend-label';tx.textContent=it.label;
       b.appendChild(sw);b.appendChild(tx);
-      function on(){b.classList.add('active');highlight(ch,kind,it.idx);}
-      function off(){b.classList.remove('active');restoreChart(ch);}
-      b.addEventListener('mouseenter',on);b.addEventListener('mouseleave',off);
-      b.addEventListener('focus',on);b.addEventListener('blur',off);
+      // Highlight on enter/focus. The reset lives on the CONTAINER's mouseleave (below), not per
+      // item: the item pops up on hover (transform), which can slip out from under the cursor and
+      // miss a per-item mouseleave — leaving the chart stuck dimmed. Container mouseleave is reliable.
+      b.addEventListener('mouseenter',function(){highlight(ch,kind,it.idx);});
+      b.addEventListener('focus',function(){b.classList.add('active');highlight(ch,kind,it.idx);});
+      b.addEventListener('blur',function(){b.classList.remove('active');restoreChart(ch);});
       if(it.profile)b.addEventListener('click',function(){window.open(it.profile,'_blank','noopener');});
       el.appendChild(b);
     });
+    el.addEventListener('mouseleave',function(){restoreChart(ch);});
   }
   // ── Composition (stacked horizontal bar) config, shared by inline + Full View ──
   function compConfig(view,big){
@@ -1960,7 +1965,7 @@ fn language_badge(name: &str) -> String {
         "8.5"
     };
     format!(
-        r#"<span class="lang-badge"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="0" y="0" width="20" height="20" rx="5" fill="{color}"></rect><text x="10" y="11" text-anchor="middle" font-family="Inter,ui-sans-serif,sans-serif" font-size="{fs}" font-weight="800" fill="{txt}">{abbr}</text></svg></span>"#,
+        r#"<span class="lang-badge"><svg viewBox="0 0 20 20" width="22" height="22" aria-hidden="true"><rect x="0" y="0" width="20" height="20" rx="5" fill="{color}"></rect><text x="10" y="11" text-anchor="middle" font-family="Inter,ui-sans-serif,sans-serif" font-size="{fs}" font-weight="800" fill="{txt}">{abbr}</text></svg></span>"#,
         color = color,
         fs = fs,
         txt = txt,
@@ -2412,6 +2417,7 @@ fn build_router(state: AppState) -> Router {
         .route("/analyze", post(analyze_handler))
         .route("/preview", get(preview_handler))
         .route("/api/suggest-coverage", get(api_suggest_coverage))
+        .route("/api/attribution-estimate", get(api_attribution_estimate))
         .route("/pick-directory", get(pick_directory_handler))
         .route("/open-path", get(open_path_handler))
         .route("/pick-file", get(pick_file_handler))
@@ -7070,6 +7076,78 @@ async fn api_suggest_coverage(Query(query): Query<SuggestCoverageQuery>) -> impl
     Json(SuggestCoverageResponse { found, tool, hint })
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct AttribEstimateQuery {
+    path: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AttribEstimateResponse {
+    #[serde(flatten)]
+    estimate: sloc_core::AttributionEstimate,
+    /// Human-facing duration hint derived from `estimate.estimated_seconds` (e.g. "~9 min").
+    estimated_label: String,
+}
+
+/// Non-git / disallowed / empty-path fallback: a zero-cost, attribution-on estimate so the UI
+/// never blocks a scan on this best-effort signal.
+fn attrib_estimate_unknown() -> AttribEstimateResponse {
+    AttribEstimateResponse {
+        estimate: sloc_core::AttributionEstimate {
+            is_git: false,
+            blameable_files: 0,
+            commit_count: 0,
+            severity: sloc_core::AttributionSeverity::Light,
+            recommend_attribution: true,
+            estimated_seconds: 0,
+        },
+        estimated_label: String::new(),
+    }
+}
+
+/// Round `secs` into a short human hint: "~40s" under a minute, otherwise "~N min".
+fn humanize_duration(secs: u64) -> String {
+    if secs == 0 {
+        String::new()
+    } else if secs < 60 {
+        format!("~{secs}s")
+    } else {
+        format!("~{} min", secs.div_ceil(60))
+    }
+}
+
+/// GET `/api/attribution-estimate?path=…` — a fast, git-metadata-only estimate of how costly the
+/// per-author attribution (git blame) pass would be, so the scan form can warn the user and
+/// auto-default attribution off on very large repositories. Best-effort: any failure returns a
+/// neutral "light" estimate rather than an error.
+async fn api_attribution_estimate(
+    State(state): State<AppState>,
+    Query(query): Query<AttribEstimateQuery>,
+) -> impl IntoResponse {
+    let raw_path = query.path.unwrap_or_default();
+    if raw_path.trim().is_empty() {
+        return Json(attrib_estimate_unknown());
+    }
+    let resolved = resolve_input_path(&raw_path);
+    // In server mode, never probe a path the caller isn't allowed to scan.
+    if state.server_mode && authorize_preview_path(&state, &resolved).is_err() {
+        return Json(attrib_estimate_unknown());
+    }
+    // The estimate shells out to git; keep it off the async worker threads.
+    let estimate =
+        tokio::task::spawn_blocking(move || sloc_core::estimate_attribution_cost(&resolved)).await;
+    match estimate {
+        Ok(est) => {
+            let estimated_label = humanize_duration(est.estimated_seconds);
+            Json(AttribEstimateResponse {
+                estimate: est,
+                estimated_label,
+            })
+        }
+        Err(_) => Json(attrib_estimate_unknown()),
+    }
+}
+
 /// Inspect the project root for known build/package files and return the most likely coverage
 /// tool name and the shell command needed to generate a coverage file.
 fn detect_coverage_tool(root: &Path) -> (Option<&'static str>, Option<&'static str>) {
@@ -7652,6 +7730,14 @@ async fn analyze_handler(
     let task_files_done = Arc::clone(&files_done);
     let task_files_total = Arc::clone(&files_total);
 
+    // Separate counters for the per-file `git blame` attribution pass, which runs after file
+    // counting finishes and is the slowest stage on large repos. Surfacing them keeps the UI
+    // moving instead of sitting frozen at "files done / files total".
+    let attrib_done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let attrib_total = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let task_attrib_done = Arc::clone(&attrib_done);
+    let task_attrib_total = Arc::clone(&attrib_total);
+
     // Register Running state before building the task struct so the semaphore permit
     // (which has a significant Drop) isn't held across the async_runs lock acquisition.
     {
@@ -7664,6 +7750,8 @@ async fn analyze_handler(
                 phase,
                 files_done,
                 files_total,
+                attrib_done,
+                attrib_total,
             },
         );
     }
@@ -7677,6 +7765,8 @@ async fn analyze_handler(
         phase: task_phase,
         files_done: task_files_done,
         files_total: task_files_total,
+        attrib_done: task_attrib_done,
+        attrib_total: task_attrib_total,
         git_repo: form.git_repo.clone().filter(|s| !s.is_empty()),
         git_ref: form.git_ref.clone().filter(|s| !s.is_empty()),
         project_path: form.path.clone(),
@@ -7730,6 +7820,8 @@ struct AnalysisTask {
     phase: Arc<std::sync::Mutex<String>>,
     files_done: Arc<std::sync::atomic::AtomicUsize>,
     files_total: Arc<std::sync::atomic::AtomicUsize>,
+    attrib_done: Arc<std::sync::atomic::AtomicUsize>,
+    attrib_total: Arc<std::sync::atomic::AtomicUsize>,
     git_repo: Option<String>,
     git_ref: Option<String>,
     project_path: String,
@@ -7760,6 +7852,11 @@ async fn run_analysis_task(task: AnalysisTask) {
     let progress_sb = sloc_core::ProgressCounters {
         files_done: Arc::clone(&task.files_done),
         files_total: Arc::clone(&task.files_total),
+        // Share the phase handle so core can flip the label to "Attributing authorship" when it
+        // enters the blame pass — the web layer only sets "Scanning files"/"Writing reports".
+        phase: Some(Arc::clone(&task.phase)),
+        attrib_done: Arc::clone(&task.attrib_done),
+        attrib_total: Arc::clone(&task.attrib_total),
     };
     if let Ok(mut p) = task.phase.lock() {
         *p = "Scanning files".to_string();
@@ -8142,6 +8239,8 @@ enum AsyncRunStatusResponse {
         phase: String,
         files_done: u64,
         files_total: u64,
+        attrib_done: u64,
+        attrib_total: u64,
     },
     Complete {
         run_id: String,
@@ -8171,6 +8270,8 @@ async fn async_run_status_handler(
             phase,
             files_done,
             files_total,
+            attrib_done,
+            attrib_total,
             ..
         }) => {
             // Treat runs older than 2 h as timed out (analysis should finish well under that).
@@ -8194,6 +8295,8 @@ async fn async_run_status_handler(
                 phase: phase_str,
                 files_done: files_done.load(std::sync::atomic::Ordering::Relaxed) as u64,
                 files_total: files_total.load(std::sync::atomic::Ordering::Relaxed) as u64,
+                attrib_done: attrib_done.load(std::sync::atomic::Ordering::Relaxed) as u64,
+                attrib_total: attrib_total.load(std::sync::atomic::Ordering::Relaxed) as u64,
             })
             .into_response()
         }
@@ -21262,6 +21365,21 @@ struct SubmoduleRow {
     .include-scope-badge.scope-narrow { background:rgba(184,93,51,0.08); border:1px solid rgba(184,93,51,0.22); color:var(--nav,#b85d33); }
     body.dark-theme .include-scope-badge.scope-all { background:rgba(90,186,138,0.12); border-color:rgba(90,186,138,0.3); color:#5aba8a; }
     body.dark-theme .include-scope-badge.scope-narrow { background:rgba(210,130,70,0.12); border-color:rgba(210,130,70,0.3); color:#e0a060; }
+    .attrib-estimate { margin-top:8px; padding:8px 11px; border-radius:8px; font-size:12px; font-weight:600; line-height:1.45; border:1px solid transparent; }
+    .attrib-estimate.est-light { background:rgba(42,104,70,0.09); border-color:rgba(42,104,70,0.22); color:#2a6846; }
+    .attrib-estimate.est-moderate { background:rgba(212,160,23,0.1); border-color:rgba(212,160,23,0.28); color:#8a6a10; }
+    .attrib-estimate.est-heavy { background:rgba(178,48,48,0.09); border-color:rgba(178,48,48,0.26); color:#a33030; }
+    .attrib-estimate b { font-weight:800; }
+    body.dark-theme .attrib-estimate.est-light { background:rgba(90,186,138,0.12); border-color:rgba(90,186,138,0.3); color:#5aba8a; }
+    body.dark-theme .attrib-estimate.est-moderate { background:rgba(212,160,23,0.14); border-color:rgba(212,160,23,0.34); color:#e0c060; }
+    body.dark-theme .attrib-estimate.est-heavy { background:rgba(224,112,112,0.14); border-color:rgba(224,112,112,0.34); color:#e07070; }
+    .review-attrib-warn { margin-top:16px; padding:13px 16px; border-radius:10px; font-size:13px; font-weight:600; line-height:1.55; display:flex; gap:10px; align-items:flex-start; }
+    .review-attrib-warn::before { content:"\26A0"; font-size:16px; line-height:1.3; flex:0 0 auto; }
+    .review-attrib-warn.raw-moderate { background:rgba(212,160,23,0.12); border:1px solid rgba(212,160,23,0.3); color:#8a6a10; }
+    .review-attrib-warn.raw-heavy { background:rgba(178,48,48,0.1); border:1px solid rgba(178,48,48,0.3); color:#a33030; }
+    .review-attrib-warn b { font-weight:800; }
+    body.dark-theme .review-attrib-warn.raw-moderate { background:rgba(212,160,23,0.16); border-color:rgba(212,160,23,0.36); color:#e0c060; }
+    body.dark-theme .review-attrib-warn.raw-heavy { background:rgba(224,112,112,0.16); border-color:rgba(224,112,112,0.36); color:#e07070; }
     .toggle-card { border:1px solid var(--line); border-radius: 12px; background: var(--surface-2); padding: 16px; }
     .checkbox { display:flex; align-items:flex-start; gap: 10px; font-size: 15px; font-weight:700; }
     .checkbox input { width: 16px; height: 16px; margin-top: 3px; accent-color: var(--accent); }
@@ -21471,7 +21589,7 @@ struct SubmoduleRow {
     .lc-metric-label { font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
     .lc-metric-value { font-size:1rem;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
     .lc-stage-desc { font-size:12px;color:var(--muted);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:9px 14px;margin-bottom:18px;line-height:1.5;transition:opacity .3s; }
-    .lc-steps { display:flex;align-items:center;gap:0;margin-bottom:18px; }
+    .lc-steps { display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:2px 0;margin-bottom:18px; }
     .lc-step { display:flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;color:var(--muted);border:1.5px solid transparent;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;transition:all .25s; }
     .lc-step.active { color:var(--oxide,#d37a4c);background:rgba(211,122,76,0.1);border-color:rgba(211,122,76,0.32); }
     .lc-step.done { color:var(--muted);opacity:0.55; }
@@ -21479,6 +21597,13 @@ struct SubmoduleRow {
     .lc-step.active .lc-step-num { background:var(--oxide,#d37a4c);color:#fff; }
     .lc-step.done .lc-step-num { background:rgba(80,180,100,0.22);color:#2d8a45; }
     .lc-step-arrow { color:var(--line-strong,#ccc);font-size:16px;padding:0 8px;flex:0 0 auto;line-height:1; }
+    .lc-overall { margin-bottom:14px; }
+    .lc-overall-head { display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px; }
+    .lc-overall-label { font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.07em; }
+    .lc-overall-pct { font-size:13px;font-weight:900;color:var(--oxide,#d37a4c);font-variant-numeric:tabular-nums; }
+    .lc-overall-track { height:8px;border-radius:999px;background:var(--surface-2);border:1px solid var(--line);overflow:hidden; }
+    .lc-overall-fill { height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#d37a4c,#c45c10);transition:width .4s ease; }
+    body.dark-theme .lc-overall-fill { background:linear-gradient(90deg,#e08a52,#d37a4c); }
     .lc-warn { background:rgba(230,160,50,0.12);border:1px solid rgba(230,160,50,0.3);border-radius:8px;padding:10px 14px;font-size:12px;color:#8a6a10;margin-top:14px; }
     .lc-err { background:rgba(180,40,40,0.08);border:1px solid rgba(180,40,40,0.25);border-radius:8px;padding:12px 16px;margin-top:14px; }
     .lc-err strong { display:block;color:#8b1f1f;margin-bottom:4px;font-size:13px; }
@@ -21643,9 +21768,11 @@ struct SubmoduleRow {
         <div class="lc-step-arrow">›</div>
         <div class="lc-step" id="lc-step-2"><span class="lc-step-num">2</span>Analyze</div>
         <div class="lc-step-arrow">›</div>
-        <div class="lc-step" id="lc-step-3"><span class="lc-step-num">3</span>Report</div>
+        <div class="lc-step" id="lc-step-3"><span class="lc-step-num">3</span>Attribute</div>
         <div class="lc-step-arrow">›</div>
-        <div class="lc-step" id="lc-step-4"><span class="lc-step-num">4</span>Done</div>
+        <div class="lc-step" id="lc-step-4"><span class="lc-step-num">4</span>Report</div>
+        <div class="lc-step-arrow">›</div>
+        <div class="lc-step" id="lc-step-5"><span class="lc-step-num">5</span>Done</div>
       </div>
       <div class="lc-stage-desc" id="lc-stage-desc">Initializing language analyzers and loading configuration…</div>
       <div class="lc-metrics" id="lc-metrics">
@@ -21654,8 +21781,16 @@ struct SubmoduleRow {
         <div class="lc-metric hidden" id="lc-files-card"><div class="lc-metric-label">Files</div><div class="lc-metric-value" id="lc-files">0</div></div>
         <div class="lc-metric hidden" id="lc-speed-card"><div class="lc-metric-label">Files/sec</div><div class="lc-metric-value" id="lc-speed">—</div></div>
       </div>
+      <div class="lc-overall" id="lc-overall">
+        <div class="lc-overall-head">
+          <span class="lc-overall-label">Overall progress</span>
+          <span class="lc-overall-pct" id="lc-overall-pct">0%</span>
+        </div>
+        <div class="lc-overall-track"><div class="lc-overall-fill" id="lc-overall-fill"></div></div>
+      </div>
       <div class="progress-bar" id="lc-progress-bar"><span></span></div>
-      <div class="lc-warn hidden" id="lc-warn">This is taking longer than usual. Large repositories can take several minutes — the analysis is still running.</div>
+      <div class="lc-warn hidden" id="lc-warn">This is taking longer than usual. Large repositories — especially with submodules and per-author attribution on — can take several minutes. The analysis is still running.</div>
+      <div class="lc-warn hidden" id="lc-attrib-note">Attributing authorship: running <code>git blame</code> on every source file across the repo and all submodules. This is the slowest stage and scales with file count — the counter above shows live progress. To skip it on future scans, set Code ownership to "Off" in the scan options.</div>
       <div class="lc-err hidden" id="lc-err"><strong>Analysis failed</strong><p id="lc-err-msg">An unexpected error occurred. Check that the path exists and is readable.</p></div>
       <div class="lc-cancelled hidden" id="lc-cancelled"><strong>Scan cancelled</strong></div>
       <div class="lc-actions hidden" id="lc-actions">
@@ -21921,7 +22056,7 @@ struct SubmoduleRow {
                   </div>
                   <div class="explainer-card prominent sx-38965f9b" >
                     <div class="field-help-title sx-c500155b" >What this does</div>
-                    <div class="advanced-rule-description"><strong>Purpose:</strong> Group each git submodule&#39;s files into its own section in the report so you can see per-submodule SLOC totals alongside overall figures.<br /><strong>Good default when:</strong> your repository contains nested sub-projects managed as git submodules.<br /><strong>Turn it off when:</strong> the repository has no submodules, or you only need aggregate totals across the whole tree.</div>
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> Group each git submodule&#39;s files into its own section in the report so you can see per-submodule SLOC totals alongside overall figures.<br /><strong>Good default when:</strong> your repository contains nested sub-projects managed as git submodules.<br /><strong>Turn it off when:</strong> the repository has no submodules, or you only need aggregate totals across the whole tree.<br /><strong>Heads up:</strong> submodule working trees are scanned in full, so a repo with many large submodules (e.g. vendored dependencies) can hold tens of thousands of files. That makes the scan — and the per-author attribution pass in particular — take noticeably longer. The scan screen shows live progress for each stage.</div>
                     <div class="code-sample sx-726e8b31" >[submodule "libs/core"]
     path = libs/core
     url  = https://github.com/org/core.git
@@ -22339,9 +22474,10 @@ int main() { … }   ← code
                       <option value="enabled" selected>On — attribute lines per author (default)</option>
                       <option value="disabled">Off — skip the blame pass</option>
                     </select>
+                    <div class="attrib-estimate hidden" id="attrib-estimate" role="status"></div>
                   </div>
                   <div class="explainer-card prominent sx-38965f9b" >
-                    <div class="advanced-rule-description"><strong>Purpose:</strong> When on, oxide-sloc runs <code>git blame</code> on every analyzed file and attributes each physical line to the author who last touched it, split into <strong>code / comment / blank</strong> per contributor. Results appear on the Code Ownership page and in the HTML/PDF/CSV reports.<br /><strong>Requires</strong> the scanned path to be a git repository. <strong>On by default</strong>; turn it off on very large repositories where the per-file blame pass is too slow. Same-email identities are merged automatically and the repo <code>.mailmap</code> is honoured.</div>
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> When on, oxide-sloc runs <code>git blame</code> on every analyzed file and attributes each physical line to the author who last touched it, split into <strong>code / comment / blank</strong> per contributor. Results appear on the Code Ownership page and in the HTML/PDF/CSV reports.<br /><strong>Requires</strong> the scanned path to be a git repository. <strong>On by default.</strong><br /><strong>Speed:</strong> the blame pass runs after file counting and is the slowest stage on big trees — it does one <code>git blame</code> per file, so cost scales with file count (submodules included). It is parallelized across CPU cores and the scan screen shows a live "Blamed N / M" counter, but on a repo with tens of thousands of files it can still take a few minutes. Turn it off for the fastest possible scan when you don&#39;t need ownership data. Same-email identities are merged automatically and the repo <code>.mailmap</code> is honoured.</div>
                     <div class="code-sample sx-161ac0cc" ># On  = per-author code/comment/blank ownership (default)
 # Off = skip blame, no ownership data
 # CLI equivalent: analyze --no-attribution to disable
@@ -22524,6 +22660,7 @@ int main() { … }   ← code
                     <ul id="review-preview-summary"></ul>
                   </div>
                 </div>
+                <div class="review-attrib-warn hidden" id="review-attrib-warn" role="alert"></div>
               </div>
 
               <div class="wizard-actions">
@@ -22743,7 +22880,7 @@ int main() { … }   ← code
       function dismissAnalysisModal() {
         if (loading) loading.classList.remove("active");
         document.body.classList.remove("modal-open");
-        ["lc-err","lc-warn","lc-actions","lc-cancelled"].forEach(function(id) {
+        ["lc-err","lc-warn","lc-attrib-note","lc-actions","lc-cancelled"].forEach(function(id) {
           var el = document.getElementById(id);
           if (el) el.classList.add("hidden");
         });
@@ -22752,8 +22889,12 @@ int main() { … }   ← code
         var el = document.getElementById("lc-elapsed"); if (el) el.textContent = "0s";
         var ph = document.getElementById("lc-phase"); if (ph) ph.textContent = "Starting";
         var sd = document.getElementById("lc-stage-desc"); if (sd) sd.textContent = "Initializing language analyzers and loading configuration\u2026";
-        for (var ri=1;ri<=4;ri++){var rs=document.getElementById("lc-step-"+ri);if(!rs)continue;rs.classList.remove("active","done");if(ri===1)rs.classList.add("active");}
+        for (var ri=1;ri<=5;ri++){var rs=document.getElementById("lc-step-"+ri);if(!rs)continue;rs.classList.remove("active","done");if(ri===1)rs.classList.add("active");}
+        var rof=document.getElementById("lc-overall-fill");if(rof)rof.style.width="0%";
+        var rop=document.getElementById("lc-overall-pct");if(rop)rop.textContent="0%";
         var rsc=document.getElementById("lc-speed-card");if(rsc)rsc.classList.add("hidden");
+        var rfc=document.getElementById("lc-files-card");if(rfc){rfc.classList.add("hidden");var rfl=rfc.querySelector(".lc-metric-label");if(rfl)rfl.textContent="Files";}
+        var rslbl=rsc?rsc.querySelector(".lc-metric-label"):null;if(rslbl)rslbl.textContent="Files/sec";
         var rcard = document.getElementById("loading-card"); if (rcard) rcard.classList.add("lc-pulsing");
         var metrics = document.getElementById("lc-metrics"); if (metrics) metrics.style.display = "";
         var pb = document.getElementById("lc-progress-bar"); if (pb) pb.style.display = "";
@@ -22779,7 +22920,7 @@ int main() { … }   ← code
         var pathEl = document.getElementById("lc-path-text");
         if (pathEl) pathEl.textContent = displayPath;
 
-        ["lc-err","lc-warn","lc-actions","lc-cancelled"].forEach(function(id) {
+        ["lc-err","lc-warn","lc-attrib-note","lc-actions","lc-cancelled"].forEach(function(id) {
           var el = document.getElementById(id);
           if (el) el.classList.add("hidden");
         });
@@ -22791,8 +22932,10 @@ int main() { … }   ← code
         var elapsed0 = document.getElementById("lc-elapsed"); if (elapsed0) elapsed0.textContent = "0s";
         var phase0   = document.getElementById("lc-phase");   if (phase0)   phase0.textContent   = "Starting";
         var sd0 = document.getElementById("lc-stage-desc"); if (sd0) sd0.textContent = "Initializing language analyzers and loading configuration\u2026";
-        for (var si=1;si<=4;si++){var ss=document.getElementById("lc-step-"+si);if(!ss)continue;ss.classList.remove("active","done");if(si===1)ss.classList.add("active");}
+        for (var si=1;si<=5;si++){var ss=document.getElementById("lc-step-"+si);if(!ss)continue;ss.classList.remove("active","done");if(si===1)ss.classList.add("active");}
         var sc0=document.getElementById("lc-speed-card");if(sc0)sc0.classList.add("hidden");
+        var of0=document.getElementById("lc-overall-fill");if(of0)of0.style.width="0%";
+        var op0=document.getElementById("lc-overall-pct");if(op0)op0.textContent="0%";
 
         if (loading) loading.classList.add("active");
         document.body.classList.add("modal-open");
@@ -22804,7 +22947,7 @@ int main() { … }   ← code
           if (el) el.textContent = s < 60 ? s + "s" : Math.floor(s/60) + "m " + (s%60) + "s";
         }, 1000);
 
-        var warnShown = false, pollRetries = 0, activeWaitId = null, lastFd = 0, lastFdTime = Date.now();
+        var warnShown = false, pollRetries = 0, activeWaitId = null, lastFd = 0, lastFdTime = Date.now(), lastWasAttrib = false;
 
         function fmt(n){var v=Number(n),a=Math.abs(v);if(a>=1e6)return(v/1e6).toFixed(1).replace(/\.0$/,'')+'M';if(a>=1e4)return(v/1e3).toFixed(1).replace(/\.0$/,'')+'K';return v.toLocaleString();}
 
@@ -22812,17 +22955,53 @@ int main() { … }   ← code
           'Starting': 'Initializing language analyzers and loading configuration\u2026',
           'Scanning files': 'Walking the directory tree, applying scope filters, and reading file bytes\u2026',
           'Running': 'Running the lexical state machine across all discovered source files\u2026',
+          'Attributing authorship': 'Running git blame on every source file (including submodules) to attribute each line to its author \u2014 the slowest stage on large repositories\u2026',
+          'Summarizing submodules': 'Detecting git submodules and rolling up per-submodule line totals\u2026',
+          'Computing metrics': 'Computing ULOC, duplicate groups, complexity and COCOMO estimates\u2026',
+          'Reading git history': 'Reading recent git history to rank change hotspots\u2026',
           'Writing reports': 'Rendering the HTML report and saving JSON artifacts to disk\u2026',
           'Done': 'Analysis complete \u2014 loading your results\u2026',
           'Failed': 'Analysis encountered an error. Check the path and permissions, then try again.'
         };
-        var PHASE_STEP = {'Starting':1,'Scanning files':1,'Running':2,'Writing reports':3,'Done':4};
+        // 5 stages: 1 Discover (walk+count), 2 Analyze (metrics/submodules/git history),
+        // 3 Attribute (git blame), 4 Report (write artifacts), 5 Done.
+        var PHASE_STEP = {'Starting':1,'Scanning files':1,'Running':1,'Summarizing submodules':2,'Computing metrics':2,'Reading git history':2,'Attributing authorship':3,'Writing reports':4,'Done':5};
+        // Overall-progress bands [start,end] per phase. The counter-driven phases (Discover via
+        // files, Attribute via blame) scale within their band; brief phases jump to their band end.
+        // Bands are weighted by real time cost: on a large repo attribution is ~99% of the wall time,
+        // so it owns the widest band and the bar spends most of its life there instead of at "done".
+        var PHASE_BAND = {
+          'Starting':[0,2],'Scanning files':[2,15],'Running':[2,15],
+          'Summarizing submodules':[15,18],'Computing metrics':[18,20],'Reading git history':[20,22],
+          'Attributing authorship':[22,97],'Writing reports':[97,99],'Done':[100,100],'Failed':[100,100]
+        };
+        var lastPct = 0;
+        function overallPct(data) {
+          var phase = (data && data.phase) || 'Starting';
+          var band = PHASE_BAND[phase] || [lastPct, lastPct];
+          var frac = 1;
+          if (phase === 'Scanning files' || phase === 'Running') {
+            frac = (data.files_total > 0) ? (data.files_done / data.files_total) : 0;
+          } else if (phase === 'Attributing authorship') {
+            frac = (data.attrib_total > 0) ? (data.attrib_done / data.attrib_total) : 0;
+          }
+          var pct = band[0] + (band[1] - band[0]) * Math.max(0, Math.min(1, frac));
+          lastPct = Math.max(lastPct, pct); // never let the bar go backwards
+          return lastPct;
+        }
+        function setOverall(pct) {
+          var fill = document.getElementById("lc-overall-fill");
+          var lbl = document.getElementById("lc-overall-pct");
+          var p = Math.max(0, Math.min(100, Math.round(pct)));
+          if (fill) fill.style.width = p + "%";
+          if (lbl) lbl.textContent = p + "%";
+        }
         function lcSetPhase(txt) {
           var el = document.getElementById("lc-phase"); if (el) el.textContent = txt;
           var desc = document.getElementById("lc-stage-desc");
           if (desc) desc.textContent = PHASE_DESC[txt] || (txt + '\u2026');
           var step = PHASE_STEP[txt] || 1;
-          for (var i=1;i<=4;i++){var s=document.getElementById("lc-step-"+i);if(!s)continue;s.classList.remove("active","done");if(i<step)s.classList.add("done");else if(i===step)s.classList.add("active");}
+          for (var i=1;i<=5;i++){var s=document.getElementById("lc-step-"+i);if(!s)continue;s.classList.remove("active","done");if(i<step)s.classList.add("done");else if(i===step)s.classList.add("active");}
         }
 
         function lcShowCancelled() {
@@ -22876,6 +23055,7 @@ int main() { … }   ← code
               if (data.state === "complete") {
                 clearInterval(elapsedTimer);
                 lcSetPhase("Done");
+                setOverall(100);
                 window.location.href = "/runs/result/" + encodeURIComponent(data.run_id);
               } else if (data.state === "failed") {
                 lcShowError(data.message);
@@ -22889,21 +23069,36 @@ int main() { … }   ← code
                   if (w) w.classList.remove("hidden");
                 }
                 lcSetPhase(data.phase || "Running");
-                var fd = data.files_done || 0, ft = data.files_total || 0;
-                if (ft > 0) {
+                // During the git-blame attribution pass the file counter is already maxed out, so
+                // switch the live metric over to blame progress — otherwise the modal looks frozen
+                // at "files done / files total" for the slowest stage of the whole scan.
+                var attribActive = (data.attrib_total || 0) > 0;
+                var curDone = attribActive ? (data.attrib_done || 0) : (data.files_done || 0);
+                var curTotal = attribActive ? (data.attrib_total || 0) : (data.files_total || 0);
+                var attribNote = document.getElementById("lc-attrib-note");
+                if (attribNote) attribNote.classList.toggle("hidden", !attribActive);
+                if (curTotal > 0) {
                   var card = document.getElementById("lc-files-card");
                   if (card) card.classList.remove("hidden");
+                  var fLabel = card ? card.querySelector(".lc-metric-label") : null;
+                  if (fLabel) fLabel.textContent = attribActive ? "Blamed" : "Files";
                   var el = document.getElementById("lc-files");
-                  if (el) el.textContent = fmt(fd) + " / " + fmt(ft);
+                  if (el) el.textContent = fmt(curDone) + " / " + fmt(curTotal);
                   var now = Date.now();
-                  var fdelta = fd - lastFd, tdelta = (now - lastFdTime) / 1000;
+                  // Reset the rate baseline when the counter source flips (files -> blamed) so the
+                  // speed reading doesn't show a bogus negative spike on the transition.
+                  if (attribActive !== lastWasAttrib) { lastFd = attribActive ? 0 : curDone; }
+                  var fdelta = curDone - lastFd, tdelta = (now - lastFdTime) / 1000;
                   if (fdelta > 0 && tdelta > 0.4) {
                     var fps = Math.round(fdelta / tdelta);
                     var spEl = document.getElementById("lc-speed"); if (spEl) spEl.textContent = fmt(fps);
                     var spCard = document.getElementById("lc-speed-card"); if (spCard) spCard.classList.remove("hidden");
+                    var spLabel = spCard ? spCard.querySelector(".lc-metric-label") : null;
+                    if (spLabel) spLabel.textContent = attribActive ? "Blamed/sec" : "Files/sec";
                   }
-                  lastFd = fd; lastFdTime = now;
+                  lastFd = curDone; lastFdTime = now; lastWasAttrib = attribActive;
                 }
+                setOverall(overallPct(data));
                 setTimeout(function() { lcPoll(waitId); }, 1500);
               }
             })
@@ -23242,7 +23437,8 @@ int main() { … }   ← code
           + "<li>Vendor-directory detection: " + escapeHtml(document.getElementById("vendor_directory_detection").value) + "</li>"
           + "<li>Lockfiles: " + escapeHtml(document.getElementById("include_lockfiles").value) + "</li>"
           + "<li>Binary behavior: " + escapeHtml(document.getElementById("binary_file_behavior").options[document.getElementById("binary_file_behavior").selectedIndex].text) + "</li>"
-          + "<li>Scan preset: " + escapeHtml(scanPreset.options[scanPreset.selectedIndex].text) + "</li>";
+          + "<li>Scan preset: " + escapeHtml(scanPreset.options[scanPreset.selectedIndex].text) + "</li>"
+          + "<li>" + attribReviewLine() + "</li>";
 
         artifactSummary.innerHTML = "<li>HTML, PDF, JSON, CSV, XLSX (always generated)</li>";
 
@@ -23277,6 +23473,7 @@ int main() { … }   ← code
           }
           } // end else (non-GIT_MODE)
         }
+        updateReviewAttribWarn();
       }
 
       function escapeHtml(value) {
@@ -23639,6 +23836,96 @@ int main() { … }   ← code
         applyVisibility();
       }
 
+      // ── Attribution (git blame) cost estimate ────────────────────────────────
+      // Once the user manually changes the Code-ownership select we stop auto-defaulting it, so an
+      // explicit choice is never overridden by a later estimate.
+      var attributionTouched = false;
+      var _attribEstGen = 0;
+      var lastAttribEstimate = null; // most recent /api/attribution-estimate result for this path
+      (function() {
+        var sel = document.getElementById('attribution');
+        if (sel) sel.addEventListener('change', function() {
+          attributionTouched = true;
+          // Re-render both the step-2 note and the step-4 review warning to reflect the new choice.
+          renderAttribBanner();
+          updateReviewAttribWarn();
+        });
+      }());
+      function estFmt(n){var v=Number(n),a=Math.abs(v);if(a>=1e6)return(v/1e6).toFixed(1).replace(/\.0$/,'')+'M';if(a>=1e4)return(v/1e3).toFixed(1).replace(/\.0$/,'')+'K';return v.toLocaleString();}
+      // Render the step-2 attribution note from the last estimate + the current toggle state.
+      function renderAttribBanner() {
+        var box = document.getElementById('attrib-estimate');
+        var sel = document.getElementById('attribution');
+        if (!box || !sel) return;
+        var d = lastAttribEstimate;
+        if (!d || !d.is_git || !d.blameable_files) { box.className = 'attrib-estimate hidden'; box.textContent = ''; return; }
+        var files = estFmt(d.blameable_files), commits = estFmt(d.commit_count), dur = d.estimated_label || '';
+        var sev = d.severity || 'light';
+        var on = sel.value !== 'disabled';
+        box.className = 'attrib-estimate est-' + sev;
+        if (sev === 'heavy') {
+          box.innerHTML = on
+            ? '<b>Heads up — attribution is ON for a very large repo.</b> Blaming ' + files +
+              ' files across ~' + commits + ' commits will make this scan take roughly <b>' + dur +
+              '</b> longer. Turn it off here for a fast scan.'
+            : '<b>Large history detected.</b> Attributing ' + files + ' files (~' + commits +
+              ' commits) would take about <b>' + dur + '</b>, so per-author attribution has been turned <b>off</b>. Switch it on above to run it anyway.';
+        } else if (sev === 'moderate') {
+          box.innerHTML = (on ? 'With attribution on, this scan blames ' : 'Attribution (currently off) would blame ') +
+            '<b>' + files + '</b> files (~' + commits + ' commits) and add about <b>' + dur + '</b>.';
+        } else {
+          box.innerHTML = 'Per-author attribution is quick here — about <b>' + (dur || '~1s') +
+            '</b> for <b>' + files + '</b> files.';
+        }
+      }
+      // Prominent step-4 (review) warning: only shown when attribution is ON and non-trivial.
+      function updateReviewAttribWarn() {
+        var warn = document.getElementById('review-attrib-warn');
+        var sel = document.getElementById('attribution');
+        if (!warn || !sel) return;
+        var d = lastAttribEstimate;
+        var on = sel.value !== 'disabled';
+        if (!d || !d.is_git || !d.blameable_files || !on || (d.severity || 'light') === 'light') {
+          warn.className = 'review-attrib-warn hidden'; warn.textContent = ''; return;
+        }
+        var files = estFmt(d.blameable_files), commits = estFmt(d.commit_count), dur = d.estimated_label || '';
+        warn.className = 'review-attrib-warn ' + (d.severity === 'heavy' ? 'raw-heavy' : 'raw-moderate');
+        warn.innerHTML = '<span><b>Per-author attribution is ON.</b> This scan will run <code>git blame</code> on <b>' +
+          files + '</b> files across ~' + commits + ' commits, making it take roughly <b>' + dur +
+          '</b> longer than a scan without it. To skip it, go back to step 2 (How it will be counted) and set Code ownership to Off.</span>';
+      }
+      // One-line attribution summary for the step-4 "How it will be counted" card.
+      function attribReviewLine() {
+        var sel = document.getElementById('attribution');
+        var on = sel && sel.value !== 'disabled';
+        var d = lastAttribEstimate;
+        var suffix = '';
+        if (d && d.is_git && d.blameable_files) {
+          suffix = ' (' + estFmt(d.blameable_files) + ' files'
+            + (on && d.estimated_label ? ', ~' + d.estimated_label : '') + ')';
+        }
+        return 'Per-author attribution (git blame): ' + (on ? 'on' : 'off') + suffix;
+      }
+      function updateAttribEstimate(path) {
+        var sel = document.getElementById('attribution');
+        if (!document.getElementById('attrib-estimate') || !sel) return;
+        if (!path) { lastAttribEstimate = null; renderAttribBanner(); updateReviewAttribWarn(); return; }
+        var myGen = ++_attribEstGen;
+        fetch('/api/attribution-estimate?path=' + encodeURIComponent(path))
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (myGen !== _attribEstGen) return; // a newer path won the race
+            lastAttribEstimate = d;
+            // Auto-default the toggle once (unless the user already chose): off only when heavy.
+            if (d && d.is_git && d.blameable_files && !attributionTouched) {
+              sel.value = (d.severity === 'heavy') ? 'disabled' : 'enabled';
+            }
+            renderAttribBanner();
+            updateReviewAttribWarn();
+          })
+          .catch(function() { if (myGen === _attribEstGen) { lastAttribEstimate = null; renderAttribBanner(); updateReviewAttribWarn(); } });
+      }
+
       function loadPreview() {
         if (!previewPanel || !pathInput) return;
         // A fresh preview re-establishes the multi-repo gate; clear any prior ack.
@@ -23693,6 +23980,9 @@ int main() { … }   ← code
           if (el) el.textContent = Math.round((Date.now() - _prevStart) / 1000) + 's elapsed';
         }, 1000);
         setPreviewLoading(true);
+        // Kick off the (independent) attribution cost estimate for this path in parallel with the
+        // scope preview; it auto-tunes the Code-ownership default on very large repos.
+        updateAttribEstimate(path);
         var previewUrl = "/preview?path=" + encodeURIComponent(path)
           + "&include_globs=" + encodeURIComponent(includeValue)
           + "&exclude_globs=" + encodeURIComponent(excludeValue);
@@ -25262,7 +25552,7 @@ struct IndexTemplate {
               <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
             </div>
             <div class="action-card-title">Code Ownership</div>
-            <p class="action-card-desc">Attribute every line to its author via git blame — per-author breakdowns, a contributor leaderboard, hotspot ownership, and .mailmap identity merging.</p>
+            <p class="action-card-desc">Attribute every line to its author via git blame — per-author breakdowns, a contributor leaderboard, and hotspot ownership.</p>
             <span class="action-card-cta">View ownership <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg></span>
           </a>
         </div>
@@ -28779,6 +29069,12 @@ struct ResultTemplate {
     .metric-card{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:12px 18px;min-width:140px;flex:1;text-align:center;}
     .metric-label{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
     .metric-value{font-size:1.1rem;font-weight:700;color:var(--text);}
+    .overall-wrap{margin-bottom:16px;}
+    .overall-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;}
+    .overall-label{font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;}
+    .overall-pct{font-size:14px;font-weight:900;color:var(--oxide);font-variant-numeric:tabular-nums;}
+    .overall-track{height:9px;border-radius:999px;background:var(--surface-2);border:1px solid var(--line);overflow:hidden;}
+    .overall-fill{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,var(--accent-2),var(--oxide));transition:width .4s ease;}
     .progress-bar-wrap{background:var(--surface-2);border-radius:999px;height:6px;overflow:hidden;margin-bottom:24px;}
     .progress-bar{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,var(--accent-2),var(--oxide));animation:indeterminate 1.8s ease-in-out infinite;}
     @keyframes indeterminate{0%{transform:translateX(-100%) scaleX(0.5);}50%{transform:translateX(0%) scaleX(0.5);}100%{transform:translateX(200%) scaleX(0.5);}}
@@ -28883,6 +29179,10 @@ struct ResultTemplate {
           <div class="metric-value" id="files-progress">0</div>
         </div>
       </div>
+      <div class="overall-wrap">
+        <div class="overall-head"><span class="overall-label">Overall progress</span><span class="overall-pct" id="overall-pct">0%</span></div>
+        <div class="overall-track"><div class="overall-fill" id="overall-fill"></div></div>
+      </div>
       <div class="progress-bar-wrap"><div class="progress-bar"></div></div>
       <div class="warn-slow hidden" id="warn-slow">
         This is taking longer than usual. Large repositories with many files can take several minutes. Hang tight — the analysis is still running in the background.
@@ -28921,6 +29221,35 @@ struct ResultTemplate {
         document.getElementById('phase').textContent = txt;
       }
 
+      // Overall-progress bands weighted by real time cost (attribution dominates large repos).
+      var PHASE_BAND = {
+        'Starting':[0,2],'Scanning files':[2,15],'Running':[2,15],
+        'Summarizing submodules':[15,18],'Computing metrics':[18,20],'Reading git history':[20,22],
+        'Attributing authorship':[22,97],'Writing reports':[97,99],'Done':[100,100],'Failed':[100,100]
+      };
+      var lastPct = 0;
+      function setOverall(data, forceDone) {
+        var pct;
+        if (forceDone) { pct = 100; }
+        else {
+          var phase = (data && data.phase) || 'Starting';
+          var band = PHASE_BAND[phase] || [lastPct, lastPct];
+          var frac = 1;
+          if (phase === 'Scanning files' || phase === 'Running') {
+            frac = (data.files_total > 0) ? (data.files_done / data.files_total) : 0;
+          } else if (phase === 'Attributing authorship') {
+            frac = (data.attrib_total > 0) ? (data.attrib_done / data.attrib_total) : 0;
+          }
+          pct = band[0] + (band[1] - band[0]) * Math.max(0, Math.min(1, frac));
+        }
+        lastPct = Math.max(lastPct, pct);
+        var p = Math.max(0, Math.min(100, Math.round(lastPct)));
+        var fill = document.getElementById('overall-fill');
+        var lbl = document.getElementById('overall-pct');
+        if (fill) fill.style.width = p + '%';
+        if (lbl) lbl.textContent = p + '%';
+      }
+
       var elapsedTimer = setInterval(updateElapsed, 1000);
 
       function poll() {
@@ -28934,6 +29263,7 @@ struct ResultTemplate {
             if (data.state === 'complete') {
               clearInterval(elapsedTimer);
               setPhase('Done');
+              setOverall(data, true);
               window.location.href = '/runs/result/' + encodeURIComponent(data.run_id);
             } else if (data.state === 'failed') {
               clearInterval(elapsedTimer);
@@ -28949,13 +29279,28 @@ struct ResultTemplate {
                 document.getElementById('warn-slow').classList.remove('hidden');
               }
               setPhase(data.phase || 'Running');
-              var fd = data.files_done || 0, ft = data.files_total || 0;
-              if (ft > 0) {
+              // Switch the live counter to blame progress during the attribution pass so the page
+              // shows movement instead of a frozen "files done / total" for the slowest stage.
+              var attribActive = (data.attrib_total || 0) > 0;
+              var curDone = attribActive ? (data.attrib_done || 0) : (data.files_done || 0);
+              var curTotal = attribActive ? (data.attrib_total || 0) : (data.files_total || 0);
+              if (curTotal > 0) {
                 var card = document.getElementById('files-card');
                 if (card) card.classList.remove('hidden');
+                var lbl = card ? card.querySelector('.metric-label') : null;
+                if (lbl) lbl.textContent = attribActive ? 'Blamed' : 'Files';
                 var fp = document.getElementById('files-progress');
-                if (fp) fp.textContent = fmt(fd) + ' / ' + fmt(ft);
+                if (fp) fp.textContent = fmt(curDone) + ' / ' + fmt(curTotal);
               }
+              if (attribActive && !warnShown) {
+                warnShown = true;
+                var ws = document.getElementById('warn-slow');
+                if (ws) {
+                  ws.textContent = 'Attributing authorship: running git blame on every source file across the repo and all submodules. This is the slowest stage and scales with file count — the counter above shows live progress.';
+                  ws.classList.remove('hidden');
+                }
+              }
+              setOverall(data, false);
               setTimeout(poll, pollInterval);
             }
           })
@@ -35816,6 +36161,25 @@ mod form_config_tests {
             !apply(&form).analysis.attribution,
             "'disabled' turns it off"
         );
+    }
+
+    #[test]
+    fn humanize_duration_formats_seconds_and_minutes() {
+        assert_eq!(humanize_duration(0), "");
+        assert_eq!(humanize_duration(3), "~3s");
+        assert_eq!(humanize_duration(59), "~59s");
+        assert_eq!(humanize_duration(60), "~1 min");
+        assert_eq!(humanize_duration(61), "~2 min"); // rounds up
+        assert_eq!(humanize_duration(600), "~10 min");
+    }
+
+    #[test]
+    fn attrib_estimate_unknown_is_neutral() {
+        let r = attrib_estimate_unknown();
+        assert!(!r.estimate.is_git);
+        assert!(r.estimate.recommend_attribution);
+        assert_eq!(r.estimate.blameable_files, 0);
+        assert!(r.estimated_label.is_empty());
     }
 
     // ── activity_window (git hotspots — on by default) ──
