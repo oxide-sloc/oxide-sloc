@@ -1021,6 +1021,11 @@ pub struct AttributionEstimate {
     pub recommend_attribution: bool,
     /// Rough wall-clock estimate for the blame pass, in seconds (order-of-magnitude only).
     pub estimated_seconds: u64,
+    /// Number of git submodules declared in the super-repo's `.gitmodules` (0 when none).
+    pub submodule_count: u64,
+    /// Total commit depth across the super-repo **and** every submodule combined — i.e.
+    /// [`Self::commit_count`] plus the sum of each submodule's own `HEAD` depth.
+    pub combined_commit_count: u64,
 }
 
 /// Files-per-second throughput assumed for the blame pass when estimating its duration. Derived
@@ -1052,6 +1057,8 @@ pub fn estimate_attribution_cost(root: &Path) -> AttributionEstimate {
             severity: AttributionSeverity::Light,
             recommend_attribution: true,
             estimated_seconds: 0,
+            submodule_count: 0,
+            combined_commit_count: 0,
         };
     }
 
@@ -1069,9 +1076,14 @@ pub fn estimate_attribution_cost(root: &Path) -> AttributionEstimate {
         })
         .unwrap_or(0);
 
-    let commit_count = run_git_cmd(root, &["rev-list", "--count", "HEAD"])
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .unwrap_or(0);
+    let commit_count = count_head_commits(root);
+
+    // Sum each submodule's own commit depth so the UI can show "super-repo" vs. "everything
+    // combined" commit totals. Best-effort and parallel — a submodule that isn't checked out
+    // simply contributes 0.
+    let submodules = detect_submodules(root);
+    let submodule_commits = count_submodule_commits(root, &submodules);
+    let combined_commit_count = commit_count.saturating_add(submodule_commits);
 
     let severity = classify_attribution_severity(blameable_files, commit_count);
     AttributionEstimate {
@@ -1081,7 +1093,50 @@ pub fn estimate_attribution_cost(root: &Path) -> AttributionEstimate {
         severity,
         recommend_attribution: severity != AttributionSeverity::Heavy,
         estimated_seconds: blameable_files.div_ceil(BLAME_FILES_PER_SEC),
+        submodule_count: submodules.len() as u64,
+        combined_commit_count,
     }
+}
+
+/// `git rev-list --count HEAD` in `dir`, or 0 on any failure (empty/shallow/non-git).
+fn count_head_commits(dir: &Path) -> u64 {
+    run_git_cmd(dir, &["rev-list", "--count", "HEAD"])
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Sum of `HEAD` commit depth across every submodule working tree, counted in parallel. Returns 0
+/// when there are no submodules. Best-effort: an unchecked-out or unreadable submodule adds 0.
+fn count_submodule_commits(root: &Path, submodules: &[(String, PathBuf)]) -> u64 {
+    let n = submodules.len();
+    if n == 0 {
+        return 0;
+    }
+    let thread_count = std::thread::available_parallelism()
+        .map_or(DEFAULT_ANALYSIS_THREADS, |t| {
+            t.get().min(MAX_ANALYSIS_THREADS)
+        })
+        .min(n);
+    let next_index = AtomicUsize::new(0);
+
+    let partials: Vec<u64> = std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(thread_count);
+        for _ in 0..thread_count {
+            handles.push(s.spawn(|| {
+                let mut sum = 0u64;
+                loop {
+                    let i = next_index.fetch_add(1, Ordering::Relaxed);
+                    if i >= n {
+                        break;
+                    }
+                    sum = sum.saturating_add(count_head_commits(&root.join(&submodules[i].1)));
+                }
+                sum
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap_or(0)).collect()
+    });
+    partials.iter().sum()
 }
 
 /// Bucket a repo into an [`AttributionSeverity`] from its blameable-file count and commit depth.

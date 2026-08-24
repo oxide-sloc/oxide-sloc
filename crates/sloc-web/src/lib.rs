@@ -7069,6 +7069,8 @@ fn attrib_estimate_unknown() -> AttribEstimateResponse {
             severity: sloc_core::AttributionSeverity::Light,
             recommend_attribution: true,
             estimated_seconds: 0,
+            submodule_count: 0,
+            combined_commit_count: 0,
         },
         estimated_label: String::new(),
     }
@@ -21589,6 +21591,10 @@ struct SubmoduleRow {
     .submodule-base-repo-btn { appearance:none; display:inline-flex; align-items:center; gap:5px; padding:3px 11px; border-radius:999px; font-size:12px; font-weight:700; background:rgba(77,44,20,0.1); border:1px solid rgba(77,44,20,0.25); color:var(--text); cursor:pointer; transition:background .15s ease; }
     .submodule-base-repo-btn:hover { background:rgba(77,44,20,0.18); }
     .path-info-row { display:flex; align-items:center; gap:6px; margin-top:6px; border-bottom:none; padding:0; }
+    .commit-counts { display:flex; align-items:center; gap:20px; margin-left:2.5rem; }
+    .commit-counts .cc-item { display:flex; flex-direction:column; line-height:1.15; }
+    .commit-counts .cc-val { font-size:13px; font-weight:800; color:var(--oxide,#b85d33); font-variant-numeric:tabular-nums; }
+    .commit-counts .cc-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); white-space:nowrap; }
     .info-icon-btn { appearance:none; display:inline-flex; align-items:center; gap:5px; background:none; border:none; cursor:pointer; color:var(--muted); font-size:12px; font-weight:600; padding:2px 0; line-height:1.4; }
     .info-icon-btn svg { width:14px; height:14px; flex:0 0 auto; opacity:.75; }
     .info-icon-btn:hover { color:var(--text); }
@@ -21970,6 +21976,16 @@ struct SubmoduleRow {
                       <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/></svg>
                       <span id="project-size-text">Project size: —</span>
                     </button>
+                    <div class="commit-counts hidden" id="commit-counts" title="Git commit history depth (HEAD)">
+                      <div class="cc-item">
+                        <span class="cc-val" id="cc-super">—</span>
+                        <span class="cc-label">super-repo commits</span>
+                      </div>
+                      <div class="cc-item" id="cc-combined-item">
+                        <span class="cc-val" id="cc-combined">—</span>
+                        <span class="cc-label">with submodules</span>
+                      </div>
+                    </div>
                   </div>
                   {% else %}
                   <div class="hint">The source code will be checked out from the remote repository at the specified ref when you run the scan.</div>
@@ -23850,10 +23866,24 @@ int main() { … }   ← code
         }
         return 'Per-author attribution (git blame): ' + (on ? 'on' : 'off') + suffix;
       }
+      // Populate the "super-repo vs. with-submodules" commit-count display next to project size.
+      function updateCommitCounts(d) {
+        var box = document.getElementById('commit-counts');
+        if (!box) return;
+        if (!d || !d.is_git || !d.commit_count) { box.className = 'commit-counts hidden'; return; }
+        var sup = document.getElementById('cc-super');
+        var comb = document.getElementById('cc-combined');
+        var combItem = document.getElementById('cc-combined-item');
+        if (sup) sup.textContent = estFmt(d.commit_count);
+        if (comb) comb.textContent = estFmt(d.combined_commit_count || d.commit_count);
+        // The combined column is only meaningful when the repo actually has submodules.
+        if (combItem) combItem.style.display = (d.submodule_count > 0) ? '' : 'none';
+        box.className = 'commit-counts';
+      }
       function updateAttribEstimate(path) {
         var sel = document.getElementById('attribution');
         if (!document.getElementById('attrib-estimate') || !sel) return;
-        if (!path) { lastAttribEstimate = null; renderAttribBanner(); updateReviewAttribWarn(); return; }
+        if (!path) { lastAttribEstimate = null; renderAttribBanner(); updateReviewAttribWarn(); updateCommitCounts(null); return; }
         var myGen = ++_attribEstGen;
         fetch('/api/attribution-estimate?path=' + encodeURIComponent(path))
           .then(function(r) { return r.json(); })
@@ -23866,8 +23896,9 @@ int main() { … }   ← code
             }
             renderAttribBanner();
             updateReviewAttribWarn();
+            updateCommitCounts(d);
           })
-          .catch(function() { if (myGen === _attribEstGen) { lastAttribEstimate = null; renderAttribBanner(); updateReviewAttribWarn(); } });
+          .catch(function() { if (myGen === _attribEstGen) { lastAttribEstimate = null; renderAttribBanner(); updateReviewAttribWarn(); updateCommitCounts(null); } });
       }
 
       function loadPreview() {
@@ -24292,29 +24323,6 @@ int main() { … }   ← code
                 fetchProjectHistory(data.selected_path);
                 loadPreview();
                 suggestCoverageFile(data.selected_path);
-                var gbHint = document.getElementById("git-browse-hint");
-                if (data.is_git_repo) {
-                  if (!gbHint) {
-                    gbHint = document.createElement("a");
-                    gbHint.id = "git-browse-hint";
-                    gbHint.target = "_self";
-                    gbHint.style.marginTop = "8px";
-                    gbHint.style.fontSize = "12px";
-                    gbHint.style.fontWeight = "700";
-                    gbHint.style.color = "var(--oxide-2, #b85d33)";
-                    gbHint.style.textDecoration = "none";
-                    if (pathInput && pathInput.parentNode) {
-                      pathInput.parentNode.insertBefore(gbHint, pathInput.nextSibling);
-                    }
-                  }
-                  gbHint.href = "/git-browser?repo=" + encodeURIComponent(data.selected_path);
-                  gbHint.textContent = "This folder is a git repo "
-                    + String.fromCharCode(8212) + " browse its branches "
-                    + String.fromCharCode(8594);
-                  gbHint.style.display = "inline-block";
-                } else if (gbHint) {
-                  gbHint.style.display = "none";
-                }
               }
 
               updateReview();
