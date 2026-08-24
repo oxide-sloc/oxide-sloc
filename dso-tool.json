@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "name": "oxide-sloc",
+  "display_name": "Oxide SLOC",
+  "category": "quality",
+  "kind": "cli",
+  "description": "Fast offline source-lines-of-code and complexity metrics, written in Rust. Ships prebuilt, statically-linked binaries for Windows and Linux, so it needs no toolchain or network to run. Use 'Unpack prebuilt binary' once, then Run.",
+  "docs": "README.md",
+  "launch": {
+    "cli": {
+      "windows": { "frozen": "dist/oxide-sloc.exe", "args": ["--help"] },
+      "linux":   { "frozen": "dist/oxide-sloc",     "args": ["--help"] }
+    }
+  },
+  "commands": [
+    {
+      "label": "Unpack prebuilt binary (enables Run)",
+      "help": "Extract the shipped oxide-sloc binary from dist/ into dist/ so Run and the commands below can execute it. Uses the tar that ships with Windows 10+ and Linux.",
+      "run": {
+        "windows": { "argv": ["cmd", "/c", "tar -xf dist\\oxide-sloc-windows-x64.tar.gz -C dist"] },
+        "linux":   { "argv": ["bash", "-lc", "tar -xzf dist/oxide-sloc-linux-x86_64.tar.gz -C dist"] }
+      }
+    },
+    {
+      "label": "Version",
+      "help": "Print the oxide-sloc version (run 'Unpack prebuilt binary' first).",
+      "run": {
+        "windows": { "exe": "dist/oxide-sloc.exe", "args": ["--version"] },
+        "linux":   { "exe": "dist/oxide-sloc",     "args": ["--version"] }
+      }
+    }
+  ]
+}
