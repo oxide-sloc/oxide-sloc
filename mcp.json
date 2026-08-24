@@ -1,7 +1,7 @@
 {
   "name": "oxide-sloc",
   "description": "IEEE 1045-1992 SLOC analysis across 60 languages. Counts source lines, comments, blank lines, functions, classes, and unit tests. Built entirely by AI (Claude).",
-  "version": "1.6.17",
+  "version": "1.6.18",
   "homepage": "https://github.com/oxide-sloc/oxide-sloc",
   "repository": "https://github.com/oxide-sloc/oxide-sloc",
   "license": "AGPL-3.0-or-later",

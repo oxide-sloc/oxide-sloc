@@ -76,8 +76,8 @@ static REPORT_CHART_JS: &[u8] = include_bytes!("../static/chart.min.js");
 use sloc_core::{
     AnalysisRun, Author, AuthorMergeGroup, CleanupPolicy, CleanupPolicyStore, FileChangeStatus,
     IdentityMap, MultiScanComparison, RegistryEntry, ScanRegistry, ScanSummarySnapshot,
-    SummaryTotals, WatchedDirsStore, analyze, apply_identity_map, compute_delta,
-    compute_multi_delta, read_json,
+    SummaryTotals, WatchedDirsStore, analyze, apply_identity_map, auto_merge_noreply_identities,
+    compute_delta, compute_multi_delta, read_json,
 };
 use sloc_report::{
     ReportDeltaContext, render_html, render_html_with_delta, render_sub_report_html,
@@ -1486,6 +1486,7 @@ async fn code_ownership_handler(
     // re-scan): contributors whose emails were combined fold into one.
     let map = IdentityMap::load(&identities_path(&state));
     if let Some(run) = latest_run.as_mut() {
+        auto_merge_noreply_identities(run);
         apply_identity_map(run, &map);
     }
 
@@ -1607,7 +1608,20 @@ async fn ownership_merge_handler(State(state): State<AppState>, body: String) ->
     let mut map = IdentityMap::load(&path);
     map.merge(&emails, name);
     let _ = map.save(&path);
-    axum::response::Redirect::to("/code-ownership").into_response()
+    axum::response::Redirect::to(&merge_redirect_target(&pairs)).into_response()
+}
+
+/// Resolve the post-merge redirect target from the form's optional `redirect_to` field. Defaults to
+/// the dedicated Code Ownership page and only accepts same-origin absolute paths (must start with a
+/// single `/`), so a crafted form can't bounce the operator to an external site.
+fn merge_redirect_target(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .find(|(k, _)| k == "redirect_to")
+        .map(|(_, v)| v.as_str())
+        .filter(|v| v.starts_with('/') && !v.starts_with("//"))
+        .unwrap_or("/code-ownership")
+        .to_string()
 }
 
 /// POST `/api/ownership/unmerge` — split a previously merged identity back apart.
@@ -1619,7 +1633,7 @@ async fn ownership_unmerge_handler(State(state): State<AppState>, body: String) 
         map.unmerge(email);
         let _ = map.save(&path);
     }
-    axum::response::Redirect::to("/code-ownership").into_response()
+    axum::response::Redirect::to(&merge_redirect_target(&pairs)).into_response()
 }
 
 /// GET `/code-ownership/mailmap` — download the current merges as a git `.mailmap` file.
@@ -2083,8 +2097,13 @@ fn render_ownership_empty(project_label: &str) -> String {
 
 /// Render the "Combine contributors" panel: a checkbox per contributor plus the list of any
 /// active merges (each with an Unmerge form).
-fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) -> String {
+fn render_merge_panel(
+    merge_groups: &[AuthorMergeGroup],
+    rows: &[OwnershipRow],
+    redirect_to: &str,
+) -> String {
     use std::fmt::Write as _;
+    let redirect = own_esc(redirect_to);
     let mut merge_checks = String::new();
     for r in rows {
         let _ = write!(
@@ -2117,11 +2136,12 @@ fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) 
                 .join(", ");
             let _ = write!(
                 merge_existing,
-                r#"<div class="merge-chip"><span class="merge-chip-text"><strong>{name}</strong> &nbsp;{count} emails &middot; {members}</span><form class="sx-5add8e44" method="POST" action="/api/ownership/unmerge" ><input type="hidden" name="canonical_email" value="{cemail}"><button type="submit" class="merge-unmerge">Unmerge</button></form></div>"#,
+                r#"<div class="merge-chip"><span class="merge-chip-text"><strong>{name}</strong> &nbsp;{count} emails &middot; {members}</span><form class="sx-5add8e44" method="POST" action="/api/ownership/unmerge" ><input type="hidden" name="canonical_email" value="{cemail}"><input type="hidden" name="redirect_to" value="{redirect}"><button type="submit" class="merge-unmerge">Unmerge</button></form></div>"#,
                 name = own_esc(&g.canonical_name),
                 count = g.members.len(),
                 members = members,
                 cemail = own_esc(&g.canonical_email),
+                redirect = redirect,
             );
         }
         // Explain what the .mailmap download actually does, right where it becomes actionable.
@@ -2135,6 +2155,7 @@ fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) 
 <div class="panel">
   <p class="muted sx-16dbf2a3" >Same person committing under different names or emails? Select two or more contributors and merge them into a single identity. This is applied on top of the scan &mdash; <strong>no re-scan needed</strong> &mdash; and can be exported as a git <code>.mailmap</code> so the merge carries into git itself and future scans.</p>
   <form method="POST" action="/api/ownership/merge">
+    <input type="hidden" name="redirect_to" value="{redirect}">
     <div class="merge-grid">{merge_checks}</div>
     <div class="merge-controls">
       <input type="text" name="canonical_name" class="merge-name-input" placeholder="Canonical display name (optional)">
@@ -2146,6 +2167,7 @@ fn render_merge_panel(merge_groups: &[AuthorMergeGroup], rows: &[OwnershipRow]) 
 </div>
 
 "#,
+        redirect = redirect,
         merge_checks = merge_checks,
         mailmap_link = mailmap_link,
         merge_existing = merge_existing,
@@ -2236,7 +2258,7 @@ fn render_ownership_populated(
         );
     }
 
-    let merge_panel = render_merge_panel(merge_groups, rows);
+    let merge_panel = render_merge_panel(merge_groups, rows, "/code-ownership");
 
     // Derived roll-ups for the extra summary chips.
     let total_comment: u64 = rows.iter().map(|r| r.comment).sum();
@@ -8332,7 +8354,7 @@ async fn async_run_result_handler(
         return (StatusCode::NOT_FOUND, Html(html)).into_response();
     };
 
-    let Ok(run) = read_json(&json_path) else {
+    let Ok(mut run) = read_json(&json_path) else {
         let folder_hint = output_folder_hint(&json_path);
         let redirect_url = format!("/runs/result/{run_id}");
         return missing_scan_relocate_response(
@@ -8349,6 +8371,13 @@ async fn async_run_result_handler(
         );
     };
 
+    // Fold GitHub no-reply aliases (covers scans that predate the scan-time auto-merge) and apply
+    // any operator-defined identity merges, so this report's Code Ownership panel matches the
+    // dedicated /code-ownership page.
+    auto_merge_noreply_identities(&mut run);
+    let merge_map = IdentityMap::load(&identities_path(&state));
+    apply_identity_map(&mut run, &merge_map);
+
     let confluence_configured = {
         let store = state.confluence.lock().await;
         store.is_configured()
@@ -8361,6 +8390,7 @@ async fn async_run_result_handler(
         &csp_nonce,
         confluence_configured,
         state.server_mode,
+        &merge_map.groups,
     )
 }
 
@@ -8730,6 +8760,73 @@ fn recompute_cocomo(run: &AnalysisRun, mode_str: &str) -> CocomoFields {
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::similar_names)] // abbreviated names (fa=files_analyzed, cl=code_lines, etc.) are intentional
 #[allow(clippy::cast_precision_loss)] // COCOMO ratio: f64 precision on line counts is adequate
+/// Render the Code Ownership panel for the run-result page: the per-contributor table plus the
+/// shared "Combine contributors" merge panel. Returns an empty string when the run carries no
+/// blame attribution (attribution disabled, or a non-git path), so the section simply doesn't
+/// appear. Merges post to the shared `/api/ownership/merge` endpoint and redirect back to this
+/// run's result page via `redirect_to`.
+fn render_result_ownership_section(
+    run: &AnalysisRun,
+    merge_groups: &[AuthorMergeGroup],
+    redirect_to: &str,
+) -> String {
+    use std::fmt::Write as _;
+    let total_code: u64 = run.authors.iter().map(|a| a.counts.code_lines).sum();
+    let rows = build_ownership_rows(Some(run), total_code);
+    if rows.is_empty() {
+        return String::new();
+    }
+    let name_link = |r: &OwnershipRow| -> String {
+        let name = own_esc(&r.name);
+        match r.profile.as_deref() {
+            Some(url) => format!(
+                r#"<a class="author-link" href="{url}" target="_blank" rel="noopener" title="View {name}'s profile / contributions">{name}</a>"#,
+                url = own_esc(url),
+                name = name,
+            ),
+            None => name,
+        }
+    };
+    let mut author_table = String::new();
+    for r in &rows {
+        let _ = write!(
+            author_table,
+            r#"<tr><td><span class="own-dot" data-sx-style="background:{color};"></span>{name}</td><td><span class="own-email">{email}</span></td><td class="num">{code}</td><td class="num">{comment}</td><td class="num">{blank}</td><td class="num">{total}</td><td class="num own-pct">{pct:.1}%</td><td class="num">{files}</td></tr>"#,
+            color = r.color,
+            name = name_link(r),
+            email = own_esc(&r.email),
+            code = fmt_num(r.code as i64),
+            comment = fmt_num(r.comment as i64),
+            blank = fmt_num(r.blank as i64),
+            total = fmt_num(r.total as i64),
+            pct = r.code_pct,
+            files = r.files_owned,
+        );
+    }
+    let merge_panel = render_merge_panel(merge_groups, &rows, redirect_to);
+    let plural = if rows.len() == 1 { "" } else { "s" };
+    format!(
+        r#"<div class="cocomo-box own-result-box">
+      <div class="cocomo-box-head">
+        <span class="cocomo-box-title">Code Ownership</span>
+        <span class="own-result-count">{count} contributor{plural}</span>
+      </div>
+      <p class="cocomo-box-note own-result-intro">Per-author line ownership from <strong>git blame</strong>. GitHub no-reply aliases fold into a contributor's real email automatically; use <strong>Combine contributors</strong> below to merge across different emails &mdash; applied on top of the scan with no re-scan, and reflected right here on this report.</p>
+      <div class="own-result-scroll">
+        <table class="own-result-table">
+          <thead><tr><th>Author</th><th>Email</th><th class="num">Code</th><th class="num">Comment</th><th class="num">Blank</th><th class="num">Total</th><th class="num">Code %</th><th class="num">Files</th></tr></thead>
+          <tbody>{author_table}</tbody>
+        </table>
+      </div>
+      {merge_panel}
+    </div>"#,
+        count = rows.len(),
+        plural = plural,
+        author_table = author_table,
+        merge_panel = merge_panel,
+    )
+}
+
 fn render_result_page(
     run: &AnalysisRun,
     artifacts: &RunArtifacts,
@@ -8737,6 +8834,7 @@ fn render_result_page(
     csp_nonce: &str,
     confluence_configured: bool,
     server_mode: bool,
+    merge_groups: &[AuthorMergeGroup],
 ) -> Response {
     let ctx = &artifacts.result_context;
     let prev_entry = &ctx.prev_entry;
@@ -8827,6 +8925,9 @@ fn render_result_page(
         mode_tooltip: cocomo_mode_tooltip,
     } = recompute_cocomo(run, ctx.cocomo_mode.as_str());
     let complexity_alert = ctx.complexity_alert;
+
+    let ownership_html =
+        render_result_ownership_section(run, merge_groups, &format!("/runs/result/{run_id}"));
 
     let template = ResultTemplate {
         version: env!("CARGO_PKG_VERSION"),
@@ -8978,6 +9079,7 @@ fn render_result_page(
             run.summary_totals.coverage_lines_hit,
             run.summary_totals.coverage_lines_found,
         ),
+        ownership_html,
     };
 
     Html(
@@ -19446,6 +19548,9 @@ fn generate_offline_index(
             run.summary_totals.coverage_lines_hit,
             run.summary_totals.coverage_lines_found,
         ),
+        // The offline mirror is a static file:// page with no server behind it, so the
+        // server-backed merge panel is omitted — the run's auto-merged identities still show.
+        ownership_html: String::new(),
     };
 
     if let Ok(html) = template.render() {
@@ -26632,6 +26737,10 @@ struct ScanSetupTemplate {
     .stat-chip-tip::after { content:''; position:absolute; bottom:100%; left:50%; transform:translateX(-50%); border:5px solid transparent; border-bottom-color:var(--text); }
     .stat-chip:hover .stat-chip-tip { opacity:1; transform:translateX(-50%) translateY(0); }
     .cocomo-box { background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:20px 22px; }
+    /* COCOMO / Tests strips carry only four chips — pin them to four columns so they fill the
+       box width instead of inheriting the eight-column hero grid and bunching to the left. */
+    .cocomo-box .summary-strip { grid-template-columns:repeat(4,1fr); margin-top:0; }
+    @media(max-width:640px){.cocomo-box .summary-strip{grid-template-columns:repeat(2,1fr);}}
     .cocomo-box-head { display:flex; align-items:center; gap:10px; margin-bottom:16px; padding-bottom:14px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
     .cocomo-box-title { font-size:18px; font-weight:750; color:var(--text); letter-spacing:-0.01em; }
     .cocomo-mode-pill-wrap { position:relative; display:inline-flex; align-items:center; cursor:help; }
@@ -26640,6 +26749,49 @@ struct ScanSetupTemplate {
     .cocomo-mode-tip::before { content:''; position:absolute; bottom:100%; left:14px; border:5px solid transparent; border-bottom-color:var(--text); }
     .cocomo-mode-pill-wrap:hover .cocomo-mode-tip { opacity:1; transform:translateY(0); }
     .cocomo-box-note { font-size:13px; color:var(--muted); margin-top:10px; line-height:1.6; }
+    /* Code Ownership panel (contributor table + Combine-contributors merge UI) */
+    .own-result-box .section-header{font-size:13px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin:22px 0 10px;padding-top:16px;border-top:1px solid var(--line);}
+    .own-result-count{font-size:12px;font-weight:700;color:var(--muted);padding:3px 10px;border-radius:999px;background:var(--surface-3);border:1px solid var(--line-strong);}
+    .own-result-intro{margin-top:2px;margin-bottom:14px;}
+    .own-result-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px;}
+    .own-result-table{width:100%;border-collapse:collapse;font-size:13px;}
+    .own-result-table th{background:var(--surface-3);padding:9px 12px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;}
+    .own-result-table td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:middle;}
+    .own-result-table tr:last-child td{border-bottom:none;}
+    .own-result-table tbody tr:hover td{background:var(--surface-2);}
+    .own-result-table .num{text-align:right;font-variant-numeric:tabular-nums;}
+    .own-result-table .own-pct{font-weight:700;color:var(--oxide);}
+    .own-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;vertical-align:middle;}
+    .own-email{color:var(--muted);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    .own-result-box .author-link{color:var(--oxide-2);text-decoration:none;font-weight:inherit;} .own-result-box .author-link:hover{text-decoration:underline;}
+    .own-result-box .section-header:first-of-type{border-top:none;padding-top:0;margin-top:20px;}
+    .own-result-box .panel{margin-bottom:0;}
+    .merge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(325px,1fr));gap:11px;margin-bottom:14px;}
+    .merge-opt{display:flex;align-items:center;gap:11px;padding:13px 17px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);cursor:pointer;transition:transform .22s cubic-bezier(.16,1,.3,1),border-color .18s ease,background .18s ease,box-shadow .22s ease;}
+    .merge-opt:hover{border-color:var(--oxide);background:var(--surface);transform:translateY(-3px) scale(1.02);box-shadow:0 12px 28px rgba(77,44,20,0.18);}
+    .merge-opt:hover .merge-opt-dot{transform:scale(1.35);box-shadow:0 0 0 4px rgba(196,92,16,0.15);}
+    .merge-opt:hover .merge-opt-name{color:var(--oxide-2);}
+    .merge-opt:active{transform:translateY(-1px) scale(1.0);}
+    .merge-opt input{accent-color:var(--oxide);width:17px;height:17px;flex:0 0 auto;cursor:pointer;}
+    .merge-opt-dot{width:11px;height:11px;border-radius:50%;flex:0 0 auto;transition:transform .2s ease,box-shadow .2s ease;}
+    .merge-opt-name{font-size:15px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .merge-opt-email{font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;}
+    .merge-controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;}
+    .merge-name-input{flex:1 1 240px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);color:var(--text);font-size:13px;outline:none;}
+    .merge-name-input:focus{border-color:var(--oxide);}
+    .merge-btn{padding:9px 18px;border:none;border-radius:10px;background:var(--oxide);color:#fff;font-size:13px;font-weight:800;cursor:pointer;transition:background .15s ease,transform .15s ease;}
+    .merge-btn:hover{background:var(--oxide-2);transform:translateY(-1px);}
+    .merge-mailmap-link{font-size:12px;font-weight:700;color:var(--oxide-2);text-decoration:none;}
+    .merge-mailmap-link:hover{text-decoration:underline;}
+    .merge-existing{margin-top:16px;border-top:1px solid var(--line);padding-top:12px;}
+    .merge-existing-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px;}
+    .merge-chip{display:flex;align-items:center;gap:12px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);margin-bottom:6px;}
+    .merge-chip-text{font-size:12px;color:var(--muted);flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .merge-chip-text strong{color:var(--text);font-size:13px;}
+    .merge-unmerge{padding:5px 12px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;}
+    .merge-unmerge:hover{background:var(--surface-2);border-color:var(--oxide);color:var(--oxide-2);}
+    .merge-mailmap-note{margin:12px 0 0;font-size:12px;line-height:1.6;color:var(--muted);background:var(--surface-2);border:1px solid var(--line);border-left:3px solid var(--oxide);border-radius:8px;padding:10px 13px;}
+    .merge-mailmap-note strong{color:var(--text);}
     /* Submodule panel */
     .submodule-panel { margin-top: 18px; margin-bottom: 18px; padding: 18px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface-2); }
     /* Metrics tables stack */
@@ -27527,6 +27679,8 @@ struct ScanSetupTemplate {
       <div class="cocomo-box-note">No code coverage detected. Re-run with <code>--lcov-path &lt;coverage.info&gt;</code> to populate this section.</div>
       {% endif %}
     </div>
+
+    {{ ownership_html|safe }}
 
     <div class="section-pair">
     <section class="panel">
@@ -28973,6 +29127,9 @@ struct ResultTemplate {
     cov_branch_pct: String,
     /// Lines hit / lines found summary, e.g. "1 247 / 1 432" — empty if no data.
     cov_lines_summary: String,
+    /// Pre-rendered Code Ownership panel (contributor table + Combine-contributors merge UI).
+    /// Empty when the run has no blame attribution or on the static offline mirror.
+    ownership_html: String,
 }
 
 #[derive(Template)]

@@ -1542,6 +1542,70 @@ fn sort_and_reindex_authors(run: &mut AnalysisRun, merged: Vec<Author>) {
     run.authors = sorted;
 }
 
+/// True for a GitHub per-user no-reply commit address
+/// (`login@users.noreply.github.com` or `ID+login@users.noreply.github.com`).
+fn is_github_noreply(email: &str) -> bool {
+    email
+        .trim()
+        .to_lowercase()
+        .ends_with("users.noreply.github.com")
+}
+
+/// Fold each GitHub `users.noreply.github.com` identity into a real-email identity of the same
+/// person, matched by display name, keeping the real email as canonical. Repos routinely carry
+/// both a contributor's private-email GitHub address and their real email, splitting one person
+/// across two rows; this collapses them so the ownership view shows a single identity. Matching is
+/// by normalized display name, so distinct bots/people (e.g. `copilot-swe-agent[bot]`) never
+/// collapse into an unrelated author. Runs automatically at scan time and is a no-op when nothing
+/// matches — the operator-driven [`apply_identity_map`] still handles arbitrary cross-account
+/// merges on top.
+///
+/// Public so surfaces that load a previously-serialized run (scanned before this pass existed) can
+/// apply it at render time without a re-scan; it is idempotent, so re-running on an already-merged
+/// run is a no-op.
+pub fn auto_merge_noreply_identities(run: &mut AnalysisRun) {
+    if run.authors.len() < 2 {
+        return;
+    }
+    // Real-email identity per normalized name. Authors arrive sorted by code lines owned, so the
+    // first match is the dominant identity — the right merge target and canonical email/name.
+    let mut real_by_name: HashMap<String, (String, String)> = HashMap::new();
+    for a in &run.authors {
+        if !is_github_noreply(&a.canonical_email) {
+            real_by_name
+                .entry(a.canonical_name.trim().to_lowercase())
+                .or_insert_with(|| (a.canonical_email.clone(), a.canonical_name.clone()));
+        }
+    }
+    if real_by_name.is_empty() {
+        return;
+    }
+    let resolved: Vec<(String, String, String)> = run
+        .authors
+        .iter()
+        .map(|a| {
+            if is_github_noreply(&a.canonical_email)
+                && let Some((email, name)) =
+                    real_by_name.get(&a.canonical_name.trim().to_lowercase())
+            {
+                (email.to_lowercase(), name.clone(), email.clone())
+            } else {
+                (
+                    a.canonical_email.to_lowercase(),
+                    a.canonical_name.clone(),
+                    a.canonical_email.clone(),
+                )
+            }
+        })
+        .collect();
+    let (merged, old_to_new) = merge_authors(&run.authors, &resolved);
+    if merged.len() == run.authors.len() {
+        return; // nothing folded
+    }
+    fold_file_ownership(&mut run.per_file_records, &old_to_new);
+    sort_and_reindex_authors(run, merged);
+}
+
 /// Return the name of the CI system if the process is running inside one.
 fn detect_ci_system() -> Option<&'static str> {
     let ev = |k: &str| std::env::var(k).is_ok();
@@ -1997,7 +2061,7 @@ fn assemble_run(
         format!("{}-{}", now.format("%Y%m%d-%H%M"), uuid_suffix)
     };
 
-    AnalysisRun {
+    let mut run = AnalysisRun {
         tool: ToolMetadata {
             name: "sloc".into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -2044,7 +2108,11 @@ fn assemble_run(
         duplicate_groups,
         duplicates_excluded: 0,
         authors,
-    }
+    };
+    // Collapse GitHub no-reply aliases into the same person's real-email identity before the run
+    // is serialized, so every downstream surface (HTML report, web, JSON, MCP) sees one identity.
+    auto_merge_noreply_identities(&mut run);
+    run
 }
 
 /// Attach per-file git activity (commit count + last-change date) for the hotspots view, in place.
@@ -4195,6 +4263,74 @@ author-mail <other@example.com>
             .find(|o| o.author_id == run.authors[0].id)
             .unwrap();
         assert_eq!(nima_own.counts.code_lines, 140);
+    }
+
+    #[test]
+    fn auto_merge_folds_github_noreply_into_real_email() {
+        let mut run = minimal_run_with_authors(vec![
+            author(0, "Nima Shafie", "nima@gmail.com", 200),
+            author(
+                1,
+                "Nima Shafie",
+                "69773301+NimaShafie@users.noreply.github.com",
+                30,
+            ),
+            author(
+                2,
+                "copilot-swe-agent[bot]",
+                "1+Copilot@users.noreply.github.com",
+                10,
+            ),
+        ]);
+        run.per_file_records[0].ownership = Some(vec![
+            FileOwnership {
+                author_id: 0,
+                counts: AuthorLineCounts {
+                    code_lines: 200,
+                    comment_lines: 0,
+                    blank_lines: 0,
+                    total_lines: 200,
+                },
+            },
+            FileOwnership {
+                author_id: 1,
+                counts: AuthorLineCounts {
+                    code_lines: 30,
+                    comment_lines: 0,
+                    blank_lines: 0,
+                    total_lines: 30,
+                },
+            },
+        ]);
+
+        auto_merge_noreply_identities(&mut run);
+
+        // The two "Nima Shafie" rows collapse; the unrelated bot no-reply stays separate.
+        assert_eq!(
+            run.authors.len(),
+            2,
+            "noreply Nima folded into real-email Nima"
+        );
+        let nima = run
+            .authors
+            .iter()
+            .find(|a| a.canonical_name == "Nima Shafie")
+            .expect("merged author present");
+        assert_eq!(
+            nima.canonical_email, "nima@gmail.com",
+            "real email preferred"
+        );
+        assert_eq!(nima.counts.code_lines, 230, "counts summed");
+        assert!(
+            run.authors
+                .iter()
+                .any(|a| a.canonical_name == "copilot-swe-agent[bot]"),
+            "bot identity not merged into a same-named person",
+        );
+        // The file's two ownership rows for the merged pair collapse into one.
+        let own = run.per_file_records[0].ownership.as_ref().unwrap();
+        let nima_own = own.iter().find(|o| o.author_id == nima.id).unwrap();
+        assert_eq!(nima_own.counts.code_lines, 230);
     }
 
     // ── Path / git helpers ────────────────────────────────────────────────────

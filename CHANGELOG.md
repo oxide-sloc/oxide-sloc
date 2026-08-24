@@ -10,6 +10,32 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.18] — 2026-08-24
+
+### Added
+
+- **Merge contributors from the run report**: the `/runs/result` page now carries a full,
+  server-backed Code Ownership panel — the per-contributor table plus the "Combine
+  contributors" merge UI — so identities can be merged (and unmerged) straight from the report
+  and the change is reflected in place, redirecting back to the same run.
+
+### Changed
+
+- **Automatic no-reply identity folding**: GitHub `users.noreply.github.com` commit addresses
+  now fold into the same person's real-email identity automatically (matched by display name,
+  keeping the real email), so a contributor no longer appears twice. Applied everywhere —
+  HTML/PDF reports, the web UI, JSON, and MCP — including previously-scanned runs at render
+  time, with no re-scan needed.
+
+### Fixed
+
+- **`/runs/result` layout**: the COCOMO and Tests & Coverage stat strips no longer bunch into
+  the left half of their boxes — they fill the full width again (four columns).
+- **HTML report Code Style Analysis**: the "Style Guide Adherence by Language" block is now
+  padded and carded instead of cramped against the summary chips and per-file table.
+
+---
+
 ## [1.6.17] — 2026-08-22
 
 ### Added

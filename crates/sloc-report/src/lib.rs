@@ -5836,9 +5836,11 @@ struct WarningOpportunityRow {
     body.dark-theme .rpt-load-divider{background:linear-gradient(90deg,transparent,rgba(196,92,16,.28),transparent);}
     @media (prefers-reduced-motion:reduce){ #rpt-loading-overlay .rpt-bg-blob,#rpt-loading-overlay .rpt-spinner,#rpt-loading-overlay .rpt-load-word,#rpt-loading-overlay .rpt-dot{animation:none!important;}}
     /* ── Code Style Analysis section ── */
-    .style-guide-grid{display:grid;gap:10px;}
-    .style-guide-row{display:grid;grid-template-columns:140px 1fr 52px;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;cursor:default;position:relative;transition:transform .18s ease,box-shadow .18s ease,background .18s ease;}
-    .style-guide-row:hover{transform:translateY(-2px);box-shadow:0 6px 22px rgba(77,44,20,0.18);background:var(--surface-2);}
+    .style-guide-adherence{margin-top:26px;padding:18px 20px 20px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);}
+    .style-guide-adherence-title{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:14px;}
+    .style-guide-grid{display:grid;gap:14px;}
+    .style-guide-row{display:grid;grid-template-columns:150px 1fr 52px;align-items:center;gap:14px;padding:10px 12px;border-radius:8px;cursor:default;position:relative;transition:transform .18s ease,box-shadow .18s ease,background .18s ease;}
+    .style-guide-row:hover{transform:translateY(-2px);box-shadow:0 6px 22px rgba(77,44,20,0.18);background:var(--surface);}
     .style-guide-label{font-size:12px;font-weight:800;color:var(--text);text-align:right;white-space:nowrap;}
     .style-guide-track{background:var(--surface-3);border-radius:6px;height:20px;overflow:hidden;position:relative;box-shadow:inset 0 1px 3px rgba(0,0,0,.08);}
     .style-guide-fill{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--oxide),var(--oxide-2));transition:width .65s cubic-bezier(.25,.46,.45,.94),filter .18s ease;position:relative;}
@@ -6511,8 +6513,8 @@ struct WarningOpportunityRow {
             </div>
           </div>
           <!-- Language selector tab strip -->
-          <div style="margin-top:20px;">
-            <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:10px;">Style Guide Adherence by Language</div>
+          <div class="style-guide-adherence">
+            <div class="style-guide-adherence-title">Style Guide Adherence by Language</div>
             <div id="style-lang-tabs" class="style-lang-tabs"></div>
             <div class="style-guide-grid" id="style-guide-bars"></div>
           </div>

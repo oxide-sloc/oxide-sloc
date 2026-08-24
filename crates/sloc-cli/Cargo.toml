@@ -51,14 +51,14 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-sloc-config = { path = "../sloc-config", version = "1.6.17" }
-sloc-core = { path = "../sloc-core", version = "1.6.17" }
-sloc-git = { path = "../sloc-git", version = "1.6.17" }
-sloc-report = { path = "../sloc-report", version = "1.6.17" }
-sloc-web = { path = "../sloc-web", version = "1.6.17" }
+sloc-config = { path = "../sloc-config", version = "1.6.18" }
+sloc-core = { path = "../sloc-core", version = "1.6.18" }
+sloc-git = { path = "../sloc-git", version = "1.6.18" }
+sloc-report = { path = "../sloc-report", version = "1.6.18" }
+sloc-web = { path = "../sloc-web", version = "1.6.18" }
 
 # On Windows the native directory picker (rfd) is win32-only and pulls in no extra system
 # libraries, so keep it on by default there. Feature unification means this turns on
 # `native-dialog` for Windows builds without it being a cross-platform default.
 [target.'cfg(windows)'.dependencies]
-sloc-web = { path = "../sloc-web", version = "1.6.17", features = ["native-dialog"] }
+sloc-web = { path = "../sloc-web", version = "1.6.18", features = ["native-dialog"] }
