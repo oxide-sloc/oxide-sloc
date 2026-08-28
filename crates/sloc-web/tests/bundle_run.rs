@@ -64,7 +64,7 @@ fn bundle_run_writes_layout_and_registers_entry() {
     let run_dir = sloc_web::bundle_run(&run, out_root.path(), "run-1234", None)
         .expect("bundle_run should succeed");
 
-    // The run directory follows the web convention: <project_label>_<run_id>.
+    // The run directory follows the web convention: <project_label>-<branch>-<short-run-id>.
     assert!(
         run_dir.is_dir(),
         "run dir must exist: {}",
@@ -72,8 +72,8 @@ fn bundle_run_writes_layout_and_registers_entry() {
     );
     assert_eq!(
         run_dir.file_name().and_then(|s| s.to_str()),
-        Some("myproject_run-1234"),
-        "run dir name must be <project_label>_<run_id>"
+        Some("myproject-main-run-1234"),
+        "run dir name folds in the branch and short run id"
     );
 
     // result_<stem>.json — stem is <label>_<git_commit_short>.
@@ -125,8 +125,8 @@ fn bundle_run_label_override_and_generated_run_id() {
 
     assert_eq!(
         run_dir.file_name().and_then(|s| s.to_str()),
-        Some("my-service_explicit-id"),
-        "label is sanitized and joined with the run id"
+        Some("my-service-main-explicit-id"),
+        "label is sanitized, branch folded in, and joined with the run id"
     );
     let result_json = run_dir.join("json").join("result_my-service.json");
     assert!(

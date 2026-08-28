@@ -7093,6 +7093,7 @@ fn attrib_estimate_unknown() -> AttribEstimateResponse {
             estimated_seconds: 0,
             submodule_count: 0,
             combined_commit_count: 0,
+            branch: None,
         },
         estimated_label: String::new(),
     }
@@ -7953,7 +7954,14 @@ async fn run_analysis_task(task: AnalysisTask) {
         task.git_ref.as_deref(),
         &task.project_path,
     );
-    let run_dir = output_root.join(format!("{project_label}_{run_id}"));
+    // For git-remote scans the ref is already in `project_label`; for local-path scans fold in the
+    // checked-out branch so the folder name is self-describing.
+    let dir_branch = if task.git_repo.as_deref().is_some_and(|s| !s.is_empty()) {
+        None
+    } else {
+        run.git_branch.as_deref()
+    };
+    let run_dir = output_root.join(derive_run_dir_name(&project_label, dir_branch, &run_id));
     let file_stem = derive_file_stem(&project_label, run.git_commit_short.as_deref());
 
     let result_context = RunResultContext {
@@ -8186,6 +8194,30 @@ fn derive_project_label(
         }
         _ => sanitize_project_label(fallback_path),
     }
+}
+
+/// Build a compact on-disk run-directory name: `<project>[-<branch>]-<date>-<time>-<short-uuid>`.
+///
+/// The `run_id` (`YYYYMMDD-HHMM-<32-hex-uuid>`) keeps a folder unique but its full UUID makes the
+/// name long and unreadable, so this trims the UUID to 8 chars and folds the branch in after the
+/// project name. The full `run_id` still lives inside the run JSON, which is what every lookup
+/// matches on, so shortening the folder name is safe. `branch` is skipped when empty or already
+/// reflected in `project_label` (git-remote scans encode the ref there).
+fn derive_run_dir_name(project_label: &str, branch: Option<&str>, run_id: &str) -> String {
+    // Trim the 32-hex UUID tail to 8 chars while preserving the "date-time" prefix.
+    let short_run = match run_id.rsplit_once('-') {
+        Some((stamp, uuid)) if uuid.len() > 8 && uuid.chars().all(|c| c.is_ascii_hexdigit()) => {
+            format!("{stamp}-{}", &uuid[..8])
+        }
+        _ => run_id.to_string(),
+    };
+    let branch_part = branch
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(|b| format!("-{}", sanitize_project_label(b)))
+        .filter(|part| !project_label.contains(part.trim_start_matches('-')))
+        .unwrap_or_default();
+    format!("{project_label}{branch_part}-{short_run}")
 }
 
 fn derive_file_stem(project_label: &str, commit_short: Option<&str>) -> String {
@@ -12431,7 +12463,11 @@ async fn api_ingest_handler(
             );
         }
         let project_label = sanitize_project_label(&label_for_task);
-        let output_dir = resolve_output_root(None).join(format!("{project_label}_{run_id}"));
+        let output_dir = resolve_output_root(None).join(derive_run_dir_name(
+            &project_label,
+            run.git_branch.as_deref(),
+            &run_id,
+        ));
         let file_stem = match run.git_commit_short.as_deref().map(str::trim) {
             Some(c) if !c.is_empty() => format!("{project_label}_{c}"),
             _ => project_label,
@@ -19247,7 +19283,11 @@ pub fn bundle_run(
         }
     };
 
-    let run_dir = out_root.join(format!("{project_label}_{run_id}"));
+    let run_dir = out_root.join(derive_run_dir_name(
+        &project_label,
+        run.git_branch.as_deref(),
+        run_id,
+    ));
     let file_stem = derive_file_stem(&project_label, run.git_commit_short.as_deref());
 
     let report_html = render_html(run).context("failed to render HTML report for bundle output")?;
@@ -19862,7 +19902,11 @@ pub(crate) fn scan_path_to_artifacts(
     let html = render_html(&run)?;
     let run_id = run.tool.run_id.clone();
     let project_label = sanitize_project_label(label);
-    let output_dir = resolve_output_root(None).join(format!("{project_label}_{run_id}"));
+    let output_dir = resolve_output_root(None).join(derive_run_dir_name(
+        &project_label,
+        run.git_branch.as_deref(),
+        &run_id,
+    ));
     let file_stem = {
         let commit = run.git_commit_short.as_deref().unwrap_or("").trim();
         if commit.is_empty() {
@@ -19940,7 +19984,7 @@ pub fn build_sub_run(
     sub: &sloc_core::SubmoduleSummary,
     parent_path: &str,
 ) -> AnalysisRun {
-    let sub_files: Vec<_> = parent
+    let mut sub_files: Vec<_> = parent
         .per_file_records
         .iter()
         .filter(|r| r.submodule.as_deref() == Some(sub.name.as_str()))
@@ -19982,6 +20026,12 @@ pub fn build_sub_run(
             coverage_branches_hit += u64::from(cov.branches_hit);
         }
     }
+
+    // Rebuild a submodule-scoped author roll-up from the per-file blame data carried over from the
+    // parent, remapping author ids in place so the sub-report's Code Ownership section resolves.
+    // Without this the child inherits ownership indices into an empty author list and the whole
+    // git-attribution section silently vanishes from every submodule report.
+    let authors = sloc_core::scope_authors_to_records(&parent.authors, &mut sub_files);
 
     AnalysisRun {
         tool: parent.tool.clone(),
@@ -20033,7 +20083,7 @@ pub fn build_sub_run(
         dryness_pct: None,
         duplicate_groups: vec![],
         duplicates_excluded: 0,
-        authors: Vec::new(),
+        authors,
     }
 }
 
@@ -21639,6 +21689,9 @@ struct SubmoduleRow {
     .lc-metric { background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;flex:1 1 0;min-width:0; }
     .lc-metric-label { font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
     .lc-metric-value { font-size:1rem;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+    /* The Phase value holds long labels ("Attributing authorship", "Summarizing submodules") in a
+       narrow card — let it wrap and shrink so the whole message stays readable instead of clipping. */
+    #lc-phase { font-size:.8rem;line-height:1.2;white-space:normal;overflow:visible;text-overflow:clip;word-break:break-word; }
     .lc-stage-desc { font-size:12px;color:var(--muted);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:9px 14px;margin-bottom:18px;line-height:1.5;transition:opacity .3s; }
     .lc-steps { display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:2px 0;margin-bottom:18px; }
     .lc-step { display:flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;color:var(--muted);border:1.5px solid transparent;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;transition:all .25s; }
@@ -21695,8 +21748,14 @@ struct SubmoduleRow {
     .submodule-preview-chip:hover .submodule-chip-tooltip { opacity:1; transform:translateX(-50%) translateY(0); }
     .submodule-base-repo-btn { appearance:none; display:inline-flex; align-items:center; gap:5px; padding:3px 11px; border-radius:999px; font-size:12px; font-weight:700; background:rgba(77,44,20,0.1); border:1px solid rgba(77,44,20,0.25); color:var(--text); cursor:pointer; transition:background .15s ease; }
     .submodule-base-repo-btn:hover { background:rgba(77,44,20,0.18); }
-    .path-info-row { display:flex; align-items:center; gap:6px; margin-top:6px; border-bottom:none; padding:0; }
-    .commit-counts { display:flex; align-items:center; gap:20px; margin-left:2.5rem; }
+    .path-info-row { display:flex; align-items:stretch; justify-content:flex-start; gap:0; margin-top:8px; border:1px solid var(--line); border-radius:10px; padding:0; overflow:hidden; flex-wrap:wrap; width:fit-content; max-width:100%; background:var(--surface); }
+    .path-info-cell { display:flex; align-items:center; gap:7px; padding:8px 18px; border-left:1px solid var(--line); }
+    .path-info-row > .path-info-cell:first-child, .path-info-row > *:first-child { border-left:none; }
+    .path-info-cell.hidden, .commit-counts.hidden { display:none; }
+    .pi-branch svg { width:15px; height:15px; flex:0 0 auto; opacity:.8; color:var(--muted); }
+    .pi-branch-label { font-size:12px; font-weight:600; color:var(--muted); }
+    .pi-branch-name { font-size:13px; font-weight:800; color:var(--oxide,#b85d33); }
+    .commit-counts { display:flex; align-items:center; gap:20px; margin-left:0; padding:8px 18px; border-left:1px solid var(--line); }
     .commit-counts .cc-item { display:flex; flex-direction:column; line-height:1.15; }
     .commit-counts .cc-val { font-size:13px; font-weight:800; color:var(--oxide,#b85d33); font-variant-numeric:tabular-nums; }
     .commit-counts .cc-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); white-space:nowrap; }
@@ -22076,11 +22135,18 @@ struct SubmoduleRow {
                     ℹ️ Files are compressed and streamed — no fixed size limit.
                   </div>
                   {% endif %}
-                  <div class="path-info-row">
-                    <button type="button" class="info-icon-btn" id="project-size-btn" title="Total disk size of the selected project directory">
-                      <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/></svg>
-                      <span id="project-size-text">Project size: —</span>
-                    </button>
+                  <div class="path-info-row" id="path-info-row">
+                    <div class="path-info-cell">
+                      <button type="button" class="info-icon-btn" id="project-size-btn" title="Total disk size of the selected project directory">
+                        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/></svg>
+                        <span id="project-size-text">Project size: —</span>
+                      </button>
+                    </div>
+                    <div class="path-info-cell pi-branch hidden" id="git-branch-box" title="Currently checked-out git branch">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                      <span class="pi-branch-label">Git Branch:</span>
+                      <span class="pi-branch-name" id="git-branch-name">—</span>
+                    </div>
                     <div class="commit-counts hidden" id="commit-counts" title="Git commit history depth (HEAD)">
                       <div class="cc-item">
                         <span class="cc-val" id="cc-super">—</span>
@@ -23971,8 +24037,19 @@ int main() { … }   ← code
         }
         return 'Per-author attribution (git blame): ' + (on ? 'on' : 'off') + suffix;
       }
-      // Populate the "super-repo vs. with-submodules" commit-count display next to project size.
+      // Populate the "super-repo vs. with-submodules" commit-count display next to project size,
+      // plus the current-branch chip that sits between project size and the commit counts.
       function updateCommitCounts(d) {
+        var bBox = document.getElementById('git-branch-box');
+        var bName = document.getElementById('git-branch-name');
+        if (bBox) {
+          if (d && d.is_git && d.branch) {
+            if (bName) bName.textContent = d.branch;
+            bBox.classList.remove('hidden');
+          } else {
+            bBox.classList.add('hidden');
+          }
+        }
         var box = document.getElementById('commit-counts');
         if (!box) return;
         if (!d || !d.is_git || !d.commit_count) { box.className = 'commit-counts hidden'; return; }
@@ -37633,6 +37710,54 @@ mod utility_tests {
     #[test]
     fn derive_file_stem_empty_commit_returns_label() {
         assert_eq!(derive_file_stem("myproject", Some("")), "myproject");
+    }
+
+    #[test]
+    fn derive_run_dir_name_trims_uuid_and_folds_branch() {
+        let name = derive_run_dir_name(
+            "myproject",
+            Some("main"),
+            "20260827-1234-abcdef0123456789abcdef0123456789",
+        );
+        assert_eq!(name, "myproject-main-20260827-1234-abcdef01");
+    }
+
+    #[test]
+    fn derive_run_dir_name_without_branch_omits_segment() {
+        let name = derive_run_dir_name(
+            "myproject",
+            None,
+            "20260827-1234-abcdef0123456789abcdef0123456789",
+        );
+        assert_eq!(name, "myproject-20260827-1234-abcdef01");
+    }
+
+    #[test]
+    fn derive_run_dir_name_skips_branch_already_in_label() {
+        // Git-remote labels already encode the ref (e.g. "repo_main"); don't duplicate it.
+        let name = derive_run_dir_name(
+            "repo-main",
+            Some("main"),
+            "20260827-1234-abcdef0123456789abcdef0123456789",
+        );
+        assert_eq!(name, "repo-main-20260827-1234-abcdef01");
+    }
+
+    #[test]
+    fn derive_run_dir_name_passes_through_unexpected_run_id() {
+        // A run_id that isn't the "stamp-uuid" shape is left intact (no hex tail to trim).
+        let name = derive_run_dir_name("proj", None, "custom-run");
+        assert_eq!(name, "proj-custom-run");
+    }
+
+    #[test]
+    fn derive_run_dir_name_sanitizes_branch_with_slash() {
+        let name = derive_run_dir_name(
+            "proj",
+            Some("feature/new-ui"),
+            "20260827-1234-abcdef0123456789abcdef0123456789",
+        );
+        assert_eq!(name, "proj-new-ui-20260827-1234-abcdef01");
     }
 
     // ── split_patterns ────────────────────────────────────────────────────────

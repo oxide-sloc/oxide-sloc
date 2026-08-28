@@ -913,6 +913,76 @@ fn attribute_ownership(
     resolver.finish(records)
 }
 
+/// Rebuild a scoped author roll-up from the per-file `ownership` already present on `records`,
+/// remapping each [`FileOwnership::author_id`] to a compact, local index.
+///
+/// Used when a sub-report (e.g. one git submodule) is split out of a parent run: the child keeps
+/// only a subset of the parent's `per_file_records`, whose `ownership` entries still index into the
+/// parent's [`AnalysisRun::authors`]. This recomputes each author's `counts` from just those files,
+/// drops authors who own nothing in the subset, orders them by code lines owned (descending), and
+/// rewrites the records' `author_id`s in place so they resolve against the returned list. Returns an
+/// empty vec when attribution never ran (no ownership on any record).
+#[must_use]
+pub fn scope_authors_to_records(
+    parent_authors: &[Author],
+    records: &mut [FileRecord],
+) -> Vec<Author> {
+    // Sum each referenced parent author's line counts across just the scoped records.
+    let mut acc: HashMap<u32, AuthorLineCounts> = HashMap::new();
+    for rec in records.iter() {
+        if let Some(ownership) = rec.ownership.as_ref() {
+            for fo in ownership {
+                acc.entry(fo.author_id).or_default().add(&fo.counts);
+            }
+        }
+    }
+    if acc.is_empty() {
+        return Vec::new();
+    }
+
+    // Order authors by code lines owned (descending), tie-broken by parent id for stability.
+    let mut parent_ids: Vec<u32> = acc.keys().copied().collect();
+    parent_ids.sort_by(|&a, &b| acc[&b].code_lines.cmp(&acc[&a].code_lines).then(a.cmp(&b)));
+
+    let mut remap: HashMap<u32, u32> = HashMap::new();
+    let mut scoped: Vec<Author> = Vec::with_capacity(parent_ids.len());
+    for (new_id, parent_id) in parent_ids.iter().enumerate() {
+        let new_id = new_id as u32;
+        remap.insert(*parent_id, new_id);
+        let counts = acc[parent_id];
+        // The parent list should always contain the referenced id; fall back defensively.
+        match parent_authors.get(*parent_id as usize) {
+            Some(pa) => scoped.push(Author {
+                id: new_id,
+                canonical_name: pa.canonical_name.clone(),
+                canonical_email: pa.canonical_email.clone(),
+                aliases: pa.aliases.clone(),
+                counts,
+            }),
+            None => scoped.push(Author {
+                id: new_id,
+                canonical_name: "Unknown".to_string(),
+                canonical_email: String::new(),
+                aliases: Vec::new(),
+                counts,
+            }),
+        }
+    }
+
+    // Rewrite each record's ownership author_ids to the new compact indices.
+    for rec in records.iter_mut() {
+        if let Some(ownership) = rec.ownership.as_mut() {
+            for fo in ownership.iter_mut() {
+                if let Some(&new_id) = remap.get(&fo.author_id) {
+                    fo.author_id = new_id;
+                }
+            }
+        }
+    }
+
+    scoped
+}
+
 /// Blame a single record: read the working-tree bytes, classify each physical line, and pair it
 /// with the git identity that last touched it. `None` when the file has no language, can't be
 /// read, or `git blame` produced nothing (non-git path, shallow clone). The category/identity
@@ -1026,6 +1096,10 @@ pub struct AttributionEstimate {
     /// Total commit depth across the super-repo **and** every submodule combined — i.e.
     /// [`Self::commit_count`] plus the sum of each submodule's own `HEAD` depth.
     pub combined_commit_count: u64,
+    /// Currently checked-out branch (`refs/heads/<branch>` that `HEAD` points at), or the CI
+    /// branch env fallback. `None` for a detached `HEAD` or a non-git path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// Files-per-second throughput assumed for the blame pass when estimating its duration. Derived
@@ -1059,6 +1133,7 @@ pub fn estimate_attribution_cost(root: &Path) -> AttributionEstimate {
             estimated_seconds: 0,
             submodule_count: 0,
             combined_commit_count: 0,
+            branch: None,
         };
     }
 
@@ -1095,7 +1170,27 @@ pub fn estimate_attribution_cost(root: &Path) -> AttributionEstimate {
         estimated_seconds: blameable_files.div_ceil(BLAME_FILES_PER_SEC),
         submodule_count: submodules.len() as u64,
         combined_commit_count,
+        branch: current_branch(root),
     }
+}
+
+/// Best-effort name of the currently checked-out branch for `root`: the `refs/heads/<branch>` that
+/// `HEAD` points at, falling back to the CI branch env var. `None` for a detached `HEAD` (where
+/// `HEAD` is a bare SHA) or a non-git path. Cheap — one small file read, no `git` subprocess.
+#[must_use]
+pub fn current_branch(root: &Path) -> Option<String> {
+    if let Some(git_dir) = find_git_dir(root)
+        && let Ok(head) = fs::read_to_string(git_dir.join("HEAD"))
+        && let Some(branch) = head.trim().strip_prefix("ref: ").and_then(|refname| {
+            refname
+                .strip_prefix("refs/heads/")
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+        })
+    {
+        return Some(branch.to_string());
+    }
+    ci_branch_from_env()
 }
 
 /// `git rev-list --count HEAD` in `dir`, or 0 on any failure (empty/shallow/non-git).
@@ -4485,6 +4580,110 @@ author-mail <other@example.com>
         let groups = find_duplicate_groups(&analyzed);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].len(), 2);
+    }
+
+    fn rec_with_ownership(path: &str, owns: &[(u32, u64)]) -> FileRecord {
+        use sloc_languages::{Language, ParseMode, RawLineCounts};
+        let ownership = owns
+            .iter()
+            .map(|&(author_id, code)| FileOwnership {
+                author_id,
+                counts: AuthorLineCounts {
+                    code_lines: code,
+                    comment_lines: 0,
+                    blank_lines: 0,
+                    total_lines: code,
+                },
+            })
+            .collect();
+        FileRecord {
+            path: path.into(),
+            relative_path: path.into(),
+            language: Some(Language::Rust),
+            size_bytes: 10,
+            detected_encoding: Some("utf-8".into()),
+            raw_line_categories: RawLineCounts::default(),
+            effective_counts: EffectiveCounts::default(),
+            status: FileStatus::AnalyzedExact,
+            warnings: vec![],
+            generated: false,
+            minified: false,
+            vendor: false,
+            parse_mode: Some(ParseMode::Lexical),
+            submodule: None,
+            coverage: None,
+            style_analysis: None,
+            cyclomatic_complexity: None,
+            lsloc: None,
+            commit_count: None,
+            last_commit_date: None,
+            ownership: Some(ownership),
+            content_hash: 0,
+        }
+    }
+
+    fn scoped_author(id: u32, name: &str) -> Author {
+        Author {
+            id,
+            canonical_name: name.into(),
+            canonical_email: format!("{name}@example.com"),
+            aliases: vec![],
+            counts: AuthorLineCounts::default(),
+        }
+    }
+
+    #[test]
+    fn scope_authors_to_records_recomputes_and_remaps() {
+        // Parent has three authors; the subset only references ids 0 and 2.
+        let parent = vec![
+            scoped_author(0, "Alice"),
+            scoped_author(1, "Bob"),
+            scoped_author(2, "Carol"),
+        ];
+        // Carol owns more code in the subset than Alice, so she must rank first (new id 0).
+        let mut records = vec![
+            rec_with_ownership("x.rs", &[(0, 10), (2, 40)]),
+            rec_with_ownership("y.rs", &[(2, 5)]),
+        ];
+        let scoped = scope_authors_to_records(&parent, &mut records);
+
+        assert_eq!(scoped.len(), 2, "only referenced authors survive");
+        assert_eq!(scoped[0].canonical_name, "Carol");
+        assert_eq!(scoped[0].counts.code_lines, 45);
+        assert_eq!(scoped[1].canonical_name, "Alice");
+        assert_eq!(scoped[1].counts.code_lines, 10);
+
+        // Ownership ids are remapped to the compact, scoped indices.
+        let x_owner_ids: Vec<u32> = records[0]
+            .ownership
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|o| o.author_id)
+            .collect();
+        assert!(x_owner_ids.contains(&0), "Carol -> new id 0");
+        assert!(x_owner_ids.contains(&1), "Alice -> new id 1");
+    }
+
+    #[test]
+    fn scope_authors_to_records_empty_when_no_ownership() {
+        let parent = vec![scoped_author(0, "Alice")];
+        let mut records = vec![{
+            let mut r = rec_with_ownership("x.rs", &[]);
+            r.ownership = None;
+            r
+        }];
+        assert!(scope_authors_to_records(&parent, &mut records).is_empty());
+    }
+
+    #[test]
+    fn current_branch_reads_head_ref() {
+        // A HEAD ref beats any CI env var, so this is deterministic under parallel test runs.
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature-x\n").unwrap();
+        assert_eq!(current_branch(dir.path()).as_deref(), Some("feature-x"));
     }
 
     #[test]
