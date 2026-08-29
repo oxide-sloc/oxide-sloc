@@ -10,6 +10,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.19] — 2026-08-29
+
+### Added
+
+- **Submodule code ownership**: the web UI now surfaces per-submodule code ownership, and the
+  Step-1 scan form gains a branch table so a specific branch can be picked before scanning.
+
+### Changed
+
+- **Compact run directories**: scan run directories now use a shorter, more readable naming
+  scheme.
+
+### Security
+
+- **Filesystem path hardening**: added a parent-directory (`..`) traversal barrier to filesystem
+  path handling so requests can no longer escape their intended root.
+
+---
+
 ## [1.6.18] — 2026-08-24
 
 ### Added

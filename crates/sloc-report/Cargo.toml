@@ -20,9 +20,9 @@ chrono.workspace = true
 headless_chrome = "1"
 printpdf = { version = "0.12", default-features = false }
 serde_json.workspace = true
-sloc-core = { path = "../sloc-core", version = "1.6.18" }
+sloc-core = { path = "../sloc-core", version = "1.6.19" }
 
 [dev-dependencies]
 tempfile = "3"
-sloc-config = { path = "../sloc-config", version = "1.6.18" }
-sloc-languages = { path = "../sloc-languages", version = "1.6.18" }
+sloc-config = { path = "../sloc-config", version = "1.6.19" }
+sloc-languages = { path = "../sloc-languages", version = "1.6.19" }

@@ -22,9 +22,9 @@ ignore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-sloc-config = { path = "../sloc-config", version = "1.6.18" }
+sloc-config = { path = "../sloc-config", version = "1.6.19" }
 tracing.workspace = true
-sloc-languages = { path = "../sloc-languages", version = "1.6.18" }
+sloc-languages = { path = "../sloc-languages", version = "1.6.19" }
 
 [dev-dependencies]
 tempfile = "3"
