@@ -624,11 +624,12 @@ impl ScanProfileStore {
     }
 
     fn save(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        let path = sloc_core::reject_traversal(path)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self)?;
-        fs::write(path, json)?;
+        fs::write(&path, json)?;
         Ok(())
     }
 }
@@ -4608,7 +4609,10 @@ fn dir_writable(dir: &std::path::Path) -> bool {
     if dir.as_os_str().is_empty() {
         return true;
     }
-    let _ = std::fs::create_dir_all(dir);
+    let Ok(dir) = sloc_core::reject_traversal(dir) else {
+        return false;
+    };
+    let _ = std::fs::create_dir_all(&dir);
     let probe = dir.join(".oxide-sloc-health-probe");
     match std::fs::write(&probe, b"") {
         Ok(()) => {
@@ -7595,7 +7599,7 @@ fn build_submodule_row(
         render_sub_report_html(&sub_run, Some(&pdf_server_url))
             .ok()
             .and_then(|sub_html| {
-                let sub_dir = run_dir.join("submodules");
+                let sub_dir = sloc_core::reject_traversal(&run_dir.join("submodules")).ok()?;
                 let _ = fs::create_dir_all(&sub_dir);
                 let html_path = sub_dir.join(format!("{artifact_key}.html"));
                 if fs::write(&html_path, sub_html.as_bytes()).is_ok() {
@@ -19141,7 +19145,7 @@ fn persist_run_artifacts(
 
     // HTML report in html/.
     let html_path = {
-        let path = html_dir.join(format!("report_{file_stem}.html"));
+        let path = sloc_core::reject_traversal(&html_dir.join(format!("report_{file_stem}.html")))?;
         fs::write(&path, report_html)
             .with_context(|| format!("failed to write HTML report to {}", path.display()))?;
         Some(path)
@@ -19149,7 +19153,7 @@ fn persist_run_artifacts(
 
     // JSON result in json/.
     let json_path = {
-        let path = json_dir.join(format!("result_{file_stem}.json"));
+        let path = sloc_core::reject_traversal(&json_dir.join(format!("result_{file_stem}.json")))?;
         let json = serde_json::to_string_pretty(run)
             .context("failed to serialize analysis run to JSON")?;
         fs::write(&path, json)
@@ -19351,6 +19355,10 @@ fn generate_offline_index(
     scan_config_path: Option<&Path>,
     result_context: &RunResultContext,
 ) {
+    let Ok(run_dir) = sloc_core::reject_traversal(run_dir) else {
+        return;
+    };
+    let run_dir = run_dir.as_path();
     let prev_entry = &result_context.prev_entry;
     let prev_scan_count = result_context.prev_scan_count;
     let project_path = &result_context.project_path;

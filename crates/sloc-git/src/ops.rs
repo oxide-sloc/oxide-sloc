@@ -814,6 +814,8 @@ fn classify_source(url: &str) -> GitSource {
 /// Returns an error if the source is rejected, the clone directory cannot be created,
 /// or the underlying `git clone` / `git fetch` command fails.
 pub fn clone_or_fetch(url: &str, dest: &Path) -> Result<()> {
+    let dest = crate::reject_traversal(dest)?;
+    let dest = dest.as_path();
     let normalized = normalize_git_url(url);
     let url = normalized.as_str();
     match classify_source(url) {
@@ -1170,7 +1172,15 @@ pub fn is_local_repo_path(s: &str) -> bool {
     {
         return false;
     }
-    let p = Path::new(t);
+    // Canonicalize first so a legitimate relative path (e.g. `../repo`) resolves its `..`
+    // segments before the traversal barrier guards the filesystem probes below. A path that
+    // does not exist fails canonicalization and is simply not a local repo.
+    let Ok(p) = std::fs::canonicalize(Path::new(t)) else {
+        return false;
+    };
+    let Ok(p) = crate::reject_traversal(&p) else {
+        return false;
+    };
     if !p.is_dir() {
         return false;
     }
@@ -1298,6 +1308,8 @@ pub fn destroy_worktree(repo: &Path, worktree_path: &Path) -> Result<()> {
 /// Returns an error only if the working tree cannot be inspected; a failed submodule fetch is
 /// swallowed (best-effort).
 pub fn populate_submodules(worktree: &Path) -> Result<Vec<String>> {
+    let worktree = crate::reject_traversal(worktree)?;
+    let worktree = worktree.as_path();
     if !worktree.join(".gitmodules").is_file() {
         return Ok(Vec::new());
     }

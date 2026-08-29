@@ -162,10 +162,11 @@ impl WatchedDirsStore {
     ///
     /// Returns an error if the file cannot be written.
     pub fn save(&self, path: &Path) -> Result<()> {
+        let path = crate::pathsafe::reject_traversal(path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        std::fs::write(&path, serde_json::to_string_pretty(self)?)?;
         Ok(())
     }
 
@@ -201,11 +202,12 @@ impl ScanRegistry {
     ///
     /// Returns an error if the parent directory cannot be created or the file cannot be written.
     pub fn save(&self, registry_path: &Path) -> Result<()> {
+        let registry_path = crate::pathsafe::reject_traversal(registry_path)?;
         if let Some(parent) = registry_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(registry_path, json)?;
+        std::fs::write(&registry_path, json)?;
         Ok(())
     }
 
@@ -316,10 +318,11 @@ impl CleanupPolicyStore {
     ///
     /// Returns an error if the file cannot be written.
     pub fn save(&self, path: &Path) -> Result<()> {
+        let path = crate::pathsafe::reject_traversal(path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        std::fs::write(&path, serde_json::to_string_pretty(self)?)?;
         Ok(())
     }
 }

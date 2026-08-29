@@ -19,6 +19,45 @@ pub use webhook::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Reject a filesystem path that contains a parent-directory (`..`) segment, returning a
+/// freshly-owned path rebuilt from the validated string. This crate is the leaf of the
+/// workspace (it depends on no sibling crates), so it carries its own traversal barrier
+/// rather than reusing `sloc_core::pathsafe`. Callers must use the returned value for the
+/// subsequent filesystem operation so the check dominates the sink.
+///
+/// # Errors
+/// Returns an error when the path contains a `..` component.
+pub(crate) fn reject_traversal(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let text = path.to_string_lossy().into_owned();
+    if text.contains("..") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "refusing filesystem path with a parent-directory (`..`) segment",
+        ));
+    }
+    Ok(std::path::PathBuf::from(text))
+}
+
+#[cfg(test)]
+mod pathsafe_tests {
+    use super::reject_traversal;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn accepts_plain_path() {
+        assert_eq!(
+            reject_traversal(Path::new("clones/repo")).expect("plain path"),
+            PathBuf::from("clones/repo")
+        );
+    }
+
+    #[test]
+    fn rejects_traversal() {
+        assert!(reject_traversal(Path::new("clones/../../etc")).is_err());
+        assert!(reject_traversal(Path::new(r"clones\..\secret")).is_err());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GitRefKind {

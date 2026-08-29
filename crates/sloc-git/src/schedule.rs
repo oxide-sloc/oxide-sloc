@@ -135,8 +135,9 @@ impl ScheduleStore {
     /// # Errors
     /// Returns an error if serialization or writing to disk fails.
     pub fn save(&self, path: &Path) -> Result<()> {
+        let path = crate::reject_traversal(path)?;
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+        std::fs::write(&path, json)?;
         Ok(())
     }
 

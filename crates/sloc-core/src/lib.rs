@@ -7,6 +7,7 @@ pub mod coverage;
 pub mod delta;
 pub mod history;
 pub mod maintenance;
+pub mod pathsafe;
 pub use baseline::{BaselineEntry, BaselineStore, check_against_baseline, resolve_baselines_path};
 pub use coverage::{FileCoverage, aggregate_line_coverage, lookup_coverage, parse_lcov};
 pub use delta::{
@@ -22,6 +23,7 @@ pub use maintenance::{
     plan_run_prune, resolve_output_root, resolve_registry_path, rotate_log, rotated_log_paths,
     run_output_dir,
 };
+pub use pathsafe::reject_traversal;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -1421,7 +1423,10 @@ impl IdentityMap {
     /// fresh install just has no merges).
     #[must_use]
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
+        let Ok(path) = pathsafe::reject_traversal(path) else {
+            return Self::default();
+        };
+        std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
@@ -1432,8 +1437,9 @@ impl IdentityMap {
     /// # Errors
     /// Returns an error if the file cannot be written or serialization fails.
     pub fn save(&self, path: &Path) -> Result<()> {
+        let path = pathsafe::reject_traversal(path)?;
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)
+        std::fs::write(&path, json)
             .with_context(|| format!("failed to write identity map to {}", path.display()))
     }
 
@@ -2152,8 +2158,8 @@ fn assemble_run(
 
     let now = Utc::now();
     let run_id = {
-        let uuid_suffix = Uuid::new_v4().simple().to_string();
-        format!("{}-{}", now.format("%Y%m%d-%H%M"), uuid_suffix)
+        let rand_suffix = Uuid::new_v4().simple().to_string();
+        format!("{}-{}", now.format("%Y%m%d-%H%M"), rand_suffix)
     };
 
     let mut run = AnalysisRun {

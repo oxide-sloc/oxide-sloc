@@ -165,8 +165,9 @@ impl ConfluenceConfigStore {
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        let path = sloc_core::reject_traversal(path)?;
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+        std::fs::write(&path, json)?;
         Ok(())
     }
 

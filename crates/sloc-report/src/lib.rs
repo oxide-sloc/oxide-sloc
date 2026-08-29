@@ -3996,6 +3996,9 @@ pub fn write_pdf_from_run(run: &AnalysisRun, pdf_path: &Path) -> Result<()> {
     use std::fs::File;
     use std::io::BufWriter;
 
+    let pdf_path = sloc_core::reject_traversal(pdf_path)?;
+    let pdf_path = pdf_path.as_path();
+
     const W: f32 = 297.0;
     const H: f32 = 210.0;
     const MARGIN: f32 = 10.0;
@@ -10489,6 +10492,8 @@ fn csv_escape(s: &str) -> String {
 ///
 /// Returns an error if the file cannot be written.
 pub fn write_csv(run: &AnalysisRun, path: &Path) -> Result<()> {
+    let path = sloc_core::reject_traversal(path)?;
+    let path = path.as_path();
     let mut out = String::new();
 
     // ── Section 1: Summary ──────────────────────────────────────────────────
@@ -11121,6 +11126,8 @@ fn build_xlsx(sheets: &[XlSheet<'_>]) -> Vec<u8> {
 /// Returns an error if the file cannot be written.
 #[allow(clippy::too_many_lines)]
 pub fn write_xlsx(run: &AnalysisRun, path: &Path) -> Result<()> {
+    let path = sloc_core::reject_traversal(path)?;
+    let path = path.as_path();
     // Sheet 1 — Summary
     let summary_rows: Vec<Vec<String>> = vec![
         vec!["Run ID".into(), run.tool.run_id.clone()],
