@@ -33,17 +33,23 @@ jobs:
 
       - name: Start server
         run: |
-          # Desktop mode (no SLOC_API_KEY, no --server) so auth is open-by-default and
-          # the scanner can reach every route. SLOC_BIND exposes it to the ZAP container.
-          SLOC_BIND=0.0.0.0:4317 ./target/release/oxide-sloc serve &
+          # Bind to 0.0.0.0 so the ZAP container (via --network=host) can reach it. A
+          # non-loopback bind auto-enables server-mode protections, which fail closed
+          # unless auth is configured; SLOC_ALLOW_UNAUTHENTICATED=1 explicitly opts into
+          # an open, unauthenticated instance on this throwaway CI runner so the scanner
+          # can crawl every route without credentials.
+          SLOC_BIND=0.0.0.0:4317 SLOC_ALLOW_UNAUTHENTICATED=1 \
+            ./target/release/oxide-sloc serve &
           echo "SERVER_PID=$!" >> "$GITHUB_ENV"
-          # Wait for the health endpoint to come up (max ~30s).
+          # Wait for the health endpoint to come up (max ~30s); fail fast if it never does.
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:4317/healthz >/dev/null 2>&1; then
-              echo "server is up"; break
+              echo "server is up"; exit 0
             fi
             sleep 1
           done
+          echo "::error::server failed to become healthy within 30s" >&2
+          exit 1
 
       - name: ZAP baseline scan
         uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25  # v0.15.0
