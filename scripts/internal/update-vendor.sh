@@ -45,20 +45,43 @@ echo "Running cargo vendor..."
 # vendor archive so they can be installed offline on air-gapped agents.
 cargo vendor --sync ci/tools/Cargo.toml vendor/
 
-echo "Packing vendor.tar.gz (gzip -9, deterministic sort)..."
-# Use LC_ALL=C + sorted find output for a reproducible archive on any OS.
-LC_ALL=C tar \
-  --sort=name \
-  --mtime="@0" \
-  --owner=0 --group=0 --numeric-owner \
-  -cf - vendor/ | gzip -9 > vendor.tar.gz
+# Assemble the archive OUTSIDE the repo, then move the finished parts back in.
+# On Windows, Defender real-time-scans the repo tree aggressively: it quarantines
+# the freshly written multi-hundred-MB vendor.tar.gz mid-write (truncating or
+# deleting it), and can briefly lock/remove files under vendor/ while tar reads
+# them ("file changed as we read it"). Building in a temp dir outside the repo
+# sidesteps the write-quarantine, and a one-shot retry absorbs a transient read
+# race. The final <=45 MB parts are small enough that Defender leaves them alone
+# when moved into the repo. This keeps the script robust with no admin rights
+# (a Defender path exclusion would also fix it but requires elevation).
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
-echo "Splitting into 45 MB parts (vendor.tar.gz.aa, .ab, ...)..."
-split -b 45m vendor.tar.gz vendor.tar.gz.
-rm -f vendor.tar.gz
+pack_vendor() {
+  # Use LC_ALL=C + --sort=name for a reproducible archive on any OS.
+  LC_ALL=C tar \
+    --sort=name \
+    --mtime="@0" \
+    --owner=0 --group=0 --numeric-owner \
+    -cf - vendor/ | gzip -9 > "${WORK}/vendor.tar.gz"
+}
 
-echo "Writing ${CHECKSUMS_FILE}..."
-sha256sum vendor.tar.gz.* > "${CHECKSUMS_FILE}"
+echo "Packing vendor.tar.gz in ${WORK} (gzip -9, deterministic sort)..."
+if ! pack_vendor; then
+  echo "  tar was interrupted (likely AV scanning freshly vendored files); retrying once..."
+  sleep 3
+  pack_vendor
+fi
+
+echo "Splitting into 45 MB parts (vendor.tar.gz.aa, .ab, ...) + checksums..."
+# Split and checksum inside WORK so the checksums file records bare part names.
+( cd "${WORK}" \
+    && split -b 45m vendor.tar.gz vendor.tar.gz. \
+    && rm -f vendor.tar.gz \
+    && sha256sum vendor.tar.gz.* > "${CHECKSUMS_FILE}" )
+
+echo "Moving parts + ${CHECKSUMS_FILE} into the repo..."
+mv -f "${WORK}"/vendor.tar.gz.* "${WORK}/${CHECKSUMS_FILE}" ./
 
 echo "Done."
 echo "  Parts   : $(ls vendor.tar.gz.* | tr '\n' ' ')"
