@@ -126,7 +126,7 @@ every release tag:
 docker pull ghcr.io/oxide-sloc/oxide-sloc:latest
 ```
 
-Tags: `latest` (current `main`), a minor series (e.g. `1.6`), and exact versions (e.g. `1.6.19`).
+Tags: `latest` (current `main`), a minor series (e.g. `1.6`), and exact versions (e.g. `1.6.20`).
 
 **Web UI** — the image runs `serve --server` by default, binding `0.0.0.0:4317`. Server mode is
 fail-closed, so provide an API key (sent as `Authorization: Bearer <key>`):

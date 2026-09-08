@@ -10,6 +10,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.20] — 2026-09-07
+
+### Changed
+
+- **Dependency refresh**: bumped 34+ crates to their latest compatible versions and upgraded
+  `tree-sitter` from 0.26.13 to 0.27.0, with the offline vendor archive regenerated to match.
+
+### Fixed
+
+- **Vendor packaging on Windows**: `update-vendor.sh` now packs the archive in a temporary
+  directory so Windows Defender no longer quarantines the large `vendor.tar.gz` parts mid-build.
+- **DAST scan**: the ZAP target server now starts unauthenticated so the scheduled scan can run.
+
+---
+
 ## [1.6.19] — 2026-08-29
 
 ### Added
