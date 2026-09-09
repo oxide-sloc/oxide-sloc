@@ -14,7 +14,7 @@
 <a href="https://github.com/oxide-sloc/oxide-sloc/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/oxide-sloc/oxide-sloc?label=release&color=blue" onerror="this.onerror=null;this.src='docs/badges/version.svg'"></a>
 <a href="https://crates.io/crates/oxide-sloc"><img alt="crates.io" src="https://badgen.net/crates/v/oxide-sloc?label=crates.io&color=orange" onerror="this.onerror=null;this.src='docs/badges/crates.svg'"></a>
 <a href="https://codecov.io/gh/oxide-sloc/oxide-sloc"><img alt="codecov" src="https://codecov.io/gh/oxide-sloc/oxide-sloc/branch/main/graph/badge.svg" onerror="this.onerror=null;this.src='docs/badges/codecov.svg'"></a>
-<a href="./LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg" onerror="this.onerror=null;this.src='docs/badges/license.svg'"></a>
+<a href="./LICENSE"><img alt="License AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg" onerror="this.onerror=null;this.src='docs/badges/license.svg'"></a>
 <a href="https://www.bestpractices.dev/en/projects/12976"><img alt="OpenSSF Best Practices" src="https://www.bestpractices.dev/projects/12976/badge" onerror="this.onerror=null;this.src='docs/badges/ossf-bestpractices.svg'"></a>
 <a href="https://securityscorecards.dev/viewer/?uri=github.com/oxide-sloc/oxide-sloc"><img alt="OpenSSF Scorecard" src="https://api.securityscorecards.dev/projects/github.com/oxide-sloc/oxide-sloc/badge" onerror="this.onerror=null;this.src='docs/badges/ossf-scorecard.svg'"></a>
 <a href="https://docs.rs/oxide-sloc"><img alt="docs.rs" src="https://img.shields.io/docsrs/oxide-sloc" onerror="this.onerror=null;this.src='docs/badges/docs.svg'"></a>
