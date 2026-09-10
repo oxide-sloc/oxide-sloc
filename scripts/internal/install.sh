@@ -888,6 +888,22 @@ replace-with = "vendored-sources"
 directory = "vendor"
 EOF
 
+    # On Windows the bundled toolchain targets x86_64-pc-windows-gnu, which links the
+    # MinGW runtime DYNAMICALLY by default. The produced oxide-sloc.exe then needs
+    # libgcc_s_seh-1.dll, libwinpthread-1.dll (and libstdc++-6.dll if a C++ dep links)
+    # at runtime. Those DLLs live in Git-for-Windows' mingw64\bin, so the exe runs when
+    # launched from Git Bash (that dir is on PATH) but fails with "the code execution
+    # cannot proceed because libwinpthread-1.dll was not found" from cmd.exe, PowerShell,
+    # Explorer, or a service. Statically link the GNU runtime so the source-built exe is
+    # self-contained — matching the MSVC dist binary's zero-external-DLL behaviour.
+    if [[ "$PLATFORM" == windows ]]; then
+        cat >> "$REPO_ROOT/.cargo/config.toml" <<'EOF'
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-args=-static -static-libgcc -static-libstdc++"]
+EOF
+    fi
+
     cd "$REPO_ROOT"
     build_with_progress || exit 1
 
