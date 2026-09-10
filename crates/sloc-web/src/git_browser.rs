@@ -1008,6 +1008,10 @@ fn is_valid_git_ref(s: &str) -> bool {
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '@' | '+'))
         && !s.starts_with('/')
+        // Reject an option-like leading dash: a ref such as `--upload-pack=…` would
+        // otherwise be parsed as a git *flag* rather than a positional revision when it
+        // reaches `git rev-parse`/`git log`, allowing argument injection (CWE-88).
+        && !s.starts_with('-')
         && !s.contains("..")
 }
 
@@ -1519,6 +1523,15 @@ mod tests {
     #[test]
     fn invalid_ref_exclamation_mark() {
         assert!(!is_valid_git_ref("branch!"));
+    }
+
+    #[test]
+    fn invalid_ref_leading_dash_option_injection() {
+        // An option-like leading dash must be rejected so a ref can never be parsed as a
+        // git flag (argument injection) when it reaches `git rev-parse`/`git log`.
+        assert!(!is_valid_git_ref("--upload-pack=touch /tmp/pwned"));
+        assert!(!is_valid_git_ref("-oProxyCommand=evil"));
+        assert!(!is_valid_git_ref("--output=/etc/passwd"));
     }
 
     // ── make_label ───────────────────────────────────────────────────────────
