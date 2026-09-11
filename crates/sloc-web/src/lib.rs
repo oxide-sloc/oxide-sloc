@@ -26801,6 +26801,14 @@ struct ScanSetupTemplate {
     .meta-chip b { color:var(--text); font-weight:700; }
     .site-footer{text-align:center;padding:12px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
     .site-footer a{color:var(--muted);}
+    /* Offline (file://) mirror: grey out and neuter controls that need the running server. */
+    .offline-view .offline-na,.offline-view a[href^="/"]:not(.brand){opacity:.42;pointer-events:none;cursor:not-allowed;text-decoration:none!important;filter:grayscale(.45);}
+    .offline-view a.brand{cursor:default;}
+    .offline-notice{display:none;}
+    .offline-view .offline-notice{display:flex;align-items:center;gap:9px;max-width:1200px;margin:0 auto 16px;padding:10px 15px;border:1px solid var(--line-strong);border-radius:12px;background:var(--surface-3);color:var(--muted);font-size:13px;font-weight:600;position:relative;z-index:1;}
+    .offline-notice svg{flex:0 0 auto;color:var(--oxide-2);}
+    .offline-notice b{color:var(--text);font-weight:800;}
+    body.dark-theme .offline-notice{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.16);}
     .open-path-btn { display:inline-flex; align-items:center; justify-content:center; border-radius: 14px; border: 1px solid var(--line-strong); padding: 11px 14px; color: var(--text); background: var(--surface-3); font-weight: 800; font-size: 14px; cursor: pointer; text-decoration: none; }
     .open-path-btn:hover { border-color: var(--accent); color: var(--accent-2); }
     .empty-card-note { padding: 18px; color: var(--muted); font-size: 14px; line-height: 1.65; border-radius: 12px; border: 1px dashed var(--line-strong); background: var(--surface-2); margin-top: 8px; }
@@ -26959,7 +26967,7 @@ struct ScanSetupTemplate {
     body.has-report-banner{padding-bottom:27px;}
   </style>
 </head>
-<body{% if report_header_footer.is_some() %} class="has-report-banner"{% endif %}>
+<body class="{% if report_header_footer.is_some() %}has-report-banner {% endif %}{% if is_offline %}offline-view{% endif %}">
   <div class="background-watermarks" aria-hidden="true">
     <img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" />
@@ -27029,6 +27037,10 @@ struct ScanSetupTemplate {
   </div>
 
   <div class="page">
+    <div class="offline-notice" role="status">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+      <span><b>Saved offline report.</b> Live server features (navigation, downloads, PDF generation, delete) are disabled. Open this run in a running oxide-sloc server to use them.</span>
+    </div>
     <section class="hero">
       <div class="hero-top">
         <div>
@@ -29058,9 +29070,37 @@ struct ScanSetupTemplate {
         .then(function(){var ms=Math.round(performance.now()-t0);if(pingEl)pingEl.textContent=ms+'ms';if(tipEl)tipEl.textContent='Server latency: '+ms+' ms';setDotColor(ms);})
         .catch(function(){if(pingEl)pingEl.textContent='';if(tipEl)tipEl.textContent='';if(dot){dot.style.background='#e05c5c';dot.style.boxShadow='0 0 0 4px rgba(224,92,92,0.14)';}});
     }
+    var offlineView=document.body.classList.contains('offline-view')||location.protocol==='file:';
+    if(offlineView){
+      var lbl=document.getElementById('server-status-label');
+      var tip=document.querySelector('.server-status-tip');
+      if(dot){dot.style.background='#8a8a8a';dot.style.boxShadow='none';}
+      if(pingEl)pingEl.textContent='';
+      if(lbl)lbl.textContent='Offline';
+      if(tip){var tn=tip.firstChild;if(tn&&tn.nodeType===3){tn.nodeValue='Saved offline report \u2014 not connected to a server. ';}}
+      if(fm)fm.textContent='oxide-sloc v{{ version }} \u2014 Saved offline report';
+      return;
+    }
     doPing();
     setInterval(doPing,5000);
     if(fm){var isServer=location.hostname!=='localhost'&&location.hostname!=='127.0.0.1'&&location.hostname!=='[::1]';fm.textContent='oxide-sloc v{{ version }} \u2014 Mode: '+(isServer?'Network Server':'Local');}
+  })();</script>
+  <script nonce="{{ csp_nonce }}">(function(){
+    if(!(document.body.classList.contains('offline-view')||location.protocol==='file:'))return;
+    document.body.classList.add('offline-view');
+    var msg='Unavailable in a saved offline report \u2014 open this run in a running oxide-sloc server to use this.';
+    // Server-only action buttons (they call the running server via fetch/XHR): disable outright.
+    Array.prototype.forEach.call(document.querySelectorAll('#download-bundle-btn,#delete-run-btn,.open-folder-button,.open-path-btn,#postConfluenceBtn'),function(b){
+      b.disabled=true;b.classList.add('offline-na');b.title=msg;
+    });
+    // Absolute (server-route) links do nothing without the server: block navigation. Relative
+    // artifact links written by the bundle (html/, json/, pdf/, submodules/) are left intact.
+    Array.prototype.forEach.call(document.querySelectorAll('a[href^="/"]'),function(a){
+      if(a.classList.contains('brand')){a.addEventListener('click',function(e){e.preventDefault();});return;}
+      a.classList.add('offline-na');a.setAttribute('aria-disabled','true');a.setAttribute('tabindex','-1');
+      if(!a.title)a.title=msg;
+      a.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();});
+    });
   })();</script>
   <script nonce="{{ csp_nonce }}">(function(){var s=document.querySelector('.summary-strip-hero');if(!s)return;var pad=s.querySelector('.stat-chip-pad');var real=Array.prototype.slice.call(s.querySelectorAll('.stat-chip')).filter(function(el){return el!==pad;});if(!real.length)return;function upd(){var n=real.length;if(pad){if(n%2===1){pad.style.display='';n++;}else{pad.style.display='none';}}var perRow=window.innerWidth<=640?2:Math.ceil(n/2);s.style.gridTemplateColumns='repeat('+perRow+',minmax(0,1fr))';}upd();window.addEventListener('resize',upd);})();</script>
   {% if let Some(banner) = report_header_footer %}
@@ -29173,8 +29213,9 @@ struct ResultTemplate {
     /// Header/footer identification banner, mirrored from the HTML/PDF report.
     report_header_footer: Option<String>,
     run_id_short: String,
-    /// True when rendering a static offline file (index.html); hides server-only actions.
-    #[allow(dead_code)]
+    /// True when rendering the static offline `index.html`. Adds `offline-view` to
+    /// `<body>` so server-only actions (nav routes, downloads, delete, PDF generation)
+    /// are greyed out and footer server-links are disabled — see the offline CSS/JS below.
     is_offline: bool,
     /// Total cyclomatic complexity score across all analyzed files.
     cyclomatic_complexity: u64,
