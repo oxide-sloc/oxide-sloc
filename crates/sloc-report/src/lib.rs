@@ -5720,6 +5720,8 @@ struct WarningOpportunityRow {
       z-index: 1;
     }
     .report-footer { margin-top: 16px; padding: 14px 24px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 12px; font-weight: 600; }
+    /* Offline (file://) view: grey out server-route links that do nothing without the server. */
+    .offline-view .offline-na { opacity: .42; pointer-events: none; cursor: not-allowed; text-decoration: none !important; filter: grayscale(.45); }
 
     /* ── Chart controls & containers ───────────────────────────────────── */
     .chart-section { }
@@ -7026,16 +7028,26 @@ struct WarningOpportunityRow {
 
   <div id="r-tt" aria-hidden="true"></div>
   <script nonce="{{ nonce }}">
-    // Hide "View PDF" button and block brand-link navigation when opened as a local file
+    // When opened as a local file (offline / air-gapped), server routes do nothing:
+    // hide "View PDF", block the brand link, and grey out every other server-route link.
     (function () {
+      if (window.location.protocol !== 'file:') return;
+      document.body.classList.add('offline-view');
       var pdfBtn = document.getElementById('nav-view-pdf-btn');
-      if (pdfBtn && window.location.protocol === 'file:') {
-        pdfBtn.style.display = 'none';
-      }
-      var brand = document.querySelector('a[data-local-brand]');
-      if (brand && window.location.protocol === 'file:') {
-        brand.addEventListener('click', function (e) { e.preventDefault(); });
-      }
+      if (pdfBtn) { pdfBtn.style.display = 'none'; }
+      var msg = 'Unavailable in a saved offline report. Open in a running oxide-sloc server to use this.';
+      // Absolute (server-route) links are dead offline; relative artifact links are left intact.
+      Array.prototype.slice.call(document.querySelectorAll('a[href^="/"]')).forEach(function (a) {
+        if (a.getAttribute('data-local-brand') !== null) {
+          a.addEventListener('click', function (e) { e.preventDefault(); });
+          return;
+        }
+        a.classList.add('offline-na');
+        a.setAttribute('aria-disabled', 'true');
+        a.setAttribute('tabindex', '-1');
+        if (!a.title) { a.title = msg; }
+        a.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); });
+      });
     })();
 
     (function () {
