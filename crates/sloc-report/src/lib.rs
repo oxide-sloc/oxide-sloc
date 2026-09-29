@@ -2045,8 +2045,12 @@ fn pdf_render_metric_tables(ctx: &PdfCtx<'_>, run: &AnalysisRun, tbl_top: f32) {
     ];
     pdf_table_render_section(ctx, left_x, tbl_top, half_w, lbl_frac, "FILES", &files_rows);
 
-    let lc_rows: [(&str, String); 5] = [
+    let lc_rows: [(&str, String); 6] = [
         ("Physical lines", pdf_fmt_full(tot.total_physical_lines)),
+        (
+            "Logical lines",
+            tot.lsloc.map_or_else(|| "--".to_string(), pdf_fmt_full),
+        ),
         ("Code lines", pdf_fmt_full(tot.code_lines)),
         ("Comment lines", pdf_fmt_full(tot.comment_lines)),
         ("Blank lines", pdf_fmt_full(tot.blank_lines)),
@@ -6178,6 +6182,7 @@ struct WarningOpportunityRow {
 
       <div class="summary-grid">
         <div class="metric" data-metric-value="{{ run.summary_totals.total_physical_lines }}"><div class="metric-tooltip">Total lines across all analyzed files, including code, comments, and blank lines.</div><div class="metric-label">Physical lines</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>
+        {% if let Some(lsloc) = run.summary_totals.lsloc %}<div class="metric" data-metric-value="{{ lsloc }}"><div class="metric-tooltip">Logical SLOC: count of executable statements (semicolons for C-family; non-continuation lines for Python/Ruby/Shell). Normalises across coding styles and independent of formatting.</div><div class="metric-label">Logical lines</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>{% endif %}
         <div class="metric" data-metric-value="{{ run.summary_totals.code_lines }}"><div class="metric-tooltip">Lines containing executable source code, excluding comments and blanks.</div><div class="metric-label">Code</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>
         <div class="metric" data-metric-value="{{ run.summary_totals.comment_lines }}"><div class="metric-tooltip">Lines consisting entirely of comments or inline documentation.</div><div class="metric-label">Comments</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>
         <div class="metric" data-metric-value="{{ run.summary_totals.blank_lines }}"><div class="metric-tooltip">Empty or whitespace-only lines used for readability and spacing.</div><div class="metric-label">Blank</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>
@@ -6190,7 +6195,6 @@ struct WarningOpportunityRow {
         <div class="metric" data-metric-density><div class="metric-tooltip">Percentage of physical lines that contain executable source code — higher means a leaner, code-dense codebase.</div><div class="metric-label">Code density</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>
         <div class="metric" data-metric-value="{{ run.summary_totals.files_analyzed }}"><div class="metric-tooltip">Total number of source files included in this analysis.</div><div class="metric-label">Files analyzed</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>
         {% if run.summary_totals.cyclomatic_complexity > 0 %}<div class="metric" data-metric-value="{{ run.summary_totals.cyclomatic_complexity }}"><div class="metric-tooltip">Sum of branch decision keywords (if, for, while, ||, &amp;&amp;, …) across all code lines. Approximates total McCabe cyclomatic complexity.</div><div class="metric-label">Complexity score</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>{% endif %}
-        {% if let Some(lsloc) = run.summary_totals.lsloc %}<div class="metric" data-metric-value="{{ lsloc }}"><div class="metric-tooltip">Logical SLOC: count of executable statements (semicolons for C-family; non-continuation lines for Python/Ruby/Shell). Normalises across coding styles.</div><div class="metric-label">Logical SLOC</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>{% endif %}
         {% if uloc > 0 %}<div class="metric" data-metric-value="{{ uloc }}"><div class="metric-tooltip">Unique Lines of Code: distinct non-blank code lines across all files. Counts each line once regardless of how many files it appears in.</div><div class="metric-label">Unique SLOC (ULOC)</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>{% endif %}
         {% if uloc > 0 && dryness_pct_str != "" %}<div class="metric"><div class="metric-tooltip">ULOC &divide; Code Lines &mdash; the fraction of code lines that are unique. Higher = less copy-paste across the codebase. 100% means every code line is distinct.</div><div class="metric-label">DRYness</div><div class="metric-value"><span class="metric-big">{{ dryness_pct_str }}%</span></div></div>{% endif %}
         {% if duplicate_group_count > 0 %}<div class="metric" data-metric-value="{{ duplicate_group_count }}"><div class="metric-tooltip">Groups of files with identical content detected. These may inflate SLOC totals. Re-run with --no-duplicates to exclude them.</div><div class="metric-label">Duplicate groups</div><div class="metric-value"><span class="metric-big"></span></div><span class="metric-exact"></span></div>{% endif %}
