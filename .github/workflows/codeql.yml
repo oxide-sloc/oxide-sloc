@@ -30,13 +30,13 @@ jobs:
             libxdo-dev
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd  # v4.38.1
+        uses: github/codeql-action/init@88585263c0627ee42c0e1c5143a112c8d6f4aa18  # v4.38.2
         with:
           languages: rust
           # Rust does not support autobuild; 'none' lets CodeQL analyse without a build step
           build-mode: none
 
       - name: Analyze
-        uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd  # v4.38.1
+        uses: github/codeql-action/analyze@88585263c0627ee42c0e1c5143a112c8d6f4aa18  # v4.38.2
         with:
           category: /language:rust
