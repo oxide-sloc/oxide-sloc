@@ -10,6 +10,36 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.21] — 2026-09-28
+
+### Added
+
+- **Recursive report discovery under watched folders** (`crates/sloc-web`): the web UI now finds
+  `result*.json` artifacts at any nesting depth beneath a watched folder (iterative, depth-capped,
+  symlink-safe walk that prunes heavy directories), instead of only the top level.
+
+### Changed
+
+- **Logical-line collapsing spans every multi-line statement** (`crates/sloc-languages`): when the
+  continuation-line policy collapses to logical lines, it now merges any statement split across
+  physical lines — wrapped expressions and multi-line signatures — in every language, not just
+  backslash continuations. A `code_line_continues_statement` helper uses the code-only mask and the
+  language's logical-SLOC strategy to decide whether a line leaves its statement open.
+- **"Logical lines" metric relabel and placement** (`crates/sloc-report`, `crates/sloc-web`): the
+  former "Logical SLOC" metric is renamed to "Logical lines" and moved next to Physical lines in the
+  HTML report, PDF, and the web summary strip.
+- **Compare any scan against any other** (`crates/sloc-web`): the Compare page no longer locks the
+  comparison to a single project, so any scan can be compared against any other.
+
+### Fixed
+
+- **Report UI polish** (`crates/sloc-report`, `crates/sloc-web`): improved leaderboard avatar
+  legibility (stronger text shadow and ring), a wider/shallower destructive-delete confirmation
+  modal with danger-red styling, and spacing/scroll tweaks on the style and language-breakdown
+  tables.
+
+---
+
 ## [1.6.20] — 2026-09-07
 
 ### Changed

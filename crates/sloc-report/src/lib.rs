@@ -5299,7 +5299,8 @@ struct WarningOpportunityRow {
     .lb-r1 { background:linear-gradient(135deg,#f7d774,#e0a92e); color:#5a3d00; border-color:#e0a92e; box-shadow:0 3px 10px rgba(224,169,46,0.45); }
     .lb-r2 { background:linear-gradient(135deg,#e6e7ea,#b9bcc4); color:#3d4048; border-color:#b9bcc4; box-shadow:0 3px 10px rgba(150,153,160,0.35); }
     .lb-r3 { background:linear-gradient(135deg,#eabd92,#cd7f4c); color:#4d2a0e; border-color:#cd7f4c; box-shadow:0 3px 10px rgba(205,127,76,0.35); }
-    .lb-avatar { flex:0 0 auto; width:36px; height:36px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:14px; text-shadow:0 1px 2px rgba(0,0,0,0.25); }
+    .lb-avatar { flex:0 0 auto; width:36px; height:36px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:14px; letter-spacing:.02em; text-shadow:0 0 2px rgba(0,0,0,0.75),0 1px 1px rgba(0,0,0,0.55); box-shadow:inset 0 0 0 1px rgba(255,255,255,0.28),0 2px 6px rgba(0,0,0,0.20); }
+    body.dark-theme .lb-avatar { box-shadow:inset 0 0 0 1px rgba(255,255,255,0.18),0 2px 6px rgba(0,0,0,0.45); }
     .lb-name { flex:0 0 210px; font-size:16px; font-weight:800; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     /* Contributor profile links (ownership table, leaderboard, hotspot owner column) — inherit the
        surrounding weight/size, tint oxide, underline only on hover. */
@@ -6528,7 +6529,7 @@ struct WarningOpportunityRow {
             <div class="style-guide-grid" id="style-guide-bars"></div>
           </div>
           <!-- Per-file style table -->
-          <div style="margin-top:22px;">
+          <div style="margin-top:40px;">
             <div class="toolbar" style="margin-bottom:8px;">
               <div class="toolbar-left">
                 <span style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);">Per-File Style Details</span>
@@ -6778,7 +6779,7 @@ struct WarningOpportunityRow {
         <div>
           <div class="toolbar"><div class="toolbar-left"><h2>Language Breakdown</h2></div><button class="chart-expand-btn" id="lang-overview-expand-btn" title="View full chart" aria-label="Expand charts">&#x2922; Full View</button></div>
           <div id="report-lang-overview" style="margin:0 0 16px;"></div>
-          <div class="table-shell">
+          <div class="table-shell" style="max-height:660px;">
             <table id="lang-breakdown-table" data-sort-table class="table-resizable">
               <colgroup>
                 <col><col><col><col><col><col><col><col><col><col><col><col><col><col>

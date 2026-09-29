@@ -26754,6 +26754,19 @@ struct ScanSetupTemplate {
       display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid rgba(111, 144, 255, 0.30); padding: 11px 14px; text-decoration: none; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 800; font-size: 14px; box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22); cursor: pointer;
     }
     .button.secondary, .copy-button.secondary { background: var(--surface-3); box-shadow: none; color: var(--text); border-color: var(--line-strong); }
+    /* Destructive delete flow — ID-scoped so the danger red beats the generic .button
+       blue gradient (both are single-class, and the inline .button rule loads after
+       app.css). Keeps the trigger + confirm buttons in the same red as the heading so
+       the dialog reads as one coherent danger surface instead of a red/blue mix. */
+    #delete-run-btn, #delete-run-confirm { color:#fff; border-color:#9a2727; background:linear-gradient(135deg,#c1382f,#9a2727); box-shadow:0 12px 24px rgba(178,48,48,0.22); }
+    #delete-run-btn:hover, #delete-run-confirm:hover { background:linear-gradient(135deg,#a12a22,#7f1f1f); border-color:#7f1f1f; }
+    #delete-run-cancel, #delete-run-confirm { min-width:132px; }
+    /* Wide + shallow: use the horizontal room so the warning wraps to fewer lines and
+       the whole card stays short instead of a tall narrow column. */
+    #delete-run-modal .sx-93c3c708 { padding:26px 40px; max-width:760px; }
+    #delete-run-modal .sx-97551196 { font-size:20px; margin-bottom:6px; }
+    #delete-run-modal .sx-aed4a64d { font-size:15px; line-height:1.5; margin:0 0 16px; }
+    #delete-run-modal .sx-f154314f { gap:12px; margin-top:4px; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .path-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
     .path-item { padding: 14px 16px; background: var(--surface-2); display: flex; flex-direction: column; justify-content: center; gap: 4px; }
