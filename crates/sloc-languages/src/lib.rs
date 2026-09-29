@@ -3268,6 +3268,10 @@ fn blank_mask(code: &mut Vec<u8>, n: usize) {
 /// then emit the finalized `LineFacts` for this physical line.
 ///
 /// Returns `None` when the line is part of a continuation sequence and should be deferred.
+// Threads the full per-line lexer state (facts, comment/string context, continuation flags,
+// accumulator) needed to make the merge decision; splitting it would only shuffle the same state
+// through a wrapper struct.
+#[allow(clippy::too_many_arguments)]
 fn finalize_line_facts(
     facts: LineFacts,
     trimmed: &str,
@@ -3275,6 +3279,7 @@ fn finalize_line_facts(
     ieee: IeeeFlags,
     in_block_comment: bool,
     string_state: Option<StringState>,
+    code_continues_statement: bool,
     pending_continuation: &mut Option<LineFacts>,
 ) -> Option<LineFacts> {
     // IEEE 1045-1992 §4.2: track preprocessor/compiler directive lines (C/C++/ObjC).
@@ -3289,12 +3294,17 @@ fn finalize_line_facts(
         raw.compiler_directive_lines += 1;
     }
 
-    // IEEE 1045-1992 continuation-line handling.
-    // A line is a continuation starter when it ends with '\' outside any comment or string.
+    // IEEE 1045-1992 continuation-line handling, extended to logical statements.
+    // Under `collapse_to_logical`, a physical line is a continuation starter when it either
+    //   (a) ends with a literal backslash outside any comment or string (classic C-macro /
+    //       shell / Makefile continuation), or
+    //   (b) carries code that does not terminate its statement, so a statement split across
+    //       several physical lines counts as one logical code line (applies to every
+    //       language via its logical-SLOC strategy — see `code_line_continues_statement`).
     let is_continuation = ieee.collapse_continuation_lines
         && !in_block_comment
         && string_state.is_none()
-        && trimmed.ends_with('\\');
+        && (trimmed.ends_with('\\') || code_continues_statement);
 
     if is_continuation {
         let pending = pending_continuation.get_or_insert_with(LineFacts::default);
@@ -3369,6 +3379,13 @@ fn process_physical_line(
         &mut code_mask,
     );
 
+    // Under collapse_to_logical, decide whether this physical line leaves a statement open
+    // (and should merge into the following line). Uses the code-only mask so trailing comments
+    // and string contents never influence the terminator check.
+    let code_continues_statement = ieee.collapse_continuation_lines
+        && facts.has_code
+        && code_line_continues_statement(&code_mask, config.lsloc_strategy);
+
     let Some(emit) = finalize_line_facts(
         facts,
         trimmed,
@@ -3376,6 +3393,7 @@ fn process_physical_line(
         ieee,
         *in_block_comment,
         *string_state,
+        code_continues_statement,
         pending_continuation,
     ) else {
         return;
@@ -3468,6 +3486,36 @@ fn accumulate_lsloc(raw: &mut RawLineCounts, trimmed: &str, strategy: LslocStrat
             }
         }
         LslocStrategy::Unsupported => {}
+    }
+}
+
+/// Decide whether a code line leaves its statement open under `collapse_to_logical`, so the
+/// following physical line should merge into it as one logical code line.
+///
+/// Operates on the code-only byte mask (`scan_line` already blanked string-literal and comment
+/// regions to spaces), so a trailing `// comment` or a `;` inside a string never skews the
+/// terminator test. Preprocessor directives are always treated as complete lines here — the
+/// backslash rule in `finalize_line_facts` handles multi-line macros. The terminator set is
+/// driven by the language's logical-SLOC strategy so the behaviour generalises across languages:
+/// C-family / semicolon languages end statements on `;`, `{`, `}`, or `:`; brace-light languages
+/// (Python, Ruby, Shell, …) only continue when a line ends on an open delimiter (`,`, `(`, `[`).
+fn code_line_continues_statement(code_mask: &[u8], strategy: LslocStrategy) -> bool {
+    let first = code_mask.iter().copied().find(|b| !b.is_ascii_whitespace());
+    let Some(last) = code_mask
+        .iter()
+        .copied()
+        .rfind(|b| !b.is_ascii_whitespace())
+    else {
+        return false;
+    };
+    // Preprocessor directives (`#include`, `#define`, …) are complete on their own line.
+    if first == Some(b'#') {
+        return false;
+    }
+    match strategy {
+        LslocStrategy::Semicolons => !matches!(last, b';' | b'{' | b'}' | b':'),
+        LslocStrategy::NonContinuationNewlines => matches!(last, b',' | b'(' | b'['),
+        LslocStrategy::Unsupported => false,
     }
 }
 
@@ -5164,6 +5212,59 @@ def fn_a():
         assert_eq!(
             result.raw.code_only_lines, 1,
             "3 continuation lines must collapse to 1 logical code line"
+        );
+    }
+
+    #[test]
+    fn collapse_to_logical_merges_multiline_statement() {
+        // A single statement split across three physical lines collapses to one logical
+        // code line when the policy is CollapseToLogical (no backslashes involved).
+        let input = "int result =\n    a +\n    b;\n";
+        let each = analyze_text(
+            Language::Cpp,
+            input,
+            AnalysisOptions {
+                collapse_continuation_lines: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            each.raw.code_only_lines, 3,
+            "each physical line counts separately by default"
+        );
+        let collapsed = analyze_text(
+            Language::Cpp,
+            input,
+            AnalysisOptions {
+                collapse_continuation_lines: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            collapsed.raw.total_physical_lines, 3,
+            "physical line count is unaffected by the policy"
+        );
+        assert_eq!(
+            collapsed.raw.code_only_lines, 1,
+            "the multi-line statement collapses to one logical code line"
+        );
+    }
+
+    #[test]
+    fn collapse_to_logical_keeps_terminated_statements_distinct() {
+        // Two complete single-line statements must stay two logical code lines.
+        let input = "int a = 1;\nint b = 2;\n";
+        let collapsed = analyze_text(
+            Language::Cpp,
+            input,
+            AnalysisOptions {
+                collapse_continuation_lines: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            collapsed.raw.code_only_lines, 2,
+            "terminated statements are not merged"
         );
     }
 }

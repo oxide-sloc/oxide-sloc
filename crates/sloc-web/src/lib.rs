@@ -6530,35 +6530,54 @@ fn find_file_by_ext(dir: &Path, ext: &str) -> Option<PathBuf> {
         })
 }
 
-/// Collect `result*.json` candidates from a single scan subdirectory, covering both the
-/// legacy flat layout (`<scan_dir>/result*.json`) and the structured one
-/// (`<scan_dir>/json/result*.json`).
-fn subdir_result_json_candidates(sub: &std::path::Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Some(j) = find_result_json_in_dir(sub) {
-        out.push(j);
-    }
-    let json_sub = sub.join("json");
-    if json_sub.is_dir()
-        && let Some(j) = find_result_json_in_dir(&json_sub)
-    {
-        out.push(j);
-    }
-    out
+/// Maximum directory depth walked when discovering scans under a watched folder. Deep enough
+/// for arbitrarily nested layouts (`watched/a/b/c/scan/json/result.json`) while bounding work on
+/// pathological trees.
+const WATCHED_SCAN_MAX_DEPTH: usize = 24;
+
+/// Directory names that never contain scan output and can be huge — pruned from the recursive
+/// walk so watching a large project root stays fast.
+fn is_pruned_scan_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | ".hg" | ".svn" | "vendor" | ".cargo"
+    )
 }
 
+/// Recursively collect every `result*.json` candidate anywhere beneath `folder`, at any nesting
+/// depth. Covers both the legacy flat layout (`<scan_dir>/result*.json`) and the structured one
+/// (`<scan_dir>/json/result*.json`) because the walk visits every directory and probes each one.
+/// Symlinks are not followed (avoids cycles) and known-heavy directories are pruned.
 fn collect_result_json_candidates(folder: &std::path::Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(j) = find_result_json_in_dir(folder) {
-        candidates.push(j);
-    }
-    let Ok(dir_entries) = fs::read_dir(folder) else {
-        return candidates;
-    };
-    for entry in dir_entries.flatten() {
-        let sub = entry.path();
-        if sub.is_dir() {
-            candidates.extend(subdir_result_json_candidates(&sub));
+    let mut stack: Vec<(PathBuf, usize)> = vec![(folder.to_path_buf(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        if let Some(j) = find_result_json_in_dir(&dir) {
+            candidates.push(j);
+        }
+        if depth >= WATCHED_SCAN_MAX_DEPTH {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            // Skip symlinks so a self-referential link cannot loop the walk forever.
+            let is_symlink = entry.file_type().map(|t| t.is_symlink()).unwrap_or(true);
+            if is_symlink {
+                continue;
+            }
+            let sub = entry.path();
+            if !sub.is_dir() {
+                continue;
+            }
+            let pruned = sub
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(is_pruned_scan_dir);
+            if !pruned {
+                stack.push((sub, depth + 1));
+            }
         }
     }
     candidates
@@ -6633,8 +6652,8 @@ fn build_registry_entry_from_json(json_path: PathBuf) -> Option<RegistryEntry> {
     })
 }
 
-/// Scan `folder` (and one level of subdirs) for `result*.json` files and add any new ones to `reg`.
-/// Returns the number of newly linked entries.
+/// Scan `folder` recursively (any nesting depth) for `result*.json` files and add any new ones
+/// to `reg`. Returns the number of newly linked entries.
 fn scan_folder_into_registry(folder: &std::path::Path, reg: &mut ScanRegistry) -> usize {
     let mut linked = 0usize;
     for json_path in collect_result_json_candidates(folder) {
@@ -22440,10 +22459,11 @@ coverage run -m pytest && coverage json   # writes coverage.json
                     </select>
                   </div>
                   <div class="explainer-card prominent sx-38965f9b" >
-                    <div class="advanced-rule-description"><strong>Purpose:</strong> Controls how backslash-continued lines (C macros, shell, Makefile) are counted.<br /><strong>Each physical line</strong> — the IEEE 1045-1992 default; every line with content is counted separately.<br /><strong>Collapse to logical</strong> — a backslash-continued sequence counts as one logical line, matching logical-SLOC conventions.</div>
-                    <div class="code-sample sx-161ac0cc" >#define MAX(a, b) \
-    ((a) &gt; (b) ? (a) : (b))
-# each_physical_line → 2 SLOC
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> Controls how a statement that spans several physical lines is counted. Applies to every language.<br /><strong>Each physical line</strong> — the IEEE 1045-1992 default; every line with content is counted separately.<br /><strong>Collapse to logical</strong> — a statement split across multiple lines counts as one logical code line: backslash-continued sequences (C macros, shell, Makefile) <em>and</em> wrapped expressions or multi-line signatures in any language.</div>
+                    <div class="code-sample sx-161ac0cc" >result =
+    a +
+    b;
+# each_physical_line → 3 SLOC
 # collapse_to_logical → 1 SLOC</div>
                   </div>
                 </div>
@@ -22457,7 +22477,7 @@ coverage run -m pytest && coverage json   # writes coverage.json
                     </select>
                   </div>
                   <div class="explainer-card prominent sx-38965f9b" >
-                    <div class="advanced-rule-description"><strong>Purpose:</strong> Decides how blank lines that fall inside a <code class="sx-c42f23b8" >/* … */</code> block comment are classified.<br /><strong>Count as comment</strong> — IEEE-aligned; blank lines are part of the comment body.<br /><strong>Count as blank</strong> — legacy behaviour; blank lines inside block comments are treated as ordinary blank lines.</div>
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> Decides how blank lines that fall inside a block comment (<code class="sx-c42f23b8" >/* … */</code> and each language's equivalent) are classified.<br /><strong>Count as comment</strong> — IEEE-aligned; blank lines are part of the comment body.<br /><strong>Count as blank</strong> — legacy behaviour; blank lines inside block comments are treated as ordinary blank lines.</div>
                     <div class="code-sample sx-161ac0cc" >/*
  * Summary line
  *              ← blank inside block comment
@@ -27151,6 +27171,14 @@ struct ScanSetupTemplate {
           <div class="stat-chip-exact"></div>
           <div class="stat-chip-tip">Total lines across all analyzed files, including code, comments, and blank lines.</div>
         </div>
+        {% if let Some(ls) = lsloc %}
+        <div class="stat-chip" data-raw="{{ ls }}">
+          <div class="stat-chip-label">Logical lines</div>
+          <div class="stat-chip-val">{{ ls }}</div>
+          <div class="stat-chip-exact"></div>
+          <div class="stat-chip-tip">Count of executable statements (semicolons for C/Java/Go/Rust; non-continuation lines for Python/Ruby/Shell). Normalises across formatting styles and independent of physical line breaks.</div>
+        </div>
+        {% endif %}
         <div class="stat-chip" data-raw="{{ code_lines }}">
           <div class="stat-chip-label">Code</div>
           <div class="stat-chip-val">{{ code_lines }}</div>
@@ -27223,14 +27251,6 @@ struct ScanSetupTemplate {
           <div class="stat-chip-val">{{ cyclomatic_complexity }}</div>
           <div class="stat-chip-exact"></div>
           <div class="stat-chip-tip">Sum of branch decision keywords (if, for, while, ||, &amp;&amp;, …) across all code lines — a lexical approximation of McCabe cyclomatic complexity.{% if complexity_alert > 0 %} Alert threshold: {{ complexity_alert }}.{% endif %}</div>
-        </div>
-        {% endif %}
-        {% if let Some(ls) = lsloc %}
-        <div class="stat-chip" data-raw="{{ ls }}">
-          <div class="stat-chip-label">Logical SLOC</div>
-          <div class="stat-chip-val">{{ ls }}</div>
-          <div class="stat-chip-exact"></div>
-          <div class="stat-chip-tip">Count of executable statements (semicolons for C/Java/Go/Rust; non-continuation lines for Python/Ruby/Shell). Normalises across formatting styles.</div>
         </div>
         {% endif %}
         {% if uloc > 0 %}
@@ -30851,7 +30871,10 @@ struct RelocateScanTemplate {
     .flex-row{display:flex;align-items:center;gap:8px;}
     .report-cell{overflow:visible;white-space:normal;}
     #history-table col:nth-child(1){width:185px;}
-    #history-table col:nth-child(2){width:220px;}
+    /* Project (col 2) is the flexible column: it absorbs all remaining width so the table
+       always fills the container, while the Report column stays compact and pinned at the
+       right edge. Every other column keeps a fixed width. */
+    #history-table col:nth-child(2){width:auto;}
     #history-table col:nth-child(3){width:100px;}
     #history-table col:nth-child(4){width:72px;}
     #history-table col:nth-child(5){width:82px;}
@@ -30860,6 +30883,7 @@ struct RelocateScanTemplate {
     #history-table col:nth-child(8){width:90px;}
     #history-table col:nth-child(9){width:85px;}
     #history-table col:nth-child(10){width:115px;}
+    #history-table col:nth-child(11){width:132px;}
     #history-table td:nth-child(2){white-space:normal;word-break:break-word;overflow:visible;}
     .submod-details{margin-top:6px;font-size:12px;color:var(--muted);}
     .submod-details summary{cursor:pointer;font-weight:600;user-select:none;list-style:none;padding:2px 0;}
@@ -32395,8 +32419,9 @@ struct HistoryTemplate {
       buildCompareAllBar();
 
       // ── Row selection state ───────────────────────────────────────────────
+      // Any scan can be compared against any other — across different Watched Folders and
+      // regardless of project label or scan type. No row is ever locked out of a selection.
       var selected = [];
-      var lockedProject = null; // project label of first selected scan
 
       function updateCompareBtn() {
         var btn = document.getElementById('compare-btn');
@@ -32406,24 +32431,7 @@ struct HistoryTemplate {
         if (cnt) cnt.textContent = selected.length;
       }
 
-      function applyProjectLock() {
-        var allRows = Array.prototype.slice.call(document.querySelectorAll('#compare-tbody .compare-row'));
-        allRows.forEach(function(r) {
-          if (lockedProject === null) {
-            r.classList.remove('row-locked');
-          } else {
-            var proj = r.dataset.project || '';
-            if (proj !== lockedProject) {
-              r.classList.add('row-locked');
-            } else {
-              r.classList.remove('row-locked');
-            }
-          }
-        });
-      }
-
       function toggleRow(row) {
-        if (row.classList.contains('row-locked')) return;
         var vid = row.dataset.vid || row.dataset.run;
         var idx = selected.indexOf(vid);
         if (idx >= 0) {
@@ -32431,11 +32439,7 @@ struct HistoryTemplate {
           row.classList.remove('selected');
           var b = document.getElementById('badge-' + vid);
           if (b) b.textContent = '';
-          // Release project lock if nothing selected
-          if (selected.length === 0) lockedProject = null;
         } else {
-          // Set project lock on first selection
-          if (selected.length === 0) lockedProject = row.dataset.project || null;
           selected.push(vid);
           row.classList.add('selected');
         }
@@ -32443,7 +32447,6 @@ struct HistoryTemplate {
           var b = document.getElementById('badge-' + v);
           if (b) b.textContent = i + 1;
         });
-        applyProjectLock();
         updateCompareBtn();
         buildScopePanel();
       }
@@ -39436,6 +39439,38 @@ mod tests_private {
         let _ = fs::create_dir_all(&root);
         let candidates = collect_result_json_candidates(&root);
         assert!(candidates.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn collect_result_json_candidates_deeply_nested() {
+        // A scan nested several folders below the watched root must still be discovered.
+        let root = std::env::temp_dir().join("sloc_web_crjc_deep");
+        let json_sub = root
+            .join("group")
+            .join("sub")
+            .join("project")
+            .join("scan-1")
+            .join("json");
+        let _ = fs::create_dir_all(&json_sub);
+        let _ = fs::write(json_sub.join("result.json"), b"{}");
+        let candidates = collect_result_json_candidates(&root);
+        assert!(
+            !candidates.is_empty(),
+            "should find result.json nested many levels below the watched root"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn collect_result_json_candidates_prunes_git_dir() {
+        // result.json accidentally inside a .git dir must be ignored by the pruned walk.
+        let root = std::env::temp_dir().join("sloc_web_crjc_prune");
+        let git_sub = root.join(".git").join("json");
+        let _ = fs::create_dir_all(&git_sub);
+        let _ = fs::write(git_sub.join("result.json"), b"{}");
+        let candidates = collect_result_json_candidates(&root);
+        assert!(candidates.is_empty(), "must not descend into .git");
         let _ = fs::remove_dir_all(&root);
     }
 }
