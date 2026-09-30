@@ -231,9 +231,27 @@ struct AnalyzeArgs {
     #[arg(long)]
     no_ignore_files: bool,
 
+    /// Scan EVERYTHING — the single switch to turn off every file filter at once.
+    /// Equivalent to: --no-ignore-files plus clearing excluded_directories
+    /// (.git/node_modules/target/vendor), scanning hidden/dotfiles, lifting the
+    /// max_file_size_bytes cap, and disabling vendor/generated/minified/lockfile
+    /// skipping. The only things still not counted are binary files (no SLOC applies)
+    /// and unsupported languages. Explicit --include-glob / --exclude-glob still apply
+    /// on top, so you can scan-all-but-one-tree. Symlinks stay unfollowed unless you
+    /// also pass --follow-symlinks (to avoid cycles).
+    #[arg(long, visible_alias = "scan-all")]
+    all_files: bool,
+
     /// Follow symbolic links during discovery
     #[arg(long)]
     follow_symlinks: bool,
+
+    /// Scan only this sub-folder of the project root (repeatable). Point PATH at the repo
+    /// root (the folder with .git) and pass --subdir src --subdir crates/foo to analyze just
+    /// those trees. Git detection, hotspots, attribution, and reported paths stay anchored at
+    /// the root, so `src/main.rs` shows as `src/main.rs`. `..` segments are rejected.
+    #[arg(long, value_name = "PATH", visible_alias = "only")]
+    subdir: Vec<String>,
 
     /// Include only files matching this glob (repeatable)
     #[arg(long, value_name = "PATTERN")]
@@ -1472,7 +1490,14 @@ fn run_init(args: &InitArgs) -> Result<()> {
 # Full reference: https://github.com/oxide-sloc/oxide-sloc
 
 [discovery]
+# TIP: to scan absolutely everything in one shot, skip this file and just run
+#   oxide-sloc analyze <path> --all-files
+# It turns off every filter below (ignore files, excluded dirs, size cap, hidden
+# files) plus vendor/generated/minified/lockfile skipping. No config needed.
 # root_paths = ["."]
+# Point root_paths at the repo root and list sub-folders here to scan only those trees while
+# keeping git/hotspots/attribution and reported paths anchored at the root:
+# scan_subdirs = ["src", "crates/foo"]   # empty = scan the whole root
 # include_globs = []
 # exclude_globs = []
 # excluded_directories = [".git", "node_modules", "target", "vendor"]
@@ -2018,6 +2043,19 @@ fn apply_discovery_cli_args(config: &mut AppConfig, args: &AnalyzeArgs) {
     if !args.paths.is_empty() {
         config.discovery.root_paths.clone_from(&args.paths);
     }
+    // --all-files clears every filter first so explicit --include-glob / --exclude-glob
+    // below (and later --enabled-language) still narrow the scan on top of it.
+    if args.all_files {
+        config.discovery.honor_ignore_files = false;
+        config.discovery.ignore_hidden_files = false;
+        config.discovery.excluded_directories.clear();
+        config.discovery.max_file_size_bytes = u64::MAX;
+        config.discovery.include_globs.clear();
+        config.discovery.exclude_globs.clear();
+    }
+    if !args.subdir.is_empty() {
+        config.discovery.scan_subdirs.clone_from(&args.subdir);
+    }
     if !args.include_glob.is_empty() {
         config
             .discovery
@@ -2042,6 +2080,13 @@ fn apply_discovery_cli_args(config: &mut AppConfig, args: &AnalyzeArgs) {
 }
 
 fn apply_analysis_cli_args(config: &mut AppConfig, args: &AnalyzeArgs) {
+    // --all-files also lifts the content-level skips so nothing is dropped by heuristics.
+    if args.all_files {
+        config.analysis.vendor_directory_detection = false;
+        config.analysis.generated_file_detection = false;
+        config.analysis.minified_file_detection = false;
+        config.analysis.include_lockfiles = true;
+    }
     if !args.enabled_language.is_empty() {
         config
             .analysis
@@ -2555,8 +2600,26 @@ fn fmt_delta(col: bool, v: i64) -> String {
     }
 }
 
+/// Aggregate real per-file line churn (multiset-diff) across the comparison. `None` when no file
+/// carried usable per-line hashes (e.g. comparing pre–Tier-2 run JSONs), so callers can omit the
+/// figure rather than print a misleading zero.
+fn total_line_churn(cmp: &ScanComparison) -> Option<(i64, i64)> {
+    let mut any = false;
+    let mut added = 0i64;
+    let mut removed = 0i64;
+    for f in &cmp.file_deltas {
+        if let (Some(a), Some(r)) = (f.added_lines, f.removed_lines) {
+            any = true;
+            added += a;
+            removed += r;
+        }
+    }
+    any.then_some((added, removed))
+}
+
 fn print_diff_summary(cmp: &ScanComparison, plain: bool) {
     let s = &cmp.summary;
+    let churn = total_line_churn(cmp);
 
     if plain {
         println!("baseline_run_id={}", s.baseline_run_id);
@@ -2570,6 +2633,10 @@ fn print_diff_summary(cmp: &ScanComparison, plain: bool) {
         println!("comment_lines_delta={}", s.comment_lines_delta);
         println!("blank_lines_delta={}", s.blank_lines_delta);
         println!("total_lines_delta={}", s.total_lines_delta);
+        if let Some((added, removed)) = churn {
+            println!("code_lines_added={added}");
+            println!("code_lines_removed={removed}");
+        }
         return;
     }
 
@@ -2591,6 +2658,13 @@ fn print_diff_summary(cmp: &ScanComparison, plain: bool) {
     println!("  Comment Δ: {}", fmt_delta(col, s.comment_lines_delta));
     println!("  Blank Δ  : {}", fmt_delta(col, s.blank_lines_delta));
     println!("  Total Δ  : {}", fmt_delta(col, s.total_lines_delta));
+    if let Some((added, removed)) = churn {
+        println!(
+            "  Line churn: {} added, {} removed",
+            paint!(col, "32", added),
+            paint!(col, "31", removed),
+        );
+    }
 
     let changed: Vec<_> = cmp
         .file_deltas
@@ -2609,11 +2683,16 @@ fn print_diff_summary(cmp: &ScanComparison, plain: bool) {
                 sloc_core::FileChangeStatus::Modified => paint!(col, "33", "M"),
                 sloc_core::FileChangeStatus::Unchanged => paint!(col, "2", " "),
             };
+            let churn = match (f.added_lines, f.removed_lines) {
+                (Some(a), Some(r)) if a != 0 || r != 0 => format!("  (+{a}/-{r})"),
+                _ => String::new(),
+            };
             println!(
-                "  {} {:<50} code {}",
+                "  {} {:<50} code {}{}",
                 status_str,
                 truncate(&f.relative_path, 50),
                 fmt_delta(col, f.code_delta),
+                churn,
             );
         }
     }

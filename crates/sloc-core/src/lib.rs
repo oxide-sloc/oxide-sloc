@@ -310,9 +310,10 @@ pub struct FileRecord {
     /// `author_id` indexes into `AnalysisRun::authors`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ownership: Option<Vec<FileOwnership>>,
-    /// SHA-256 (first 8 bytes as u64) of raw file bytes — used for duplicate detection.
-    /// Not serialized; consumed in-process during `assemble_run`.
-    #[serde(skip)]
+    /// Hash of raw file bytes — used for duplicate detection and scan-to-scan change detection.
+    /// Persisted so a comparison loaded from two saved run JSONs can tell a genuine content change
+    /// apart from an unchanged file even when the line counts are identical. `0` = not computed.
+    #[serde(default)]
     pub content_hash: u64,
 }
 
@@ -1803,10 +1804,65 @@ fn get_hostname() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-/// Walk a single directory root and collect file records into the output vectors.
+/// Resolve which directories to actually walk under `root`.
+///
+/// With an empty `subdirs` list the only target is `root` itself (a whole-tree scan). Otherwise
+/// each entry is joined onto `root` and must (a) be free of `..` traversal segments, (b) resolve to
+/// an existing directory, and (c) stay inside `root` after canonicalization. Entries that fail any
+/// check are dropped with a warning rather than aborting the run, so one bad `--subdir` does not
+/// sink the others.
+fn resolve_scan_targets(
+    root: &Path,
+    subdirs: &[String],
+    warnings: &mut Vec<String>,
+) -> Vec<PathBuf> {
+    if subdirs.is_empty() {
+        return vec![root.to_path_buf()];
+    }
+
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut targets = Vec::new();
+    for sub in subdirs {
+        let rel = Path::new(sub.trim());
+        let Ok(safe_rel) = pathsafe::reject_traversal(rel) else {
+            warnings.push(format!(
+                "--subdir {sub:?} rejected: contains a `..` segment"
+            ));
+            continue;
+        };
+        let candidate = root.join(&safe_rel);
+        // Check existence before canonicalizing: a missing path cannot be canonicalized and would
+        // otherwise fail the containment check below with a misleading "outside the root" message.
+        if !candidate.is_dir() {
+            warnings.push(format!(
+                "--subdir {sub:?} skipped: not a directory under the root"
+            ));
+            continue;
+        }
+        let resolved = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone());
+        if !resolved.starts_with(&canonical_root) {
+            warnings.push(format!(
+                "--subdir {sub:?} rejected: resolves outside the project root"
+            ));
+            continue;
+        }
+        targets.push(resolved);
+    }
+    targets
+}
+
+/// Walk a single directory subtree and collect file records into the output vectors.
+///
+/// `walk_start` is where the directory traversal begins; `rel_root` is the base that every
+/// discovered file's `relative_path` is computed against. They are the same for a whole-root
+/// scan, but differ when scanning a sub-folder of a project (`--subdir`): the walk starts at
+/// `root/subdir` while paths stay anchored at the project root so git ops line up.
 #[allow(clippy::too_many_arguments)]
 fn walk_root(
-    root: &Path,
+    walk_start: &Path,
+    rel_root: &Path,
     config: &AppConfig,
     include_globs: Option<&GlobSet>,
     exclude_globs: Option<&GlobSet>,
@@ -1818,7 +1874,7 @@ fn walk_root(
     cancel: Option<&AtomicBool>,
     progress: Option<&ProgressCounters>,
 ) -> Result<()> {
-    let mut builder = WalkBuilder::new(root);
+    let mut builder = WalkBuilder::new(walk_start);
     builder
         .follow_links(config.discovery.follow_symlinks)
         .hidden(config.discovery.ignore_hidden_files)
@@ -1839,7 +1895,7 @@ fn walk_root(
 
     let chunk_results = run_parallel_analysis(
         &paths,
-        root,
+        rel_root,
         config,
         include_globs,
         exclude_globs,
@@ -2284,19 +2340,26 @@ pub fn analyze(
             warnings.push(format_multi_repo_warning(&layout));
         }
 
-        walk_root(
-            &root,
-            config,
-            include_globs.as_ref(),
-            exclude_globs.as_ref(),
-            enabled_languages.as_ref(),
-            &mut seen_paths,
-            &mut analyzed,
-            &mut skipped,
-            &mut warnings,
-            cancel,
-            progress,
-        )?;
+        // Resolve the sub-folders to walk. With no `scan_subdirs` this is just the root itself
+        // (whole-tree scan). Otherwise every walk starts inside a requested sub-folder while the
+        // relative-path base stays the project root, so git ops and reported paths line up.
+        for walk_start in resolve_scan_targets(&root, &config.discovery.scan_subdirs, &mut warnings)
+        {
+            walk_root(
+                &walk_start,
+                &root,
+                config,
+                include_globs.as_ref(),
+                exclude_globs.as_ref(),
+                enabled_languages.as_ref(),
+                &mut seen_paths,
+                &mut analyzed,
+                &mut skipped,
+                &mut warnings,
+                cancel,
+                progress,
+            )?;
+        }
     }
 
     analyzed.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
@@ -4495,6 +4558,56 @@ author-mail <other@example.com>
     #[test]
     fn is_known_lockfile_composer() {
         assert!(is_known_lockfile(Path::new("composer.lock")));
+    }
+
+    // ── resolve_scan_targets ──────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_scan_targets_empty_returns_root() {
+        let root = Path::new("/tmp/project");
+        let mut warnings = Vec::new();
+        let targets = resolve_scan_targets(root, &[], &mut warnings);
+        assert_eq!(targets, vec![root.to_path_buf()]);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn resolve_scan_targets_keeps_existing_subdirs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::create_dir_all(root.join("crates/foo")).expect("mkdir crates/foo");
+
+        let mut warnings = Vec::new();
+        let subs = vec!["src".to_string(), "crates/foo".to_string()];
+        let targets = resolve_scan_targets(root, &subs, &mut warnings);
+
+        assert_eq!(targets.len(), 2);
+        let canonical_root = root.canonicalize().expect("canonicalize root");
+        assert!(targets.iter().all(|t| t.starts_with(&canonical_root)));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn resolve_scan_targets_rejects_traversal() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut warnings = Vec::new();
+        let subs = vec!["../escape".to_string()];
+        let targets = resolve_scan_targets(tmp.path(), &subs, &mut warnings);
+        assert!(targets.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains(".."));
+    }
+
+    #[test]
+    fn resolve_scan_targets_skips_missing_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut warnings = Vec::new();
+        let subs = vec!["does-not-exist".to_string()];
+        let targets = resolve_scan_targets(tmp.path(), &subs, &mut warnings);
+        assert!(targets.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("not a directory"));
     }
 
     // ── relative_path_string and path_to_string ──────────────────────────────

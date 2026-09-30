@@ -342,9 +342,10 @@ pub struct RawLineCounts {
     /// `None` when the language does not support lexical LSLOC estimation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lsloc: Option<u32>,
-    /// Per-code-line content hashes (trimmed) for ULOC aggregation. Never serialized — only
-    /// populated during an in-process scan and consumed by `sloc-core` during aggregation.
-    #[serde(skip)]
+    /// Per-code-line content hashes (trimmed) for ULOC aggregation and scan-to-scan line churn.
+    /// Persisted so a comparison loaded from two saved run JSONs can compute per-file added/removed
+    /// line counts (multiset difference); omitted from output when empty (e.g. a summary-only run).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub code_line_hashes: Vec<u64>,
 }
 

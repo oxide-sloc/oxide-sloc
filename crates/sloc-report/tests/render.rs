@@ -1064,6 +1064,8 @@ fn make_scan_comparison() -> ScanComparison {
                 current_blank: 10,
                 blank_delta: 10,
                 total_delta: 95,
+                added_lines: Some(80),
+                removed_lines: Some(0),
             },
             FileDelta {
                 relative_path: "src/old.rs".into(),
@@ -1079,6 +1081,8 @@ fn make_scan_comparison() -> ScanComparison {
                 current_blank: 5,
                 blank_delta: 0,
                 total_delta: 20,
+                added_lines: Some(20),
+                removed_lines: Some(0),
             },
         ],
         files_added: 1,
@@ -1173,6 +1177,8 @@ fn file_delta(path: &str, status: FileChangeStatus) -> FileDelta {
         current_blank: 0,
         blank_delta: 0,
         total_delta: 0,
+        added_lines: None,
+        removed_lines: None,
     }
 }
 
@@ -1308,6 +1314,8 @@ fn write_diff_xlsx_with_all_statuses() {
         current_blank: 0,
         blank_delta: -3,
         total_delta: -58,
+        added_lines: Some(0),
+        removed_lines: Some(50),
     });
     cmp.file_deltas.push(FileDelta {
         relative_path: "src/stable.rs".into(),
@@ -1323,6 +1331,8 @@ fn write_diff_xlsx_with_all_statuses() {
         current_blank: 2,
         blank_delta: 0,
         total_delta: 0,
+        added_lines: None,
+        removed_lines: None,
     });
     write_diff_xlsx(&cmp, tmp.path()).unwrap();
     let meta = std::fs::metadata(tmp.path()).unwrap();

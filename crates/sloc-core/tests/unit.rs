@@ -438,6 +438,88 @@ fn compute_delta_modified_file_shrunk() {
     assert_eq!(cmp.summary.code_lines_delta, -15);
 }
 
+// ── Tier 2: hash-based per-file churn + reclassification ─────────────────────
+
+/// Overwrite the single file record's per-line code hashes + whole-file content hash,
+/// keeping the code-line count consistent with the number of per-line hashes.
+fn set_file_hashes(run: &mut AnalysisRun, code_line_hashes: Vec<u64>, content_hash: u64) {
+    let rec = &mut run.per_file_records[0];
+    let n = u64::try_from(code_line_hashes.len()).unwrap();
+    rec.raw_line_categories.code_line_hashes = code_line_hashes;
+    rec.raw_line_categories.code_only_lines = n;
+    rec.effective_counts.code_lines = n;
+    rec.content_hash = content_hash;
+}
+
+#[test]
+fn tier2_line_swap_is_modified_with_churn() {
+    // Same code-line count, but one line swapped for another — net code_delta is 0.
+    let mut base = make_run_with_files(vec![("src/lib.rs", 3)]);
+    let mut current = make_run_with_files(vec![("src/lib.rs", 3)]);
+    set_file_hashes(&mut base, vec![1, 2, 3], 100);
+    set_file_hashes(&mut current, vec![1, 2, 9], 200);
+    let cmp = compute_delta(&base, &current);
+    let f = &cmp.file_deltas[0];
+    assert_eq!(f.code_delta, 0, "net delta hides the swap");
+    assert_eq!(f.status, sloc_core::FileChangeStatus::Modified);
+    assert_eq!(f.added_lines, Some(1));
+    assert_eq!(f.removed_lines, Some(1));
+    assert_eq!(cmp.files_modified, 1);
+    assert_eq!(cmp.files_unchanged, 0);
+}
+
+#[test]
+fn tier2_identical_file_is_unchanged_with_zero_churn() {
+    let mut base = make_run_with_files(vec![("src/lib.rs", 3)]);
+    let mut current = make_run_with_files(vec![("src/lib.rs", 3)]);
+    set_file_hashes(&mut base, vec![1, 2, 3], 100);
+    set_file_hashes(&mut current, vec![1, 2, 3], 100);
+    let cmp = compute_delta(&base, &current);
+    let f = &cmp.file_deltas[0];
+    assert_eq!(f.status, sloc_core::FileChangeStatus::Unchanged);
+    assert_eq!(f.added_lines, Some(0));
+    assert_eq!(f.removed_lines, Some(0));
+}
+
+#[test]
+fn tier2_content_hash_reclassifies_equal_counts_as_modified() {
+    // No per-line hashes available, equal counts, but the whole-file hash differs.
+    let mut base = make_run_with_files(vec![("src/lib.rs", 20)]);
+    let mut current = make_run_with_files(vec![("src/lib.rs", 20)]);
+    base.per_file_records[0].content_hash = 111;
+    current.per_file_records[0].content_hash = 222;
+    let cmp = compute_delta(&base, &current);
+    let f = &cmp.file_deltas[0];
+    assert_eq!(f.status, sloc_core::FileChangeStatus::Modified);
+    // Per-line churn is unavailable (code lines present but no hashes) → None, not a bogus 0.
+    assert_eq!(f.added_lines, None);
+    assert_eq!(f.removed_lines, None);
+}
+
+#[test]
+fn tier2_added_file_reports_all_lines_added() {
+    let base = make_run_with_files(vec![]);
+    let mut current = make_run_with_files(vec![("src/new.rs", 3)]);
+    set_file_hashes(&mut current, vec![7, 8, 9], 55);
+    let cmp = compute_delta(&base, &current);
+    let f = &cmp.file_deltas[0];
+    assert_eq!(f.status, sloc_core::FileChangeStatus::Added);
+    assert_eq!(f.added_lines, Some(3));
+    assert_eq!(f.removed_lines, Some(0));
+}
+
+#[test]
+fn tier2_pre_upgrade_json_leaves_churn_unavailable() {
+    // Records with code lines but no per-line hashes (a pre-Tier-2 JSON) must not fabricate churn.
+    let base = make_run_with_files(vec![("src/lib.rs", 20)]);
+    let current = make_run_with_files(vec![("src/lib.rs", 35)]);
+    let cmp = compute_delta(&base, &current);
+    let f = &cmp.file_deltas[0];
+    assert_eq!(f.status, sloc_core::FileChangeStatus::Modified);
+    assert_eq!(f.added_lines, None);
+    assert_eq!(f.removed_lines, None);
+}
+
 // ── Baseline store ────────────────────────────────────────────────────────────
 
 #[test]

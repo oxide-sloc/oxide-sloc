@@ -321,6 +321,26 @@ pipeline {
             defaultValue: false,
             description:  'Ignore .gitignore / .slocignore rules — scan everything under SCAN_PATH.'
         )
+        booleanParam(
+            name:         'SCAN_ALL_FILES',
+            defaultValue: false,
+            description:  'Scan EVERYTHING — the single switch that turns off every file filter at once ' +
+                          '(--all-files). Superset of NO_IGNORE_FILES: also clears the excluded ' +
+                          'directories (.git/node_modules/target/vendor), scans hidden/dotfiles, lifts ' +
+                          'the max-file-size cap, and disables vendor/generated/minified/lockfile ' +
+                          'skipping. Only binaries and unsupported languages stay uncounted. Explicit ' +
+                          'INCLUDE_GLOBS / EXCLUDE_GLOBS still apply on top; symlinks stay unfollowed ' +
+                          'unless FOLLOW_SYMLINKS is also checked.'
+        )
+        string(
+            name:         'SCAN_SUBDIRS',
+            defaultValue: '',
+            description:  'Comma-separated sub-folders to scan while keeping git detection, hotspots, ' +
+                          'attribution, and reported paths anchored at the repo root (--subdir, ' +
+                          'repeatable). Point the scan at the repo root and list only the trees you ' +
+                          'want, e.g. src,crates/foo — src/main.rs still reports as src/main.rs. ' +
+                          '".." segments are rejected. Empty = scan the whole root.'
+        )
         string(
             name:         'ENABLED_LANGUAGES',
             defaultValue: '',
