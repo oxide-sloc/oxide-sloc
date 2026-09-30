@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::{AnalysisRun, EffectiveCounts, FileRecord};
+use crate::{AnalysisRun, FileRecord};
 
 #[derive(Debug, Serialize)]
 pub struct SummaryDelta {
@@ -63,6 +63,15 @@ pub struct FileDelta {
     pub current_blank: i64,
     pub blank_delta: i64,
     pub total_delta: i64,
+    /// Distinct code lines present in the current scan but not the baseline (multiset difference
+    /// of per-line content hashes). Unlike `code_delta` this counts real churn, so a file that
+    /// swaps N lines for N others reports `added_lines = removed_lines = N` while `code_delta = 0`.
+    /// `None` when per-line hashes are unavailable on either side (e.g. a pre-Tier-2 run JSON).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added_lines: Option<i64>,
+    /// Distinct code lines present in the baseline but not the current scan. See `added_lines`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed_lines: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,36 +86,99 @@ pub struct ScanComparison {
     pub files_total: usize,
 }
 
-fn build_modified(record: &FileRecord, base: &EffectiveCounts, lang: Option<String>) -> FileDelta {
+/// Per-line hashes are trustworthy for a file only when they are populated, or when the file
+/// genuinely has zero code lines (an empty hash slice is then correct, not merely unpersisted).
+/// A file with code lines but an empty hash slice came from a pre-Tier-2 JSON and is not usable.
+fn hashes_usable(record: &FileRecord) -> bool {
+    !record.raw_line_categories.code_line_hashes.is_empty()
+        || record.effective_counts.code_lines == 0
+}
+
+/// Multiset difference of two per-line code-hash slices: `(added, removed)` where `added` counts
+/// hashes present in `curr` beyond their `base` multiplicity and `removed` counts the reverse.
+fn code_line_churn(base: &[u64], curr: &[u64]) -> (i64, i64) {
+    let mut counts: HashMap<u64, i64> = HashMap::new();
+    for &h in base {
+        *counts.entry(h).or_default() += 1;
+    }
+    for &h in curr {
+        *counts.entry(h).or_default() -= 1;
+    }
+    let mut removed = 0i64;
+    let mut added = 0i64;
+    for &v in counts.values() {
+        if v > 0 {
+            removed += v;
+        } else {
+            added += -v;
+        }
+    }
+    (added, removed)
+}
+
+fn build_modified(record: &FileRecord, base: &FileRecord, lang: Option<String>) -> FileDelta {
     let curr = &record.effective_counts;
-    let code_delta = curr.code_lines.cast_signed() - base.code_lines.cast_signed();
-    let comment_delta = curr.comment_lines.cast_signed() - base.comment_lines.cast_signed();
-    let blank_delta = curr.blank_lines.cast_signed() - base.blank_lines.cast_signed();
-    let status = if code_delta == 0 && comment_delta == 0 && blank_delta == 0 {
-        FileChangeStatus::Unchanged
+    let base_counts = &base.effective_counts;
+    let code_delta = curr.code_lines.cast_signed() - base_counts.code_lines.cast_signed();
+    let comment_delta = curr.comment_lines.cast_signed() - base_counts.comment_lines.cast_signed();
+    let blank_delta = curr.blank_lines.cast_signed() - base_counts.blank_lines.cast_signed();
+
+    // Per-line churn (multiset diff) when both sides carry usable line hashes.
+    let (added_lines, removed_lines) = if hashes_usable(base) && hashes_usable(record) {
+        let (a, r) = code_line_churn(
+            &base.raw_line_categories.code_line_hashes,
+            &record.raw_line_categories.code_line_hashes,
+        );
+        (Some(a), Some(r))
     } else {
-        FileChangeStatus::Modified
+        (None, None)
     };
+
+    // Counts differing is a definite modification. When counts match, fall back to the whole-file
+    // content hash (Tier 2) to catch equal-count edits (line swaps, reformatting), then finally to
+    // the code-line churn — any of these signals a real change the raw counts would have hidden.
+    let counts_equal = code_delta == 0 && comment_delta == 0 && blank_delta == 0;
+    let content_changed = base.content_hash != 0
+        && record.content_hash != 0
+        && base.content_hash != record.content_hash;
+    let churn_nonzero =
+        added_lines.is_some_and(|a| a != 0) || removed_lines.is_some_and(|r| r != 0);
+    let status = if !counts_equal || content_changed || churn_nonzero {
+        FileChangeStatus::Modified
+    } else {
+        FileChangeStatus::Unchanged
+    };
+
     FileDelta {
         relative_path: record.relative_path.clone(),
         language: lang,
         status,
-        baseline_code: base.code_lines.cast_signed(),
+        baseline_code: base_counts.code_lines.cast_signed(),
         current_code: curr.code_lines.cast_signed(),
         code_delta,
-        baseline_comment: base.comment_lines.cast_signed(),
+        baseline_comment: base_counts.comment_lines.cast_signed(),
         current_comment: curr.comment_lines.cast_signed(),
         comment_delta,
-        baseline_blank: base.blank_lines.cast_signed(),
+        baseline_blank: base_counts.blank_lines.cast_signed(),
         current_blank: curr.blank_lines.cast_signed(),
         blank_delta,
         total_delta: code_delta + comment_delta + blank_delta,
+        added_lines,
+        removed_lines,
     }
 }
 
 fn build_added(record: &FileRecord, lang: Option<String>) -> FileDelta {
     let curr = &record.effective_counts;
     let total = (curr.code_lines + curr.comment_lines + curr.blank_lines).cast_signed();
+    // Every code line in a newly added file is an added line.
+    let (added_lines, removed_lines) = if hashes_usable(record) {
+        let n =
+            i64::try_from(record.raw_line_categories.code_line_hashes.len()).unwrap_or(i64::MAX);
+        (Some(n), Some(0))
+    } else {
+        (None, None)
+    };
     FileDelta {
         relative_path: record.relative_path.clone(),
         language: lang,
@@ -121,25 +193,38 @@ fn build_added(record: &FileRecord, lang: Option<String>) -> FileDelta {
         current_blank: curr.blank_lines.cast_signed(),
         blank_delta: curr.blank_lines.cast_signed(),
         total_delta: total,
+        added_lines,
+        removed_lines,
     }
 }
 
-fn build_removed(path: &str, base: &EffectiveCounts, lang: Option<String>) -> FileDelta {
-    let total = (base.code_lines + base.comment_lines + base.blank_lines).cast_signed();
+fn build_removed(base: &FileRecord, lang: Option<String>) -> FileDelta {
+    let base_counts = &base.effective_counts;
+    let total = (base_counts.code_lines + base_counts.comment_lines + base_counts.blank_lines)
+        .cast_signed();
+    // Every code line in a removed file is a removed line.
+    let (added_lines, removed_lines) = if hashes_usable(base) {
+        let n = i64::try_from(base.raw_line_categories.code_line_hashes.len()).unwrap_or(i64::MAX);
+        (Some(0), Some(n))
+    } else {
+        (None, None)
+    };
     FileDelta {
-        relative_path: path.to_string(),
+        relative_path: base.relative_path.clone(),
         language: lang,
         status: FileChangeStatus::Removed,
-        baseline_code: base.code_lines.cast_signed(),
+        baseline_code: base_counts.code_lines.cast_signed(),
         current_code: 0,
-        code_delta: -(base.code_lines.cast_signed()),
-        baseline_comment: base.comment_lines.cast_signed(),
+        code_delta: -(base_counts.code_lines.cast_signed()),
+        baseline_comment: base_counts.comment_lines.cast_signed(),
         current_comment: 0,
-        comment_delta: -(base.comment_lines.cast_signed()),
-        baseline_blank: base.blank_lines.cast_signed(),
+        comment_delta: -(base_counts.comment_lines.cast_signed()),
+        baseline_blank: base_counts.blank_lines.cast_signed(),
         current_blank: 0,
-        blank_delta: -(base.blank_lines.cast_signed()),
+        blank_delta: -(base_counts.blank_lines.cast_signed()),
         total_delta: -total,
+        added_lines,
+        removed_lines,
     }
 }
 
@@ -156,10 +241,10 @@ fn coverage_line_pct(hit: u64, found: u64) -> Option<f64> {
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanComparison {
-    let baseline_map: HashMap<&str, &EffectiveCounts> = baseline
+    let baseline_map: HashMap<&str, &FileRecord> = baseline
         .per_file_records
         .iter()
-        .map(|f| (f.relative_path.as_str(), &f.effective_counts))
+        .map(|f| (f.relative_path.as_str(), f))
         .collect();
 
     let current_paths: HashSet<&str> = current
@@ -183,11 +268,7 @@ pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanCompa
     for record in &baseline.per_file_records {
         if !current_paths.contains(record.relative_path.as_str()) {
             let lang = record.language.map(|l| l.display_name().to_string());
-            file_deltas.push(build_removed(
-                &record.relative_path,
-                &record.effective_counts,
-                lang,
-            ));
+            file_deltas.push(build_removed(record, lang));
         }
     }
 

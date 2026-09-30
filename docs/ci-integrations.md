@@ -514,6 +514,8 @@ The first build runs with no parameters — Jenkins uses it to discover the `par
 | `SUBMODULE_BREAKDOWN` | true | Detect `.gitmodules` and emit per-submodule stats in the report. |
 | `FOLLOW_SYMLINKS` | false | Follow symbolic links during file discovery. |
 | `NO_IGNORE_FILES` | false | Ignore `.gitignore` / `.slocignore` rules. |
+| `SCAN_ALL_FILES` | false | Scan **everything** — the single switch that turns off every file filter at once (`--all-files`). Superset of `NO_IGNORE_FILES`: also clears the excluded directories (`.git`/`node_modules`/`target`/`vendor`), scans hidden/dotfiles, lifts the max-file-size cap, and disables vendor/generated/minified/lockfile skipping. Only binaries and unsupported languages stay uncounted. Explicit `INCLUDE_GLOBS` / `EXCLUDE_GLOBS` still apply on top; symlinks stay unfollowed unless `FOLLOW_SYMLINKS` is also checked. |
+| `SCAN_SUBDIRS` | _(whole root)_ | Comma-separated sub-folders to scan while keeping git detection, hotspots, attribution, and reported paths anchored at the repo root (`--subdir`, repeatable), e.g. `src,crates/foo`. `..` segments are rejected. Empty = scan the whole root. |
 | `ENABLED_LANGUAGES` | _(all)_ | Comma-separated language filter, e.g. `rust,python`. |
 | `INCLUDE_GLOBS` | _(all)_ | Comma-separated include glob patterns, e.g. `src/**/*.py`. |
 | `EXCLUDE_GLOBS` | _(none)_ | Comma-separated exclude glob patterns, e.g. `vendor/**`. |

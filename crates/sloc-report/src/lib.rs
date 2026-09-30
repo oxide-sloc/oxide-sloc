@@ -2922,7 +2922,7 @@ fn pdf_draw_perfile_rows(
         let raw = &rec.raw_line_categories;
         let eff = &rec.effective_counts;
         let cells = [
-            pdf_trunc_end(&file_str, 110),
+            pdf_trunc_end(&file_str, 132),
             lang_str,
             pdf_fmt_full(raw.total_physical_lines),
             pdf_fmt_full(eff.code_lines),
@@ -10688,7 +10688,7 @@ pub fn write_diff_csv(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<()
     let _ = write!(out, "Total Δ,{}\r\n", s.total_lines_delta);
 
     out.push_str("\r\n# File Deltas\r\n");
-    out.push_str("Status,Path,Language,Baseline Code,Current Code,Code Δ,Baseline Comment,Current Comment,Comment Δ,Baseline Blank,Current Blank,Blank Δ,Total Δ\r\n");
+    out.push_str("Status,Path,Language,Baseline Code,Current Code,Code Δ,Baseline Comment,Current Comment,Comment Δ,Baseline Blank,Current Blank,Blank Δ,Total Δ,Lines Added,Lines Removed\r\n");
     for f in &cmp.file_deltas {
         let status = match f.status {
             sloc_core::FileChangeStatus::Added => "Added",
@@ -10696,9 +10696,12 @@ pub fn write_diff_csv(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<()
             sloc_core::FileChangeStatus::Modified => "Modified",
             sloc_core::FileChangeStatus::Unchanged => "Unchanged",
         };
+        // Real per-line churn when the runs carried per-line hashes; blank otherwise.
+        let added = f.added_lines.map(|n| n.to_string()).unwrap_or_default();
+        let removed = f.removed_lines.map(|n| n.to_string()).unwrap_or_default();
         let _ = write!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}\r\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\r\n",
             status,
             csv_escape(&f.relative_path),
             csv_escape(f.language.as_deref().unwrap_or("")),
@@ -10712,6 +10715,8 @@ pub fn write_diff_csv(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<()
             f.current_blank,
             f.blank_delta,
             f.total_delta,
+            added,
+            removed,
         );
     }
 
@@ -11347,6 +11352,8 @@ pub fn write_diff_xlsx(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<(
                 f.current_comment.to_string(),
                 f.comment_delta.to_string(),
                 f.total_delta.to_string(),
+                f.added_lines.map(|n| n.to_string()).unwrap_or_default(),
+                f.removed_lines.map(|n| n.to_string()).unwrap_or_default(),
             ]
         })
         .collect();
@@ -11363,6 +11370,8 @@ pub fn write_diff_xlsx(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<(
         "Current Comment",
         "Comment Δ",
         "Total Δ",
+        "Lines Added",
+        "Lines Removed",
     ];
 
     let sheets = vec![
@@ -11379,7 +11388,9 @@ pub fn write_diff_xlsx(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<(
             tab_color: "FFB85D33",
             headers: delta_hdrs,
             rows: delta_rows,
-            col_widths: vec![12.0, 48.0, 16.0, 14.0, 14.0, 11.0, 14.0, 14.0, 11.0, 11.0],
+            col_widths: vec![
+                12.0, 48.0, 16.0, 14.0, 14.0, 11.0, 14.0, 14.0, 11.0, 11.0, 12.0, 13.0,
+            ],
             is_kv: false,
         },
     ];

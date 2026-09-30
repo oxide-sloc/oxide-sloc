@@ -69,6 +69,13 @@ pub enum BlankInBlockCommentPolicy {
 pub struct DiscoveryConfig {
     #[serde(default)]
     pub root_paths: Vec<PathBuf>,
+    /// Restrict the scan to these sub-paths **under the project root** (`root_paths[0]`), while
+    /// keeping git detection, hotspots, attribution, and reported relative paths anchored at that
+    /// root. Empty = walk the whole root. Each entry is a path relative to the root (e.g. `"src"`,
+    /// `"crates/foo"`); `..` segments are rejected. Ideal for "point at the repo, scan only these
+    /// folders".
+    #[serde(default)]
+    pub scan_subdirs: Vec<String>,
     #[serde(default)]
     pub include_globs: Vec<String>,
     #[serde(default)]
@@ -96,6 +103,7 @@ impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
             root_paths: Vec::new(),
+            scan_subdirs: Vec::new(),
             include_globs: Vec::new(),
             exclude_globs: Vec::new(),
             excluded_directories: vec![".git".into(), "node_modules".into(), "target".into()],

@@ -10,6 +10,39 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.22] — 2026-09-29
+
+### Added
+
+- **`--all-files` / `--scan-all` master switch** (`crates/sloc-cli`, `crates/sloc-config`): a single
+  flag that turns off every discovery and content filter at once — a superset of
+  `--no-ignore-files` that also clears the excluded directories
+  (`.git`/`node_modules`/`target`/`vendor`), scans hidden/dotfiles, lifts the max-file-size cap, and
+  disables vendor/generated/minified/lockfile skipping. Only binaries and unsupported languages stay
+  uncounted; explicit `--include-glob` / `--exclude-glob` still narrow on top. Exposed in Jenkins as
+  the `SCAN_ALL_FILES` build parameter.
+- **`--subdir` / `--only` sub-folder scoping** (`crates/sloc-cli`, `crates/sloc-config`,
+  `crates/sloc-core`): point the scan at the repo root and analyze only chosen sub-trees (repeatable,
+  e.g. `--subdir src --subdir crates/foo`) while git detection, hotspots, attribution, and reported
+  relative paths stay anchored at the root, so `src/main.rs` still reports as `src/main.rs`. `..`
+  traversal segments are rejected; a bad entry is skipped with a warning rather than sinking the run.
+  Configurable via `discovery.scan_subdirs` and the Jenkins `SCAN_SUBDIRS` parameter.
+- **Real per-line churn in scan comparisons** (`crates/sloc-core`, `crates/sloc-report`,
+  `crates/sloc-web`): file and summary deltas now report `added_lines` / `removed_lines` computed as
+  a multiset difference of per-line code hashes, so a file that swaps N lines for N others shows
+  `+N/-N` even though its net `code_delta` is `0`. Surfaced in the CLI `diff` output, the CSV/XLSX
+  delta exports (new *Lines Added* / *Lines Removed* columns), and the web Compare page.
+
+### Changed
+
+- **Per-line and whole-file hashes are now persisted** (`crates/sloc-core`, `crates/sloc-languages`):
+  `content_hash` and per-code-line hashes are serialized into the run JSON (omitted when empty) so a
+  comparison loaded from two saved runs can distinguish a genuine content change from an unchanged
+  file even when line counts are identical, and can compute per-file churn offline. Pre-Tier-2 run
+  JSONs without hashes degrade gracefully (churn columns left blank).
+
+---
+
 ## [1.6.21] — 2026-09-28
 
 ### Added

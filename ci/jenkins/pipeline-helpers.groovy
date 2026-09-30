@@ -914,6 +914,17 @@ def runAnalyze() {
             }
         }
     }
+    if (params.SCAN_SUBDIRS) {
+        params.SCAN_SUBDIRS.tokenize(',').each { d ->
+            def t = d.trim()
+            // Relative sub-paths only. Reject absolute paths and any `..` segment (the
+            // binary rejects `..` too, but fail fast here with a clear message).
+            if (!(t ==~ /^[a-zA-Z0-9_.\-\/]+$/) || t.startsWith('/') ||
+                    t.split('/').any { it == '..' }) {
+                error("SCAN_SUBDIRS contains an invalid sub-path (no absolute paths or '..'): ${t}")
+            }
+        }
+    }
     if (params.ACTIVITY_WINDOW?.trim() && !(params.ACTIVITY_WINDOW.trim() ==~ /^[0-9]{1,4}$/)) {
         error("ACTIVITY_WINDOW must be a number of days (0-3650): ${params.ACTIVITY_WINDOW}")
     }
@@ -1015,6 +1026,9 @@ def runAnalyze() {
     def docArg       = params.DOCSTRINGS_AS_CODE  ? '--python-docstrings-as-code'        : ''
     def symlinkArg   = params.FOLLOW_SYMLINKS     ? '--follow-symlinks'                  : ''
     def noIgnoreArg  = params.NO_IGNORE_FILES     ? '--no-ignore-files'                  : ''
+    // Master "scan everything" switch: turns off every discovery/content filter at once
+    // (superset of --no-ignore-files). Explicit include/exclude globs still narrow on top.
+    def allFilesArg  = params.SCAN_ALL_FILES      ? '--all-files'                        : ''
     def submodArg    = params.SUBMODULE_BREAKDOWN ? '--submodule-breakdown'              : ''
     def styleColArg  = (params.STYLE_COL_THRESHOLD?.trim() && params.STYLE_COL_THRESHOLD.trim() != '80')
                         ? "--style-col-threshold '${params.STYLE_COL_THRESHOLD.trim()}'"
@@ -1039,6 +1053,11 @@ def runAnalyze() {
         : ''
     def langArgs    = params.ENABLED_LANGUAGES
         ? params.ENABLED_LANGUAGES.tokenize(',').collect { "--enabled-language '${it.trim()}'" }.join(' ')
+        : ''
+    // Restrict the walk to specific sub-folders while keeping git/hotspots/attribution and
+    // reported paths anchored at the repo root. Repeatable --subdir, one per listed folder.
+    def subdirArgs  = params.SCAN_SUBDIRS
+        ? params.SCAN_SUBDIRS.tokenize(',').collect { "--subdir '${it.trim()}'" }.join(' ')
         : ''
 
     // a. Quick plain summary
@@ -1122,8 +1141,8 @@ def runAnalyze() {
             "${BINARY}" analyze "${SCAN_PATH}" \
                 --report-title "${REPORT_TITLE}" \
                 --mixed-line-policy "${MIXED_LINE_POLICY}" \
-                ''' + "${configArg} ${docArg} ${symlinkArg} ${noIgnoreArg} ${submodArg} ${styleColArg} ${activityArg}" + ''' \
-                ''' + "${maxComplexityArg} ${noDuplicatesArg} ${coverageArg}" + ''' \
+                ''' + "${configArg} ${docArg} ${symlinkArg} ${noIgnoreArg} ${allFilesArg} ${submodArg} ${styleColArg} ${activityArg}" + ''' \
+                ''' + "${maxComplexityArg} ${noDuplicatesArg} ${coverageArg} ${subdirArgs}" + ''' \
                 ''' + "${langArgs} ${includeArgs} ${excludeArgs} ${branchArg} ${attributionArg}" + ''' \
                 ''' + "${jsonArg} ${csvArg} ${xlsxArg} ${htmlArg} ${pdfArg}" + ''' \
                 ''' + "${scanConfigArg} ${subHtmlArg}" + '''

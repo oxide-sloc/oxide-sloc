@@ -7561,8 +7561,9 @@ fn sum_added_code_lines(cmp: &sloc_core::ScanComparison) -> i64 {
     cmp.file_deltas
         .iter()
         .map(|f| match f.status {
-            FileChangeStatus::Added => f.current_code,
-            FileChangeStatus::Modified => f.code_delta.max(0),
+            // Prefer real per-line churn (Tier 2); fall back to net growth for pre-Tier-2 JSON.
+            FileChangeStatus::Added => f.added_lines.unwrap_or(f.current_code),
+            FileChangeStatus::Modified => f.added_lines.unwrap_or_else(|| f.code_delta.max(0)),
             _ => 0,
         })
         .sum()
@@ -7573,8 +7574,8 @@ fn sum_removed_code_lines(cmp: &sloc_core::ScanComparison) -> i64 {
     cmp.file_deltas
         .iter()
         .map(|f| match f.status {
-            FileChangeStatus::Removed => f.baseline_code,
-            FileChangeStatus::Modified => (-f.code_delta).max(0),
+            FileChangeStatus::Removed => f.removed_lines.unwrap_or(f.baseline_code),
+            FileChangeStatus::Modified => f.removed_lines.unwrap_or_else(|| (-f.code_delta).max(0)),
             _ => 0,
         })
         .sum()
@@ -11164,6 +11165,9 @@ struct CompareFileDeltaRow {
     comment_delta_class: String,
     total_delta_str: String,
     total_delta_class: String,
+    /// Real per-line churn ("+A / -R") when it reveals in-place changes the net Code Δ hides
+    /// (both a line added and one removed). Empty otherwise, or when line hashes are unavailable.
+    churn_str: String,
 }
 
 /// Recompute `summary_totals` from the current `per_file_records` slice.
@@ -11569,6 +11573,10 @@ async fn compare_handler(
             comment_delta_class: delta_class(d.comment_delta).into(),
             total_delta_str: fmt_delta(d.total_delta),
             total_delta_class: delta_class(d.total_delta).into(),
+            churn_str: match (d.added_lines, d.removed_lines) {
+                (Some(a), Some(r)) if a > 0 && r > 0 => format!("+{a} / -{r}"),
+                _ => String::new(),
+            },
         })
         .collect();
 
@@ -32920,6 +32928,7 @@ struct CompareSelectTemplate {
     .delta-val.pos{color:var(--pos);}
     .delta-val.neg{color:var(--neg);}
     .delta-val.zero{color:var(--muted);}
+    .churn-note{font-size:11px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;cursor:help;}
     .from-to{display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:13px;}
     .from-to strong{color:var(--text);font-weight:700;}
     .from-to .ft-sep{color:var(--muted-2);font-size:11px;}
@@ -33377,7 +33386,7 @@ struct CompareSelectTemplate {
             <td class="hide-sm">{{ row.language }}</td>
             <td><span class="status-badge {{ row.status }}">{{ row.status }}</span></td>
             <td><span class="from-to" data-baseline="{{ row.baseline_code }}" data-current="{{ row.current_code }}">{% if row.baseline_code_display == "—" %}<span class="ft-absent">—</span>{% else %}<strong>{{ row.baseline_code_display }}</strong>{% endif %}<span class="ft-sep">→</span>{% if row.current_code_display == "—" %}<span class="ft-absent">—</span>{% else %}<strong>{{ row.current_code_display }}</strong>{% endif %}</span></td>
-            <td><span class="delta-val {{ row.code_delta_class }}">{{ row.code_delta_str }}</span></td>
+            <td><span class="delta-val {{ row.code_delta_class }}">{{ row.code_delta_str }}</span>{% if row.churn_str != "" %} <span class="churn-note" title="Lines added / removed in place (net Code &Delta; hides this)">{{ row.churn_str }}</span>{% endif %}</td>
             <td class="hide-sm"><span class="delta-val {{ row.comment_delta_class }}">{{ row.comment_delta_str }}</span></td>
             <td><span class="delta-val {{ row.total_delta_class }}">{{ row.total_delta_str }}</span></td>
           </tr>
@@ -38282,6 +38291,8 @@ mod utility_tests {
                     current_blank: 0,
                     blank_delta: 0,
                     total_delta: 100,
+                    added_lines: Some(100),
+                    removed_lines: Some(0),
                 },
                 sloc_core::FileDelta {
                     relative_path: "removed.rs".to_string(),
@@ -38297,6 +38308,8 @@ mod utility_tests {
                     current_blank: 0,
                     blank_delta: 0,
                     total_delta: -50,
+                    added_lines: Some(0),
+                    removed_lines: Some(50),
                 },
                 sloc_core::FileDelta {
                     relative_path: "modified.rs".to_string(),
@@ -38312,6 +38325,8 @@ mod utility_tests {
                     current_blank: 0,
                     blank_delta: 0,
                     total_delta: 20,
+                    added_lines: Some(20),
+                    removed_lines: Some(0),
                 },
                 sloc_core::FileDelta {
                     relative_path: "unchanged.rs".to_string(),
@@ -38327,6 +38342,8 @@ mod utility_tests {
                     current_blank: 0,
                     blank_delta: 0,
                     total_delta: 0,
+                    added_lines: Some(0),
+                    removed_lines: Some(0),
                 },
             ],
             files_added: 1,
