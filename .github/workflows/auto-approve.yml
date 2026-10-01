@@ -17,10 +17,20 @@ name: Auto-approve & merge trusted PRs
 #   4. Enable squash auto-merge so it lands the moment "Quality gates" goes green.
 # Each branch update fires a `synchronize` event that re-enters this workflow, so a
 # PR that falls BEHIND again as main advances is healed automatically until it lands.
+#
+# SIBLING-MERGE GAP: a `synchronize` event only fires when a PR's OWN head changes,
+# never when the base (main) moves. So when one PR merges and leaves a sibling PR
+# BEHIND (e.g. the Windows dist PR merging ahead of the Linux dist PR for the same
+# release), nothing re-triggers the heal step on the sibling and it sits BEHIND
+# forever. The `push: main` trigger below closes that gap: on every merge to main we
+# sweep open trusted PRs and update any that are BEHIND, which fires their
+# `synchronize` event and lets the auto-merge job above land them.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
 
 # Least privilege at the top level: the default token is read-only for every job
 # (and for any third-party action invoked below). The single job that needs write
@@ -30,8 +40,9 @@ permissions:
 
 concurrency:
   # One in-flight run per PR; a newer run (e.g. after a branch update) supersedes
-  # the older one so we don't stack redundant approvals.
-  group: auto-merge-${{ github.event.pull_request.number }}
+  # the older one so we don't stack redundant approvals. Push-to-main heal sweeps
+  # key off the pushed SHA so they never cancel an in-flight per-PR run.
+  group: auto-merge-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -44,6 +55,7 @@ jobs:
       pull-requests: write
     # Trusted authors only. Everyone else goes through normal human review.
     # Bot logins carry the `[bot]` suffix in pull_request payloads.
+    # (On `push` events pull_request is null, so this job no-ops — the heal job runs.)
     if: >-
       github.event.pull_request.user.login == 'NimaShafie' ||
       github.event.pull_request.user.login == 'oxide-sloc-toolchain-bot[bot]' ||
@@ -114,3 +126,55 @@ jobs:
           # Idempotent: succeeds whether or not auto-merge was already enabled.
           gh pr merge --auto --squash "$PR_NUMBER" --repo "$REPO" || \
             echo "auto-merge already enabled or PR not in a mergeable state yet."
+
+  heal-behind-prs:
+    name: Heal PRs left BEHIND by a merge to main
+    runs-on: ubuntu-latest
+    # Only on push-to-main. The per-PR auto-merge job handles pull_request events.
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # App token (not GITHUB_TOKEN): an update-branch push must re-trigger the
+      # required "Quality gates" check. Pushes made with GITHUB_TOKEN don't trigger
+      # workflows, so the check would never re-run and the PR would stay blocked.
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ secrets.TOOLCHAIN_APP_ID }}
+          private-key: ${{ secrets.TOOLCHAIN_APP_PRIVATE_KEY }}
+
+      - name: Update any trusted PR left BEHIND
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Main just advanced. Any open PR that has auto-merge enabled but is now
+          # BEHIND got no pull_request event (the base moved, not its head), so the
+          # per-PR heal step never fired for it. Sweep and update those branches;
+          # each update fires a `synchronize` event that re-enters the auto-merge
+          # job above, which re-approves and lands the PR once checks go green.
+          #
+          # Trusted authors only, mirroring the auto-merge job. `[bot]` logins
+          # contain regex metacharacters, so match with a padded substring test
+          # rather than grep -w.
+          TRUSTED=' NimaShafie oxide-sloc-toolchain-bot[bot] dependabot[bot] '
+          gh pr list --repo "$REPO" --state open --base main \
+            --json number,mergeStateStatus,author,autoMergeRequest \
+            -q '.[] | select(.autoMergeRequest != null)
+                    | select(.mergeStateStatus == "BEHIND")
+                    | [(.number|tostring), .author.login] | @tsv' \
+          | while IFS="$(printf '\t')" read -r NUM LOGIN; do
+              case "$TRUSTED" in
+                *" $LOGIN "*)
+                  echo "PR #$NUM ($LOGIN) is BEHIND with auto-merge enabled — updating branch."
+                  gh api --method PUT "repos/$REPO/pulls/$NUM/update-branch" \
+                    || echo "update-branch for #$NUM returned non-zero (often benign: already queued)."
+                  ;;
+                *)
+                  echo "PR #$NUM ($LOGIN) is BEHIND but author is not trusted — leaving for human review."
+                  ;;
+              esac
+            done
