@@ -2205,7 +2205,7 @@ fn render_ownership_populated(
         }
     };
     let top_owner = rows.first();
-    let top_name = top_owner.map(&name_link).unwrap_or_default();
+    let top_name = top_owner.map(name_link).unwrap_or_default();
     let top_pct = top_owner.map(|r| r.code_pct).unwrap_or(0.0);
 
     // Server-rendered bars (metric = code); JS re-renders on filter change and adds the
