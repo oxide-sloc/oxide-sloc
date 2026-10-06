@@ -88,6 +88,28 @@ jobs:
           provenance: mode=max
           sbom: true
 
+      # GHCR is eventually consistent: the manifest a push just created can briefly 404 when
+      # fetched back by digest. attest-build-provenance (push-to-registry) fetches the subject
+      # manifest with no retry, so that race surfaces as
+      # "OCIError ... manifests/<digest> - expected 200, received 404" and fails the whole job
+      # (observed intermittently; identical runs on neighbouring commits pass). Poll the same
+      # GET until GHCR serves the digest before attesting, so the attestation is deterministic.
+      - name: Wait for pushed manifest to be queryable on GHCR
+        env:
+          DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: |
+          IMAGE_REF="ghcr.io/${{ github.repository }}@${DIGEST}"
+          for attempt in $(seq 1 12); do
+            if docker buildx imagetools inspect "${IMAGE_REF}" >/dev/null 2>&1; then
+              echo "Manifest ${DIGEST} is queryable on GHCR (attempt ${attempt})."
+              exit 0
+            fi
+            echo "Attempt ${attempt}/12: manifest not yet propagated on GHCR; retrying in 5s..."
+            sleep 5
+          done
+          echo "ERROR: manifest ${DIGEST} never became queryable on GHCR after retries"
+          exit 1
+
       # GitHub-signed SLSA build provenance, generated in GitHub's control plane (not by the
       # build itself) and attached to the image by digest — the non-forgeable provenance that
       # takes the release from SLSA Build L2 toward L3.
