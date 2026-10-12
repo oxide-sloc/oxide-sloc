@@ -10,6 +10,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.23] — 2026-10-11
+
+### Fixed
+
+- **Offline installer re-extracts `vendor/` when the committed archive changes** (`scripts/install.sh`):
+  a stale `vendor/` tree left over from a previous checkout is now detected and re-extracted from the
+  committed `vendor.tar.gz.*` parts when the archive has been updated, so an offline build always
+  resolves the crate versions locked in `Cargo.lock` instead of silently reusing outdated sources.
+
+### Changed
+
+- **Bundled Rust toolchain updated to 1.99** (`rust-toolchain.toml`, `toolchain/`): the committed
+  offline toolchain bundle tracks the new stable release; dependencies were refreshed to match.
+- **Dependency refresh** (`Cargo.lock`, `vendor.tar.gz.*`, `ci/tools`): 17 in-range crates bumped and
+  the vendor archive re-packed, including `rustls` 0.23.45 in the CI tooling to clear advisory
+  GHSA-2mjx-qc3c-rqvc.
+
+### CI
+
+- **Docker provenance attestation waits for the GHCR manifest** (`.github/workflows/docker.yml`): the
+  attestation step no longer races ahead of the pushed manifest.
+
+---
+
 ## [1.6.22] — 2026-09-29
 
 ### Added
