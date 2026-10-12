@@ -323,22 +323,72 @@ This is the one requirement PowerShell cannot supply. Choose one:
 }
 
 # ── 5. Reassemble + verify vendor sources, write .cargo\config.toml ──────────
+# Decide whether the on-disk vendor\ tree must be (re)extracted. A stale vendor\
+# left over from an earlier checkout is the classic cause of an offline build
+# failing with "failed to select a version for the requirement ... candidate
+# versions found which didn't match": Cargo.lock gets bumped (e.g. clap 4.6.6 ->
+# 4.6.7) and the committed vendor.tar.gz.* parts carry the new sources, but the
+# previously-extracted vendor\ still holds the old crate. Vendored sources are
+# trusted as-is and never re-fetched, so cargo never sees the pinned version and
+# the build dies -- even under -Rebuild, which only removed the binary before.
+# Refresh when vendor\ is absent, -Rebuild was requested, or the committed archive
+# changed since vendor\ was last extracted (tracked via a stamp dotfile that cargo
+# ignores; an older tree with no stamp refreshes exactly once). The signature is
+# the lowercase SHA-256 of the checksums manifest -- identical to the value the
+# bash installer (scripts/internal/install.sh) writes, so the two interoperate.
+$VendorStamp = Join-Path $VendorDir '.oxide-sloc-vendor.stamp'
+function Get-VendorSignature {
+    if (-not (Test-Path $VendorSums)) { return $null }
+    try { (Get-FileHash -LiteralPath $VendorSums -Algorithm SHA256).Hash.ToLower() } catch { return $null }
+}
+
+$needVendorExtract = $false
 if (-not (Test-Path $VendorDir)) {
+    $needVendorExtract = $true
+} elseif ($Rebuild) {
+    Info '[-Rebuild] Refreshing vendored sources from the committed archive...'
+    $needVendorExtract = $true
+} else {
+    $wantSig = Get-VendorSignature
+    $haveSig = ''
+    if (Test-Path $VendorStamp) {
+        $haveSig = (Get-Content -LiteralPath $VendorStamp -Raw -ErrorAction SilentlyContinue)
+        if ($null -ne $haveSig) { $haveSig = $haveSig.Trim() }
+    }
+    if ($wantSig -and ($wantSig -ne $haveSig)) {
+        Info 'Committed vendor archive changed since the last extract -- refreshing vendor\...'
+        $needVendorExtract = $true
+    }
+}
+
+if ($needVendorExtract) {
     $vParts = @(Get-ChildItem -Path $RepoRoot -Filter 'vendor.tar.gz.*' -File -ErrorAction SilentlyContinue |
         Sort-Object Name | Select-Object -ExpandProperty FullName)
     if ($vParts.Count -eq 0) {
-        Die "Neither vendor\ nor vendor.tar.gz.* parts found. Ensure the full repository is present."
+        if (Test-Path $VendorDir) {
+            # Can't refresh without the committed parts; keep the existing tree as-is.
+            Warn 'vendor.tar.gz.* parts not found -- keeping the existing vendor\ unchanged.'
+        } else {
+            Die "Neither vendor\ nor vendor.tar.gz.* parts found. Ensure the full repository is present."
+        }
+    } else {
+        Test-PartChecksums -Parts $vParts -SumsFile $VendorSums
+        # Wipe any stale tree first so a shrunk dependency set can't leave orphaned
+        # crate directories behind that shadow what the lockfile now pins.
+        if (Test-Path $VendorDir) { Remove-Item -Recurse -Force -LiteralPath $VendorDir -ErrorAction SilentlyContinue }
+        Info 'Reassembling and decompressing vendor sources (one-time)...'
+        $vTar = Join-Path ([System.IO.Path]::GetTempPath()) ("sloc-vendor-" + [System.Guid]::NewGuid().ToString('N') + '.tar.gz')
+        try {
+            Join-Parts -Parts $vParts -Dest $vTar
+            & $TarExe -xzf $vTar -C $RepoRoot
+        } finally {
+            if (Test-Path $vTar) { Remove-Item -LiteralPath $vTar -Force -ErrorAction SilentlyContinue }
+        }
+        # Record the archive signature so subsequent runs skip redundant re-extraction.
+        $sig = Get-VendorSignature
+        if ($sig) { Set-Content -LiteralPath $VendorStamp -Value $sig -Encoding ascii }
+        Ok 'Vendor sources ready.'
     }
-    Test-PartChecksums -Parts $vParts -SumsFile $VendorSums
-    Info 'Reassembling and decompressing vendor sources (one-time)...'
-    $vTar = Join-Path ([System.IO.Path]::GetTempPath()) ("sloc-vendor-" + [System.Guid]::NewGuid().ToString('N') + '.tar.gz')
-    try {
-        Join-Parts -Parts $vParts -Dest $vTar
-        & $TarExe -xzf $vTar -C $RepoRoot
-    } finally {
-        if (Test-Path $vTar) { Remove-Item -LiteralPath $vTar -Force -ErrorAction SilentlyContinue }
-    }
-    Ok 'Vendor sources ready.'
 }
 
 $cargoDir = Join-Path $RepoRoot '.cargo'

@@ -70,6 +70,20 @@ fi
 # with `cat | tar -xzf -`; gzip is universal (Git for Windows bundles no xz).
 VENDOR_CHECKSUMS="$REPO_ROOT/vendor.checksums.sha256"
 VENDOR_DIR="$REPO_ROOT/vendor"
+# Marker recording which committed archive produced the current vendor/ tree.
+# A dotfile at the top of vendor/ is ignored by cargo's directory source, so it
+# is safe to keep alongside the crate directories. See the vendor-refresh logic
+# in section 5 for why this exists.
+VENDOR_STAMP="$VENDOR_DIR/.oxide-sloc-vendor.stamp"
+
+# Signature of the committed vendor archive: the SHA-256 of the per-part checksums
+# manifest, which changes whenever any part changes (i.e. whenever dependencies are
+# re-vendored). Empty if the manifest or sha256sum is unavailable.
+vendor_signature() {
+    [[ -f "$VENDOR_CHECKSUMS" ]] || return 1
+    command -v sha256sum &>/dev/null || return 1
+    sha256sum "$VENDOR_CHECKSUMS" 2>/dev/null | awk '{print $1}'
+}
 
 LOG_DIR="$REPO_ROOT/logs"
 mkdir -p "$LOG_DIR"
@@ -841,40 +855,80 @@ fi
 
 # ── 5. Build from vendored sources ──────────────────────────────────────────
 if command -v cargo &>/dev/null; then
+    # Collect split vendor parts (vendor.tar.gz.aa, .ab, .ac).
+    VENDOR_PARTS=()
+    for _vp in "$REPO_ROOT"/vendor.tar.gz.*; do
+        [[ -f "$_vp" ]] && VENDOR_PARTS+=("$_vp")
+    done
+
+    # Decide whether the on-disk vendor/ tree must be (re)extracted.
+    #
+    # A stale vendor/ left over from an earlier checkout is the classic cause of an
+    # offline build failing with "failed to select a version for the requirement …
+    # candidate versions found which didn't match". Cargo.lock gets bumped (e.g.
+    # clap 4.6.6 → 4.6.7) and the committed vendor.tar.gz.* parts carry the new
+    # sources, but the previously-extracted vendor/ still holds the old crate.
+    # Vendored sources are trusted as-is and never re-fetched, so cargo never sees
+    # the version the lockfile pins and the build dies — even under --rebuild,
+    # which previously only removed the binary and left vendor/ untouched.
+    #
+    # Re-extract when any of these hold:
+    #   • vendor/ does not exist yet, or
+    #   • --rebuild was requested (force a pristine tree), or
+    #   • the committed archive changed since vendor/ was last extracted
+    #     (detected via the stamp written after a successful extract — an older
+    #      vendor/ produced by a previous install.sh has no stamp and so refreshes
+    #      exactly once).
+    _NEED_VENDOR_EXTRACT=false
     if [[ ! -d "$VENDOR_DIR" ]]; then
-        # Collect split vendor parts (vendor.tar.gz.aa, .ab, .ac).
-        VENDOR_PARTS=()
-        for _vp in "$REPO_ROOT"/vendor.tar.gz.*; do
-            [[ -f "$_vp" ]] && VENDOR_PARTS+=("$_vp")
-        done
-        if [[ "${#VENDOR_PARTS[@]}" -gt 0 ]]; then
-            # Verify each part against vendor.checksums.sha256 (mirrors the toolchain
-            # verify loop above) before reassembling.
-            if [[ -f "$VENDOR_CHECKSUMS" ]] && command -v sha256sum &>/dev/null; then
-                for _vf in "${VENDOR_PARTS[@]}"; do
-                    _VF_NAME="$(basename "$_vf")"
-                    _EXPECTED="$(grep "$_VF_NAME" "$VENDOR_CHECKSUMS" 2>/dev/null | awk '{print $1}')"
-                    if [[ -n "$_EXPECTED" ]]; then
-                        _ACTUAL="$(sha256sum "$_vf" | awk '{print $1}')"
-                        if [[ "$_EXPECTED" != "$_ACTUAL" ]]; then
-                            echo " [ERROR] Vendor checksum mismatch — ${_VF_NAME} may be corrupt." >&2
-                            echo "         Expected: $_EXPECTED" >&2
-                            echo "         Actual:   $_ACTUAL" >&2
-                            exit 1
-                        fi
-                    fi
-                done
-                echo " [OK] Vendor checksum verified."
-            fi
-            echo " Reassembling and decompressing vendor sources (one-time)..."
-            cat "${VENDOR_PARTS[@]}" | tar -xzf - -C "$REPO_ROOT"
-            echo " [OK] Vendor sources ready."
-        else
-            echo " [ERROR] Neither vendor/ nor vendor.tar.gz.* parts found." >&2
-            echo "         The vendor archive is committed to the repository — ensure you have" >&2
-            echo "         the complete repository, not just source files." >&2
-            exit 1
+        _NEED_VENDOR_EXTRACT=true
+    elif [[ "$FORCE_REBUILD" == true ]]; then
+        echo " [--rebuild] Refreshing vendored sources from the committed archive..."
+        _NEED_VENDOR_EXTRACT=true
+    else
+        _WANT_SIG="$(vendor_signature || true)"
+        _HAVE_SIG=""
+        [[ -f "$VENDOR_STAMP" ]] && _HAVE_SIG="$(cat "$VENDOR_STAMP" 2>/dev/null || true)"
+        if [[ -n "$_WANT_SIG" && "$_WANT_SIG" != "$_HAVE_SIG" ]]; then
+            echo " Committed vendor archive changed since the last extract — refreshing vendor/..."
+            _NEED_VENDOR_EXTRACT=true
         fi
+    fi
+
+    if [[ "$_NEED_VENDOR_EXTRACT" == true ]] && [[ "${#VENDOR_PARTS[@]}" -gt 0 ]]; then
+        # Verify each part against vendor.checksums.sha256 (mirrors the toolchain
+        # verify loop above) before reassembling.
+        if [[ -f "$VENDOR_CHECKSUMS" ]] && command -v sha256sum &>/dev/null; then
+            for _vf in "${VENDOR_PARTS[@]}"; do
+                _VF_NAME="$(basename "$_vf")"
+                _EXPECTED="$(grep "$_VF_NAME" "$VENDOR_CHECKSUMS" 2>/dev/null | awk '{print $1}')"
+                if [[ -n "$_EXPECTED" ]]; then
+                    _ACTUAL="$(sha256sum "$_vf" | awk '{print $1}')"
+                    if [[ "$_EXPECTED" != "$_ACTUAL" ]]; then
+                        echo " [ERROR] Vendor checksum mismatch — ${_VF_NAME} may be corrupt." >&2
+                        echo "         Expected: $_EXPECTED" >&2
+                        echo "         Actual:   $_ACTUAL" >&2
+                        exit 1
+                    fi
+                fi
+            done
+            echo " [OK] Vendor checksum verified."
+        fi
+        # Wipe any stale tree first so a shrunk dependency set can't leave orphaned
+        # crate directories behind that shadow what the lockfile now pins.
+        rm -rf "$VENDOR_DIR"
+        echo " Reassembling and decompressing vendor sources (one-time)..."
+        cat "${VENDOR_PARTS[@]}" | tar -xzf - -C "$REPO_ROOT"
+        # Record the archive signature so subsequent runs can detect a changed
+        # archive and avoid redundant re-extraction.
+        _SIG="$(vendor_signature || true)"
+        [[ -n "$_SIG" ]] && printf '%s\n' "$_SIG" > "$VENDOR_STAMP"
+        echo " [OK] Vendor sources ready."
+    elif [[ ! -d "$VENDOR_DIR" ]]; then
+        echo " [ERROR] Neither vendor/ nor vendor.tar.gz.* parts found." >&2
+        echo "         The vendor archive is committed to the repository — ensure you have" >&2
+        echo "         the complete repository, not just source files." >&2
+        exit 1
     fi
 
     echo " Rust toolchain found — building from vendored sources..."
