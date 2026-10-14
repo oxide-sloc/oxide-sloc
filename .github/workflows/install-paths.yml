@@ -95,13 +95,13 @@ jobs:
           sha256sum "${{ matrix.asset }}" > SHA256SUMS-dist.txt
 
       - name: Upload bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
 
       - name: Upload checksums
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ${{ matrix.sums_name }}
           path: SHA256SUMS-dist.txt
@@ -200,7 +200,7 @@ jobs:
 
       - name: Upload install logs on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: logs-dist-windows-${{ github.run_number }}
           path: logs/install-*.log
@@ -255,7 +255,7 @@ jobs:
 
       - name: Upload install logs on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: logs-dist-linux-${{ github.run_number }}
           path: logs/install-*.log
