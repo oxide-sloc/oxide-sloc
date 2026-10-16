@@ -57,7 +57,7 @@ def vt_request(method, url, files=None, api_key=""):
         req = urllib.request.Request(url, headers=headers, method=method)
 
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310 - URL is validated HTTPS-only above (non-HTTPS raises ValueError); errors caught below
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")

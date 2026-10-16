@@ -13,7 +13,9 @@ publish = false
 # then commit vendor.tar.gz.* + vendor.checksums.sha256.
 
 [dependencies]
-cargo-llvm-cov = "0.8"
+# Bumped 0.8 -> 0.9 to pull ruzstd >=0.9 and clear RUSTSEC-2026-0344
+# (decompression-bomb OOM in ruzstd 0.8.x). Dev-tooling only; never shipped.
+cargo-llvm-cov = "0.9"
 cargo-nextest = "0.9"
 # cargo-nextest pulls in `locked-tripwire`, a crate whose high-numbered
 # release (0.1.1002) is a poison pill that compile_error!s unless nextest is

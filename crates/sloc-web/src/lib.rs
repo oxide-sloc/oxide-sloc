@@ -6555,32 +6555,37 @@ fn collect_result_json_candidates(folder: &std::path::Path) -> Vec<PathBuf> {
         if let Some(j) = find_result_json_in_dir(&dir) {
             candidates.push(j);
         }
-        if depth >= WATCHED_SCAN_MAX_DEPTH {
-            continue;
-        }
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            // Skip symlinks so a self-referential link cannot loop the walk forever.
-            let is_symlink = entry.file_type().map(|t| t.is_symlink()).unwrap_or(true);
-            if is_symlink {
-                continue;
-            }
-            let sub = entry.path();
-            if !sub.is_dir() {
-                continue;
-            }
-            let pruned = sub
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(is_pruned_scan_dir);
-            if !pruned {
-                stack.push((sub, depth + 1));
-            }
+        if depth < WATCHED_SCAN_MAX_DEPTH {
+            push_walkable_subdirs(&dir, depth, &mut stack);
         }
     }
     candidates
+}
+
+/// Push each walkable child directory of `dir` onto `stack` at `depth + 1`. Symlinks are skipped
+/// (so a self-referential link cannot loop the walk forever) and known-heavy directories are
+/// pruned. Extracted from `collect_result_json_candidates` to keep that walk's complexity down.
+fn push_walkable_subdirs(dir: &std::path::Path, depth: usize, stack: &mut Vec<(PathBuf, usize)>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let is_symlink = entry.file_type().map(|t| t.is_symlink()).unwrap_or(true);
+        if is_symlink {
+            continue;
+        }
+        let sub = entry.path();
+        if !sub.is_dir() {
+            continue;
+        }
+        let pruned = sub
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(is_pruned_scan_dir);
+        if !pruned {
+            stack.push((sub, depth + 1));
+        }
+    }
 }
 
 fn is_dir_already_registered(reg: &ScanRegistry, parent: &std::path::Path) -> bool {
@@ -11170,6 +11175,43 @@ struct CompareFileDeltaRow {
     churn_str: String,
 }
 
+/// Build one template row from a single [`sloc_core::FileDelta`]. Extracted from `compare_handler`
+/// so the per-file status/display/churn branching does not inflate that handler's complexity.
+fn compare_file_delta_row(d: &sloc_core::FileDelta) -> CompareFileDeltaRow {
+    CompareFileDeltaRow {
+        relative_path: d.relative_path.clone(),
+        language: d.language.clone().unwrap_or_else(|| "—".into()),
+        status: match d.status {
+            FileChangeStatus::Added => "added".into(),
+            FileChangeStatus::Removed => "removed".into(),
+            FileChangeStatus::Modified => "modified".into(),
+            FileChangeStatus::Unchanged => "unchanged".into(),
+        },
+        baseline_code: d.baseline_code,
+        current_code: d.current_code,
+        baseline_code_display: if d.status == FileChangeStatus::Added {
+            "—".into()
+        } else {
+            d.baseline_code.to_string()
+        },
+        current_code_display: if d.status == FileChangeStatus::Removed {
+            "—".into()
+        } else {
+            d.current_code.to_string()
+        },
+        code_delta_str: fmt_delta(d.code_delta),
+        code_delta_class: delta_class(d.code_delta).into(),
+        comment_delta_str: fmt_delta(d.comment_delta),
+        comment_delta_class: delta_class(d.comment_delta).into(),
+        total_delta_str: fmt_delta(d.total_delta),
+        total_delta_class: delta_class(d.total_delta).into(),
+        churn_str: match (d.added_lines, d.removed_lines) {
+            (Some(a), Some(r)) if a > 0 && r > 0 => format!("+{a} / -{r}"),
+            _ => String::new(),
+        },
+    }
+}
+
 /// Recompute `summary_totals` from the current `per_file_records` slice.
 /// Used when `per_file_records` has been narrowed to a submodule subset.
 fn recompute_summary_from_records(run: &mut AnalysisRun) {
@@ -11546,38 +11588,7 @@ async fn compare_handler(
     let file_rows: Vec<CompareFileDeltaRow> = comparison
         .file_deltas
         .iter()
-        .map(|d| CompareFileDeltaRow {
-            relative_path: d.relative_path.clone(),
-            language: d.language.clone().unwrap_or_else(|| "—".into()),
-            status: match d.status {
-                FileChangeStatus::Added => "added".into(),
-                FileChangeStatus::Removed => "removed".into(),
-                FileChangeStatus::Modified => "modified".into(),
-                FileChangeStatus::Unchanged => "unchanged".into(),
-            },
-            baseline_code: d.baseline_code,
-            current_code: d.current_code,
-            baseline_code_display: if d.status == FileChangeStatus::Added {
-                "—".into()
-            } else {
-                d.baseline_code.to_string()
-            },
-            current_code_display: if d.status == FileChangeStatus::Removed {
-                "—".into()
-            } else {
-                d.current_code.to_string()
-            },
-            code_delta_str: fmt_delta(d.code_delta),
-            code_delta_class: delta_class(d.code_delta).into(),
-            comment_delta_str: fmt_delta(d.comment_delta),
-            comment_delta_class: delta_class(d.comment_delta).into(),
-            total_delta_str: fmt_delta(d.total_delta),
-            total_delta_class: delta_class(d.total_delta).into(),
-            churn_str: match (d.added_lines, d.removed_lines) {
-                (Some(a), Some(r)) if a > 0 && r > 0 => format!("+{a} / -{r}"),
-                _ => String::new(),
-            },
-        })
+        .map(compare_file_delta_row)
         .collect();
 
     let project_path = baseline_entry

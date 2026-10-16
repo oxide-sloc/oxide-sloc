@@ -931,14 +931,7 @@ pub fn scope_authors_to_records(
     records: &mut [FileRecord],
 ) -> Vec<Author> {
     // Sum each referenced parent author's line counts across just the scoped records.
-    let mut acc: HashMap<u32, AuthorLineCounts> = HashMap::new();
-    for rec in records.iter() {
-        if let Some(ownership) = rec.ownership.as_ref() {
-            for fo in ownership {
-                acc.entry(fo.author_id).or_default().add(&fo.counts);
-            }
-        }
-    }
+    let acc = accumulate_scoped_author_counts(records);
     if acc.is_empty() {
         return Vec::new();
     }
@@ -973,17 +966,39 @@ pub fn scope_authors_to_records(
     }
 
     // Rewrite each record's ownership author_ids to the new compact indices.
+    rewrite_ownership_author_ids(records, &remap);
+
+    scoped
+}
+
+/// Sum each referenced parent author's line counts across just the scoped `records`, keyed by the
+/// parent author id. Extracted from [`scope_authors_to_records`] to keep its complexity in check.
+fn accumulate_scoped_author_counts(records: &[FileRecord]) -> HashMap<u32, AuthorLineCounts> {
+    let mut acc: HashMap<u32, AuthorLineCounts> = HashMap::new();
+    for rec in records {
+        let Some(ownership) = rec.ownership.as_ref() else {
+            continue;
+        };
+        for fo in ownership {
+            acc.entry(fo.author_id).or_default().add(&fo.counts);
+        }
+    }
+    acc
+}
+
+/// Rewrite each record's ownership `author_id`s through `remap` (parent id → compact scoped id),
+/// in place. Ids absent from `remap` are left unchanged. Companion to [`scope_authors_to_records`].
+fn rewrite_ownership_author_ids(records: &mut [FileRecord], remap: &HashMap<u32, u32>) {
     for rec in records.iter_mut() {
-        if let Some(ownership) = rec.ownership.as_mut() {
-            for fo in ownership.iter_mut() {
-                if let Some(&new_id) = remap.get(&fo.author_id) {
-                    fo.author_id = new_id;
-                }
+        let Some(ownership) = rec.ownership.as_mut() else {
+            continue;
+        };
+        for fo in ownership.iter_mut() {
+            if let Some(&new_id) = remap.get(&fo.author_id) {
+                fo.author_id = new_id;
             }
         }
     }
-
-    scoped
 }
 
 /// Blame a single record: read the working-tree bytes, classify each physical line, and pair it
@@ -1025,24 +1040,9 @@ fn parallel_blame(
     let chunks: Vec<Vec<(usize, Option<BlamePairs>)>> = std::thread::scope(|s| {
         let mut handles = Vec::with_capacity(thread_count);
         for _ in 0..thread_count {
-            handles.push(s.spawn(|| {
-                let mut local: Vec<(usize, Option<BlamePairs>)> = Vec::new();
-                loop {
-                    if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
-                        break;
-                    }
-                    let pos = next_index.fetch_add(1, Ordering::Relaxed);
-                    if pos >= n {
-                        break;
-                    }
-                    let payload = blame_one(root, &records[indices[pos]]);
-                    if let Some(done) = attrib_done {
-                        done.fetch_add(1, Ordering::Relaxed);
-                    }
-                    local.push((pos, payload));
-                }
-                local
-            }));
+            handles.push(
+                s.spawn(|| blame_worker(root, records, indices, &next_index, cancel, attrib_done)),
+            );
         }
         handles
             .into_iter()
@@ -1057,6 +1057,36 @@ fn parallel_blame(
         }
     }
     out
+}
+
+/// One work-stealing worker for [`parallel_blame`]: claim file positions from `next_index` until
+/// exhausted or cancelled, blaming each and recording `(pos, result)` pairs. Bumps `attrib_done`
+/// per file for live progress. Extracted so the spawn closure stays shallow and low-complexity.
+fn blame_worker(
+    root: &Path,
+    records: &[FileRecord],
+    indices: &[usize],
+    next_index: &AtomicUsize,
+    cancel: Option<&AtomicBool>,
+    attrib_done: Option<&AtomicUsize>,
+) -> Vec<(usize, Option<BlamePairs>)> {
+    let n = indices.len();
+    let mut local: Vec<(usize, Option<BlamePairs>)> = Vec::new();
+    loop {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            break;
+        }
+        let pos = next_index.fetch_add(1, Ordering::Relaxed);
+        if pos >= n {
+            break;
+        }
+        let payload = blame_one(root, &records[indices[pos]]);
+        if let Some(done) = attrib_done {
+            done.fetch_add(1, Ordering::Relaxed);
+        }
+        local.push((pos, payload));
+    }
+    local
 }
 
 /// How costly the per-author attribution (git blame) pass is expected to be for a repository,

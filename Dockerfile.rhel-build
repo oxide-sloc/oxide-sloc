@@ -47,6 +47,11 @@ ARG RUST_VERSION=1.97
 # gcc (+ its binutils dependency) is the linker; tar/gzip unpack the split
 # vendor parts; findutils/coreutils provide sha256sum. UBI repos serve all of
 # these without a subscription.
+# DL3041 (pin dnf versions) is intentionally ignored: UBI repos serve only the
+# current patched package set, so pinning would pin to a version that ages out of
+# the repo and break the build. The build-only image is digest-pinned instead, and
+# its sole output is the bare binary (FROM scratch export) — no runtime layer ships.
+# hadolint ignore=DL3041
 RUN dnf -y --setopt=install_weak_deps=false install \
         gcc \
         binutils \

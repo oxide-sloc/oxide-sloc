@@ -13,8 +13,11 @@
 #   docker build \
 #     --build-arg BUILDER_IMAGE=registry.example.com/rust/rust:1.95 \
 #     --build-arg RUNTIME_IMAGE=registry.example.com/ubi/ubi9-minimal:9.4 \
-#     --build-arg INSTALL_CHROMIUM=0 .
+#     --build-arg INSTALL_CHROMIUM=1 .
 # Defaults remain the digest-pinned Docker Hub images for the public build.
+# Chromium is OFF by default (secure-by-default: it is a large, frequently-CVE'd
+# attack surface and the pure-Rust PDF path covers the default case). Opt back in
+# for high-fidelity headless-Chromium PDF with --build-arg INSTALL_CHROMIUM=1.
 # NOTE: ARGs used in FROM must be declared before the first FROM (global scope).
 ARG BUILDER_IMAGE=rust:1.97-slim-bookworm@sha256:b93beca49a16e4459e51e3886658afece337bb2e991325b2919e84f7ae4a42ef
 ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
@@ -73,10 +76,11 @@ RUN cargo build --release -p oxide-sloc --no-default-features
 FROM ${RUNTIME_IMAGE}
 
 # Chromium is a large, frequently-CVE'd attack surface. It is only needed for the
-# headless-Chromium PDF path; oxide-sloc has a pure-Rust PDF fallback, so hardened
-# images can omit it with `--build-arg INSTALL_CHROMIUM=0`.
+# headless-Chromium PDF path; oxide-sloc has a pure-Rust PDF fallback, so it is
+# OMITTED BY DEFAULT (secure-by-default, minimal attack surface — NIST 800-190).
+# Opt in with `--build-arg INSTALL_CHROMIUM=1` for high-fidelity PDF rendering.
 # For a fully air-gapped Docker host, build this layer from a pre-populated apt mirror.
-ARG INSTALL_CHROMIUM=1
+ARG INSTALL_CHROMIUM=0
 # Versions left unpinned so the patch level tracks upstream; the runtime base
 # image is digest-pinned above to keep the source reproducible.
 # hadolint ignore=DL3005,DL3008
@@ -99,7 +103,9 @@ RUN groupadd -r sloc && useradd -r -g sloc -u 1001 sloc \
 
 ENV OXIDE_SLOC_ROOT=/app
 
-# Point oxide-sloc at the system Chromium
+# Point oxide-sloc at the system Chromium. Safe even when Chromium is omitted
+# (INSTALL_CHROMIUM=0, the default): browser discovery guards this path with
+# is_file(), so a missing binary is ignored and the pure-Rust PDF path is used.
 ENV SLOC_BROWSER=/usr/bin/chromium
 # SLOC_BROWSER_NOSANDBOX is intentionally NOT set here.
 # Pass -e SLOC_BROWSER_NOSANDBOX=1 at runtime when running in a container
