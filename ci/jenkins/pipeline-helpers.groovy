@@ -1749,11 +1749,40 @@ def runPostSuccess() {
               parameters: [
                   string(name: 'CHAIN_UPSTREAM_JOB',   value: env.JOB_NAME),
                   string(name: 'CHAIN_UPSTREAM_BUILD',  value: env.BUILD_NUMBER),
-                  string(name: 'ARTIFACT_PATH',         value: env.ARTIFACT_PATH ?: '')
+                  string(name: 'ARTIFACT_PATH',         value: env.ARTIFACT_PATH ?: ''),
+                  // Forward the version pin so the whole chain stays locked to one
+                  // reproducible oxide-sloc. Prefer the resolved version if known
+                  // (set by verifyToolVersion), else echo the requested pin.
+                  string(name: 'SCAN_TOOL_VERSION',
+                         value: env.SLOC_TOOL_VERSION ?: (params.SCAN_TOOL_VERSION ?: ''))
               ],
               wait: false,
               propagate: false
     }
+}
+
+// Enforce the SCAN_TOOL_VERSION pin (blank = no pin) against the resolved scanner
+// binary. Lets an orchestrator lock an entire upstream/downstream job chain to one
+// reproducible oxide-sloc version; fails the build on mismatch so a stale dist/
+// binary or a drifted toolchain can never silently scan with the wrong tool.
+def verifyToolVersion() {
+    def want = params.SCAN_TOOL_VERSION?.trim()
+    if (!want) { return }
+    want = want.replaceFirst(/^[vV]/, '')
+    def raw  = shxStdout("'${env.BINARY}' --version").trim()
+    // clap prints "oxide-sloc X.Y.Z"; take the semver from the last non-empty line.
+    def line = raw.readLines().findAll { it?.trim() }.last()?.trim() ?: raw
+    def m    = (line =~ /([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.\-]+)?)/)
+    def got  = m ? m[0][1] : line
+    if (got != want) {
+        error("SCAN_TOOL_VERSION pin mismatch: pinned '${want}' but the resolved " +
+              "oxide-sloc binary reports '${got}' (full: '${line}'). On " +
+              "BUILD_MODE=prebuilt commit the matching dist/ archive; on a source " +
+              "build check the workspace Cargo.toml version. Clear SCAN_TOOL_VERSION " +
+              "to disable the pin.")
+    }
+    echo "Tool version pin satisfied: oxide-sloc ${got} matches SCAN_TOOL_VERSION ${want}."
+    env.SLOC_TOOL_VERSION = got
 }
 
 def runBitbucketNotify() {

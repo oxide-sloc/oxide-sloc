@@ -160,6 +160,17 @@ pipeline {
                          'crates. Slower; use for release verification. Automatically selected when ' +
                          'RUN_QUALITY_GATES or RUN_COVERAGE is checked (those need the toolchain).'
         )
+        string(
+            name:         'SCAN_TOOL_VERSION',
+            defaultValue: '',
+            description:  'Pin the oxide-sloc scanner to an exact version (e.g. 1.6.23 or v1.6.23). ' +
+                          'When set, the pipeline runs the resolved binary --version after the Build ' +
+                          'stage and FAILS the build if it does not match, so an upstream/downstream ' +
+                          'job chain runs one reproducible tool version. The value is forwarded to ' +
+                          'CHAIN_DOWNSTREAM_JOB so the whole chain stays version-locked. Blank = no ' +
+                          'pin. On BUILD_MODE=prebuilt the version is whatever dist/ archive is ' +
+                          'committed; on a source build it matches the workspace Cargo.toml version.'
+        )
 
         // ═══════════════════════════════════════════════════════════════════════
         //  OPTIONAL — everything below is pre-set to sensible defaults. For a
@@ -227,6 +238,15 @@ pipeline {
             name:         'RUN_ATTRIBUTION',
             defaultValue: true,
             description:  'Compute per-author code-ownership metrics via git blame. Requires full git history.'
+        )
+        booleanParam(
+            name:         'RUN_PREFLIGHT',
+            defaultValue: true,
+            description:  'Run the host preflight check (scripts/preflight.sh) before Setup/Build. ' +
+                          'Verifies the agent has the prerequisites for the selected BUILD_MODE ' +
+                          '(git + an extraction tool for prebuilt; a Rust toolchain or vendored ' +
+                          'crates for source) and fails fast with actionable guidance instead of ' +
+                          'erroring deep inside Setup. Soft issues (low disk, no PDF browser) only warn.'
         )
         // ── CI config preset ───────────────────────────────────────────────────
         choice(
@@ -926,6 +946,25 @@ pipeline {
             }
         }
 
+        // ── 0c. Preflight ──────────────────────────────────────────────────────
+        // Host-side prerequisite + compatibility check for the selected BUILD_MODE.
+        // Runs the same standalone scripts/preflight.sh that any OTHER project can
+        // invoke to confirm a machine can install/run oxide-sloc — so the Jenkins
+        // agent is validated by the exact contract downstream consumers rely on.
+        // Fails fast on hard-missing prerequisites; soft issues only warn.
+        stage('Preflight') {
+            when { expression { params.RUN_PREFLIGHT } }
+            steps {
+                script {
+                    // Pre-Build: the scanner binary does not exist yet, so preflight
+                    // only validates host prerequisites for the mode. The SCAN_TOOL_VERSION
+                    // pin is enforced against the real binary post-Build (Verify tool version).
+                    def mode = env.SLOC_NEEDS_SOURCE == 'true' ? 'source' : 'prebuilt'
+                    h.shx "bash scripts/preflight.sh --mode ${mode}"
+                }
+            }
+        }
+
         // ── 1. Setup ───────────────────────────────────────────────────────────
         // Installs the Rust toolchain (cached persistently across builds) and
         // decompresses the vendor archive so all cargo commands run fully offline.
@@ -1031,6 +1070,17 @@ pipeline {
         stage('Build') {
             steps {
                 retry(2) { script { h.runBuild() } }
+            }
+        }
+
+        // ── 3b. Verify tool version ────────────────────────────────────────────
+        // Enforce the SCAN_TOOL_VERSION pin against the freshly resolved binary so
+        // an upstream/downstream job chain runs one reproducible oxide-sloc version.
+        // No-op when the pin is blank (the default).
+        stage('Verify tool version') {
+            when { expression { params.SCAN_TOOL_VERSION?.trim() as Boolean } }
+            steps {
+                script { h.verifyToolVersion() }
             }
         }
 

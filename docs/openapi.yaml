@@ -2,14 +2,24 @@ openapi: "3.1.0"
 
 info:
   title: oxide-sloc REST API
-  version: "1.6.15"
+  version: "1.6.23"
   description: |
     Machine-readable code metrics API for oxide-sloc — IEEE 1045-1992 SLOC
     analysis, unit test detection, and coverage reporting across 60 languages.
 
     **Authentication**: When `SLOC_API_KEY` is set on the server, all endpoints
-    except `/healthz`, `/api/health`, `/api/version`, `/api/openapi.yaml`, and
-    `/badge/{metric}` require `Authorization: Bearer <key>`.
+    except `/healthz`, `/readyz`, `/api/health`, `/api/version`,
+    `/api/openapi.yaml`, and `/badge/{metric}` require `Authorization: Bearer <key>`.
+
+    The `/webhooks/*` receivers are a deliberate exception: they are always public
+    and are NOT bearer-authenticated. Instead each inbound event is authenticated
+    per-schedule by an HMAC-SHA256 signature over the exact request body using the
+    schedule's `webhook_secret`. This lets any upstream CI — even a legacy pipeline
+    with nothing but `curl` — trigger a scan without holding the server API key.
+
+    **Note**: `info.version` is rewritten to the running binary's version at request
+    time, so a live `/api/openapi.yaml` always reports the deployed version even if
+    the committed spec file lags.
 
     **Base URL**: defaults to `http://127.0.0.1:4317`. Override with `SLOC_BIND`
     or the `--bind` flag when starting the server.
@@ -197,7 +207,7 @@ components:
         nearest_tag:
           type: string
           nullable: true
-          example: "v1.6.15"
+          example: "v1.5.5"
         code_lines:
           type: integer
           format: int64
@@ -275,7 +285,66 @@ components:
           example: "oxide-sloc"
         version:
           type: string
+          example: "1.5.5"
+        git_sha:
+          type: string
+          description: Short git commit the binary was built from, or "unknown".
+          example: "3a0f123"
+        build_time:
+          type: string
+          description: RFC 3339 UTC build timestamp.
+          example: "2026-08-11T12:00:00Z"
+
+    HealthResponse:
+      type: object
+      required: [status, name, version, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          description: "\"ok\" when every dependency check passes; \"degraded\" otherwise."
+          example: ok
+        name:
+          type: string
+          example: "oxide-sloc"
+        version:
+          type: string
           example: "1.6.15"
+        git_sha:
+          type: string
+          example: "3a0f123"
+        build_time:
+          type: string
+          example: "2026-08-11T12:00:00Z"
+        uptime_seconds:
+          type: integer
+          format: int64
+          description: Seconds since the server process started.
+          example: 3600
+        checks:
+          type: object
+          additionalProperties:
+            type: boolean
+          description: Per-dependency pass/fail flags.
+          example:
+            registry_writable: true
+            output_dir_writable: true
+
+    ReadinessResponse:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+          example: ready
+        checks:
+          type: object
+          additionalProperties:
+            type: boolean
+          example:
+            registry_writable: true
+            output_dir_writable: true
 
     Error:
       type: object
@@ -283,41 +352,195 @@ components:
         error:
           type: string
 
+    CiBuildCompletePayload:
+      type: object
+      description: >
+        Provider-agnostic build-completion event posted to /webhooks/ci. Only
+        `repo_url` is required; `repo_url` + `branch` are how the event is matched
+        to a configured scan schedule. `status` gates on success and
+        `upstream.build_id` enables idempotent de-duplication of retried deliveries.
+      required: [repo_url]
+      properties:
+        repo_url:
+          type: string
+          format: uri
+          example: "https://git.example.com/org/myapp.git"
+        branch:
+          type: string
+          nullable: true
+          example: "main"
+        commit_sha:
+          type: string
+          nullable: true
+          description: Exact commit to scan. Omit/blank to scan the branch tip.
+          example: ""
+        status:
+          type: string
+          nullable: true
+          description: >
+            Upstream build result. Recognised success tokens (case-insensitive):
+            success, succeeded, passed, pass, ok, green, completed, 0, true.
+            Anything else is skipped.
+          example: "success"
+        upstream:
+          $ref: "#/components/schemas/CiUpstream"
+
+    CiUpstream:
+      type: object
+      description: Provenance of the upstream build (logging + idempotency key).
+      properties:
+        system:
+          type: string
+          example: "jenkins"
+        job:
+          type: string
+          example: "myapp-pipeline"
+        build_id:
+          type: string
+          description: Enables de-duplication of repeat deliveries.
+          example: "1234"
+        url:
+          type: string
+          format: uri
+          example: "https://ci.example.com/job/1234"
+
+    CreateScheduleRequest:
+      type: object
+      description: Register a scan schedule that inbound webhook events match against.
+      required: [label, repo_url, branch, kind]
+      properties:
+        label:
+          type: string
+          example: "myapp"
+        repo_url:
+          type: string
+          format: uri
+          example: "https://git.example.com/org/myapp.git"
+        branch:
+          type: string
+          example: "main"
+        kind:
+          type: string
+          enum: [webhook, poll]
+          description: >
+            webhook — scan when a matching signed event arrives;
+            poll — scan the branch tip every `interval_secs`.
+        provider:
+          type: string
+          nullable: true
+          enum: [github, gitlab, bitbucket, any]
+          default: any
+        interval_secs:
+          type: integer
+          format: int64
+          nullable: true
+          description: Poll interval in seconds (kind=poll only; defaults to 300).
+          example: 300
+        webhook_secret:
+          type: string
+          nullable: true
+          description: HMAC-SHA256 key that /webhooks/* events for this schedule must be signed with.
+
+    ScanSchedule:
+      type: object
+      description: A stored scan schedule.
+      required: [id, label, repo_url, branch, kind, provider, enabled]
+      properties:
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+        repo_url:
+          type: string
+          format: uri
+        branch:
+          type: string
+        kind:
+          type: string
+          enum: [webhook, poll]
+        provider:
+          type: string
+          enum: [github, gitlab, bitbucket, any]
+        interval_secs:
+          type: integer
+          format: int64
+          nullable: true
+        last_scan_sha:
+          type: string
+          nullable: true
+        last_scan_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_run_id:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
-      summary: Health check
-      description: Returns "ok" when the server is running. No authentication required.
+      summary: Liveness probe
+      description: >-
+        Returns "ok" when the process is up and servicing requests. Trivial and
+        dependency-free — suitable for container/systemd liveness probes. No
+        authentication required.
       security: []
       tags: [Health]
       responses:
         "200":
-          description: Server is healthy.
+          description: Server is alive.
           content:
             text/plain:
               schema:
                 type: string
                 example: ok
 
-  /api/health:
+  /readyz:
     get:
-      operationId: apiHealthCheck
-      summary: Health check (JSON alias)
-      description: Alias for /healthz that returns JSON. No authentication required.
+      operationId: readinessCheck
+      summary: Readiness probe
+      description: >-
+        Returns 200 when the server can persist its registry and write scan
+        artifacts, 503 otherwise. Distinct from /healthz (liveness) so
+        orchestrators can hold traffic off a process that is up but not ready.
+        No authentication required.
       security: []
       tags: [Health]
       responses:
         "200":
-          description: Server is healthy.
+          description: Server is ready to serve requests.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: ok
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: Server is up but a dependency check failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+
+  /api/health:
+    get:
+      operationId: apiHealthCheck
+      summary: Structured health/status
+      description: >-
+        Structured health and build information. Always answers 200 when the
+        process is responsive; the `status` field is "ok" when every dependency
+        check passes and "degraded" otherwise. No authentication required.
+      security: []
+      tags: [Health]
+      responses:
+        "200":
+          description: Health and status details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
 
   /api/version:
     get:
@@ -537,6 +760,153 @@ paths:
         "404":
           description: No scan data available yet.
 
+  /api/schedules:
+    get:
+      operationId: listSchedules
+      summary: List scan schedules
+      description: Returns all configured scan schedules (webhook and poll kinds).
+      tags: [Schedules]
+      responses:
+        "200":
+          description: The configured schedules.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedules:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScanSchedule"
+    post:
+      operationId: createSchedule
+      summary: Create a scan schedule
+      description: >
+        Register a schedule that inbound /webhooks/* events are matched to by
+        `repo_url` + `branch`. For webhook kinds, set `webhook_secret` — it is the
+        HMAC key the upstream trigger must sign events with.
+      tags: [Schedules]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateScheduleRequest"
+      responses:
+        "201":
+          description: Schedule created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanSchedule"
+    delete:
+      operationId: deleteSchedule
+      summary: Delete a scan schedule
+      description: Removes the schedule with the given id.
+      tags: [Schedules]
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the schedule to delete.
+      responses:
+        "204":
+          description: Schedule deleted (or did not exist).
+
+  /webhooks/ci:
+    post:
+      operationId: ciBuildComplete
+      summary: Provider-agnostic build-completion trigger
+      description: >
+        Launch a scan when any upstream CI build finishes. Public route secured
+        per-schedule by HMAC (not the server API key), so even a legacy pipeline
+        with only `curl` can drive it. The request body is signed HMAC-SHA256 with
+        the matching schedule's `webhook_secret`. To keep the endpoint from acting
+        as an oracle, an invalid signature returns the same 202 as success.
+      security: []
+      tags: [Webhooks]
+      parameters:
+        - name: X-Sloc-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: "sha256=<hex> — HMAC-SHA256 of the exact request body."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CiBuildCompletePayload"
+      responses:
+        "202":
+          description: >
+            Event accepted — a scan was spawned, OR nothing matched / the signature
+            was invalid (deliberately indistinguishable).
+        "200":
+          description: >
+            A non-secret guard declined, e.g. {"status":"skipped","reason":"upstream
+            build not successful"} or "duplicate upstream build".
+        "400":
+          description: Malformed JSON, or missing repo_url.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /webhooks/github:
+    post:
+      operationId: githubWebhook
+      summary: GitHub push webhook receiver
+      description: >
+        Receives GitHub push events (X-GitHub-Event: push) and triggers a scan for
+        a matching schedule. Public; secured by the schedule's HMAC secret via the
+        X-Hub-Signature-256 header. Non-push events return 200 and are ignored.
+      security: []
+      tags: [Webhooks]
+      responses:
+        "202":
+          description: Push accepted (or no match / bad signature — indistinguishable).
+        "200":
+          description: Non-push event ignored.
+        "400":
+          description: Missing X-GitHub-Event header or malformed body.
+
+  /webhooks/gitlab:
+    post:
+      operationId: gitlabWebhook
+      summary: GitLab push webhook receiver
+      description: >
+        Receives GitLab "Push Hook" / "Tag Push Hook" events and triggers a scan
+        for a matching schedule. Public; secured by the schedule's HMAC secret.
+      security: []
+      tags: [Webhooks]
+      responses:
+        "202":
+          description: Push accepted (or no match / bad signature — indistinguishable).
+        "200":
+          description: Non-push event ignored.
+        "400":
+          description: Missing X-GitLab-Event header or malformed body.
+
+  /webhooks/bitbucket:
+    post:
+      operationId: bitbucketWebhook
+      summary: Bitbucket push webhook receiver
+      description: >
+        Receives Bitbucket push events and triggers a scan for a matching schedule.
+        Public; secured by the schedule's HMAC secret.
+      security: []
+      tags: [Webhooks]
+      responses:
+        "202":
+          description: Push accepted (or no match / bad signature — indistinguishable).
+        "400":
+          description: Malformed body.
+
 tags:
   - name: Health
     description: Health checks and server information. Always public.
@@ -548,3 +918,9 @@ tags:
     description: Manage and poll asynchronous scan runs.
   - name: Badges
     description: SVG badges for embedding in documentation.
+  - name: Schedules
+    description: Scan schedules that inbound webhook/poll events are matched to.
+  - name: Webhooks
+    description: >
+      Public, HMAC-secured receivers that let any upstream CI (GitHub, GitLab,
+      Bitbucket, or a provider-agnostic build-complete event) trigger a scan.

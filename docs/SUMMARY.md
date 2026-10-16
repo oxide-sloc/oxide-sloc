@@ -23,5 +23,6 @@
 
 # Reference
 
-- [REST API](openapi.yaml)
+- [API Contract (embedding oxide-sloc)](api-contract.md)
+- [REST API (OpenAPI)](openapi.yaml)
 - [Commercial Licensing](licensing-commercial.md)

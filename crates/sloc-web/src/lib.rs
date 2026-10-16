@@ -4722,10 +4722,31 @@ async fn metrics_handler() -> impl IntoResponse {
 
 static OPENAPI_YAML: &str = include_str!("../assets/openapi.yaml");
 
+/// Serve the embedded OpenAPI spec with its `info.version` rewritten to the
+/// running binary's version, so the published contract can never drift from the
+/// crate version even if the committed asset lags between releases. Only the
+/// first `info`-level `version:` line (two-space indent) is rewritten; the
+/// deeper `version` fields inside component schemas are left untouched.
+fn openapi_spec_current() -> String {
+    let want = concat!("  version: \"", env!("CARGO_PKG_VERSION"), "\"");
+    let mut out = String::with_capacity(OPENAPI_YAML.len() + want.len());
+    let mut replaced = false;
+    for line in OPENAPI_YAML.lines() {
+        if !replaced && line.starts_with("  version: \"") {
+            out.push_str(want);
+            replaced = true;
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 async fn openapi_yaml_handler() -> impl IntoResponse {
     (
         [(axum::http::header::CONTENT_TYPE, "application/yaml")],
-        OPENAPI_YAML,
+        openapi_spec_current(),
     )
 }
 
