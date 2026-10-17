@@ -9,8 +9,6 @@ section. Completed work ships as patch or minor releases; breaking changes targe
   default in place of the hand-rolled lexical state machines, for more accurate comment / code
   classification, especially for nested constructs and multi-line strings.
 
-- **SARIF export** — Emit SARIF output so results can be ingested by GitHub / GitLab code-scanning.
-
 - **CSV / XLSX export parity in the web UI** — CSV and 4-sheet Excel export are currently
   CLI-only; surface the same exports from the web UI.
 
@@ -28,6 +26,9 @@ section. Completed work ships as patch or minor releases; breaking changes targe
 
 These were once roadmap items and are now complete:
 
+- **SARIF export** (+ GitLab Code Quality, Bitbucket Code Insights, cloc-compatible JSON) —
+  `analyze`/`report` emit SARIF 2.1.0 for GitHub code scanning and GitLab SAST, Code Climate JSON
+  for the GitLab Code Quality widget, a Bitbucket Code Insights document, and cloc-shaped JSON.
 - **PDF generation in the web UI** — headless-Chromium export plus a pure-Rust fallback
   (`/export/pdf`, `/api/runs/:id/pdf-status`).
 - **Validation corpus + golden tests** — `crates/sloc-languages/tests/corpus/` + `golden.rs`.

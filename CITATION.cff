@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use oxide-sloc in your work, please cite it as below."
+title: oxide-sloc
+abstract: >-
+  A Rust-based local code metrics workbench: IEEE 1045-1992 physical SLOC analysis, lexical
+  unit-test detection, coverage import, COCOMO I estimation, approximate cyclomatic complexity,
+  git hotspots, and per-author code ownership, with CLI, web UI, HTML/PDF reports, a REST API,
+  and an MCP server for AI agents.
+type: software
+authors:
+  - family-names: Shafie
+    given-names: Nima
+    email: nimzshafie@gmail.com
+repository-code: "https://github.com/oxide-sloc/oxide-sloc"
+url: "https://github.com/oxide-sloc/oxide-sloc"
+license: AGPL-3.0-or-later
+version: 1.6.24
+date-released: "2026-10-16"
+keywords:
+  - sloc
+  - code-metrics
+  - static-analysis
+  - cyclomatic-complexity
+  - cocomo
+  - software-measurement
+  - rust

@@ -4706,6 +4706,70 @@ fn prom_runs_total() -> &'static prometheus::IntCounter {
     })
 }
 
+/// Gauges describing the most recently completed analysis run. Exposed on `/metrics` so
+/// Prometheus/Grafana can chart code size and test metrics over time without parsing the JSON
+/// artifacts. Updated by [`prom_record_run`] at each run completion.
+struct LastRunGauges {
+    code_lines: prometheus::IntGauge,
+    comment_lines: prometheus::IntGauge,
+    blank_lines: prometheus::IntGauge,
+    files_analyzed: prometheus::IntGauge,
+    test_count: prometheus::IntGauge,
+    cyclomatic_complexity: prometheus::IntGauge,
+}
+
+fn prom_last_run() -> &'static LastRunGauges {
+    static G: OnceLock<LastRunGauges> = OnceLock::new();
+    G.get_or_init(|| LastRunGauges {
+        code_lines: prometheus::register_int_gauge!(
+            "oxide_sloc_last_run_code_lines",
+            "Code lines in the most recent analysis run"
+        )
+        .expect("register oxide_sloc_last_run_code_lines"),
+        comment_lines: prometheus::register_int_gauge!(
+            "oxide_sloc_last_run_comment_lines",
+            "Comment lines in the most recent analysis run"
+        )
+        .expect("register oxide_sloc_last_run_comment_lines"),
+        blank_lines: prometheus::register_int_gauge!(
+            "oxide_sloc_last_run_blank_lines",
+            "Blank lines in the most recent analysis run"
+        )
+        .expect("register oxide_sloc_last_run_blank_lines"),
+        files_analyzed: prometheus::register_int_gauge!(
+            "oxide_sloc_last_run_files_analyzed",
+            "Files analyzed in the most recent analysis run"
+        )
+        .expect("register oxide_sloc_last_run_files_analyzed"),
+        test_count: prometheus::register_int_gauge!(
+            "oxide_sloc_last_run_test_functions",
+            "Detected test functions in the most recent analysis run"
+        )
+        .expect("register oxide_sloc_last_run_test_functions"),
+        cyclomatic_complexity: prometheus::register_int_gauge!(
+            "oxide_sloc_last_run_cyclomatic_complexity",
+            "Summed cyclomatic complexity in the most recent analysis run"
+        )
+        .expect("register oxide_sloc_last_run_cyclomatic_complexity"),
+    })
+}
+
+/// Record a completed run in the Prometheus registry: bump the run counter and refresh the
+/// last-run gauges. Values are saturated into `i64` (gauge type) — code bases never approach the
+/// ceiling, and a clamp is safer than an overflow panic.
+fn prom_record_run(run: &AnalysisRun) {
+    prom_runs_total().inc();
+    let t = &run.summary_totals;
+    let g = prom_last_run();
+    let as_i64 = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+    g.code_lines.set(as_i64(t.code_lines));
+    g.comment_lines.set(as_i64(t.comment_lines));
+    g.blank_lines.set(as_i64(t.blank_lines));
+    g.files_analyzed.set(as_i64(t.files_analyzed));
+    g.test_count.set(as_i64(t.test_count));
+    g.cyclomatic_complexity.set(as_i64(t.cyclomatic_complexity));
+}
+
 async fn metrics_handler() -> impl IntoResponse {
     use prometheus::Encoder as _;
     let mut buf = Vec::new();
@@ -8075,7 +8139,7 @@ async fn run_analysis_task(task: AnalysisTask) {
 
     spawn_pdf_background(pending_pdf, run_id.clone(), task.state.artifacts.clone());
 
-    prom_runs_total().inc();
+    prom_record_run(&run);
 
     // Mark complete — client is now polling and will be redirected to /runs/result/{run_id}.
     let mut runs = task.state.async_runs.lock().await;

@@ -2,7 +2,13 @@
 // Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
 #![allow(clippy::multiple_crate_versions)]
 
+mod exports;
 mod pdf_compat;
+
+pub use exports::{
+    CodeScanOptions, DEFAULT_COMPLEXITY_THRESHOLD, write_bitbucket, write_cloc_json,
+    write_codeclimate, write_sarif,
+};
 
 use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;

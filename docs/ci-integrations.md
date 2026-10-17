@@ -47,6 +47,7 @@ This document covers how to wire oxide-sloc into your CI/CD pipelines and how to
    - [Registering artifact repo credentials](#registering-artifact-repo-credentials)
 9. [Environment variables reference](#environment-variables-reference)
 10. [CLI flag quick reference](#cli-flag-quick-reference)
+11. [Code-scanning & interchange exports (SARIF / GitLab / Bitbucket / cloc)](#code-scanning--interchange-exports)
 
 ---
 
@@ -1847,3 +1848,71 @@ network) — use it as a pipeline smoke test.
 | `ci/sloc-ci-default.toml`  | Balanced defaults — mirrors web UI out of the box |
 | `ci/sloc-ci-strict.toml`   | Fail-fast — pipeline errors if binary files found |
 | `ci/sloc-ci-full-scope.toml` | Audit mode — counts everything including vendor |
+
+---
+
+## Code-scanning & interchange exports
+
+Beyond HTML/PDF/CSV/XLSX, `analyze` and `report` emit machine-readable reports that plug directly
+into the code-scanning surfaces GitHub, GitLab, and Bitbucket already speak. Findings are raised
+for files whose approximate cyclomatic complexity exceeds a threshold (`--code-scan-complexity`,
+default 25; falls back to `--max-complexity` when set) and for any per-file analyzer warnings.
+
+| Flag | Format | Consumed by |
+|---|---|---|
+| `--sarif-out <path>` | SARIF 2.1.0 | **GitHub** code scanning (Security tab + PR annotations); **GitLab** SAST report |
+| `--codeclimate-out <path>` | Code Climate JSON | **GitLab** Code Quality widget (MR quality diff) |
+| `--bitbucket-out <path>` | Code Insights `{ report, annotations }` | **Bitbucket** Code Insights (PR report + inline annotations) |
+| `--cloc-out <path>` | cloc-compatible JSON (`header` + `SUM` + per-language) | Any tooling that already parses `cloc --json` |
+
+```bash
+oxide-sloc analyze ./src \
+  --sarif-out        oxide-sloc.sarif \
+  --codeclimate-out  gl-code-quality-report.json \
+  --bitbucket-out    bitbucket-insights.json \
+  --cloc-out         cloc.json \
+  --code-scan-complexity 40
+```
+
+### GitHub Actions
+
+Upload the SARIF so findings appear in the Security tab and as PR annotations:
+
+```yaml
+- run: oxide-sloc analyze ./src --sarif-out oxide-sloc.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: oxide-sloc.sarif
+    category: oxide-sloc
+```
+
+### GitLab CI
+
+GitLab's Code Quality widget consumes the Code Climate report; the SARIF can be attached as a
+`sast` report (GitLab 14.0+):
+
+```yaml
+oxide-sloc:
+  script:
+    - oxide-sloc analyze ./src --codeclimate-out gl-code-quality-report.json --sarif-out gl-sast.sarif
+  artifacts:
+    reports:
+      codequality: gl-code-quality-report.json
+      sast: gl-sast.sarif
+```
+
+### Bitbucket
+
+`--bitbucket-out` writes one document with a `report` object and an `annotations` array, ready for
+the [Code Insights REST API](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-reports/).
+From a Bitbucket Pipeline (the `$BITBUCKET_*` variables are injected automatically):
+
+```bash
+oxide-sloc analyze ./src --bitbucket-out insights.json
+base="https://api.bitbucket.org/2.0/repositories/$BITBUCKET_REPO_FULL_NAME/commit/$BITBUCKET_COMMIT/reports/oxide-sloc"
+jq '.report'      insights.json | curl -s -X PUT  "$base"             -H 'Content-Type: application/json' -d @-
+jq '.annotations' insights.json | curl -s -X POST "$base/annotations" -H 'Content-Type: application/json' -d @-
+```
+
+On Bitbucket Data Center the equivalent endpoint is
+`/rest/insights/1.0/projects/{projectKey}/repos/{repo}/commits/{commitId}/reports/oxide-sloc`.

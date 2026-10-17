@@ -54,6 +54,7 @@ powershell -ExecutionPolicy Bypass -File scripts\internal\install.ps1
 - **Code Ownership** — per-author line attribution via `git blame`; contributor leaderboard, per-author file drill-down, hotspot ownership, and `.mailmap` identity merge/export; on by default
 - **Test Metrics** — lexical test function detection across 60 languages; test-to-code density; multi-format coverage import (LCOV, Cobertura XML, JaCoCo XML, coverage.py JSON, Istanbul/NYC JSON)
 - **Flexible output** — HTML reports, PDF, CSV, and 4-sheet Excel export; re-render any saved JSON
+- **Code-scanning exports** — SARIF 2.1.0 (GitHub code scanning / GitLab SAST), GitLab Code Quality (Code Climate) JSON, Bitbucket Code Insights, and cloc-compatible JSON; see [docs/ci-integrations.md](docs/ci-integrations.md#code-scanning--interchange-exports)
 - **Git integration** — branch/tag/commit browser (remote URLs *and* local checkouts), recursive submodule scanning, GitHub/GitLab/Bitbucket webhooks and polling, submodule breakdown
 - **CI/CD** — GitHub Actions, Jenkins, GitLab CI; native Jira + Bitbucket + Confluence publishing; JSON metrics API, SVG badge endpoint, embeddable widget, SMTP/webhook delivery
 - **Offline-first** — vendored deps, Chart.js compiled in, no CDN calls; Docker on GHCR; LAN server mode with API key auth and optional TLS
@@ -75,9 +76,12 @@ powershell -ExecutionPolicy Bypass -File scripts\internal\install.ps1
 | REST API + SVG badge | ✓ | — | — | — | — |
 | Git webhook integration | ✓ | — | — | — | — |
 | CI/CD marketplace action | ✓ | — | — | — | — |
+| SARIF / code-scanning export² | ✓ | — | — | — | — |
 | Offline / air-gapped build | ✓ | — | — | — | — |
 
 ¹ Complexity is a lexical approximation — a sum of branch/decision keywords (`if`, `for`, `while`, `||`, `&&`, …) per code line, not a control-flow-graph McCabe computation.
+
+² SARIF 2.1.0 for GitHub code scanning / GitLab SAST, plus GitLab Code Quality (Code Climate), Bitbucket Code Insights, and cloc-compatible JSON.
 
 cloc, tokei, and scc win on raw language count and throughput for pure line-counting
 pipelines; UCC (USC's Unified Code Count) brings rigorous physical/logical SLOC counting,
@@ -126,7 +130,7 @@ every release tag:
 docker pull ghcr.io/oxide-sloc/oxide-sloc:latest
 ```
 
-Tags: `latest` (current `main`), a minor series (e.g. `1.6`), and exact versions (e.g. `1.6.23`).
+Tags: `latest` (current `main`), a minor series (e.g. `1.6`), and exact versions (e.g. `1.6.24`).
 
 **Web UI** — the image runs `serve --server` by default, binding `0.0.0.0:4317`. Server mode is
 fail-closed, so provide an API key (sent as `Authorization: Bearer <key>`):

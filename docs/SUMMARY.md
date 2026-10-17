@@ -21,8 +21,15 @@
 
 - [IDE Integrations](ide-integrations.md)
 
+# Security & Supply Chain
+
+- [Supply Chain Security](supply-chain.md)
+- [Reproducible Builds](reproducible-builds.md)
+- [OpenSSF Best Practices](openssf-best-practices.md)
+
 # Reference
 
 - [API Contract (embedding oxide-sloc)](api-contract.md)
 - [REST API (OpenAPI)](openapi.yaml)
+- [Config Schema (JSON Schema)](schema/oxide-sloc-config.schema.json)
 - [Commercial Licensing](licensing-commercial.md)

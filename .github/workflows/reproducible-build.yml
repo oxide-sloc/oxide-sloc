@@ -1,0 +1,67 @@
+name: Reproducible build
+
+# Builds the release binary twice, from two independent checkouts at different filesystem
+# paths, and asserts the two binaries are byte-for-byte identical. This is the verification
+# layer under the existing signing + provenance story (cosign / SLSA / build-provenance): a
+# reproducible build lets a third party rebuild from source and confirm the published,
+# attested binary was not tampered with. Report-only and out of the release critical path —
+# it never blocks a release.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Byte-for-byte rebuild
+    runs-on: ubuntu-latest
+    env:
+      # A fixed epoch and no incremental compilation remove the two most common sources of
+      # nondeterminism (embedded timestamps, incremental-cache fingerprints).
+      SOURCE_DATE_EPOCH: "1700000000"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Checkout (copy A)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: build-a
+
+      - name: Checkout (copy B)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: build-b
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # stable
+
+      - name: Build copy A
+        working-directory: build-a
+        env:
+          # Remap each checkout's absolute path to the same virtual root so the only remaining
+          # difference between A and B (the build directory) cannot leak into the output.
+          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/build-a=/oxide-sloc"
+        run: cargo build --release --locked -p oxide-sloc
+
+      - name: Build copy B
+        working-directory: build-b
+        env:
+          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/build-b=/oxide-sloc"
+        run: cargo build --release --locked -p oxide-sloc
+
+      - name: Compare hashes
+        run: |
+          set -euo pipefail
+          ha=$(sha256sum build-a/target/release/oxide-sloc | awk '{print $1}')
+          hb=$(sha256sum build-b/target/release/oxide-sloc | awk '{print $1}')
+          echo "copy A: $ha"
+          echo "copy B: $hb"
+          if [ "$ha" != "$hb" ]; then
+            echo "::error::Build is NOT reproducible — the two binaries differ."
+            exit 1
+          fi
+          echo "Reproducible: both builds hash to $ha"
+          echo "sha256=$ha" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,165 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/oxide-sloc/oxide-sloc/main/docs/schema/oxide-sloc-config.schema.json",
+  "title": "oxide-sloc configuration",
+  "description": "Schema for the oxide-sloc TOML configuration file (oxide-sloc.toml). Mirrors sloc_config::AppConfig. All sections and fields are optional; omitted values fall back to the documented defaults.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "discovery": { "$ref": "#/definitions/discovery" },
+    "analysis": { "$ref": "#/definitions/analysis" },
+    "reporting": { "$ref": "#/definitions/reporting" },
+    "web": { "$ref": "#/definitions/web" },
+    "git": { "$ref": "#/definitions/git" },
+    "profile": {
+      "type": "object",
+      "description": "Named profiles (e.g. [profile.frontend]); each section replaces the matching base section when selected via --profile.",
+      "additionalProperties": { "$ref": "#/definitions/profile" }
+    }
+  },
+  "definitions": {
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "root_paths": { "type": "array", "items": { "type": "string" } },
+        "scan_subdirs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Sub-paths under the project root to restrict the scan to; '..' segments are rejected."
+        },
+        "include_globs": { "type": "array", "items": { "type": "string" } },
+        "exclude_globs": { "type": "array", "items": { "type": "string" } },
+        "excluded_directories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [".git", "node_modules", "target"]
+        },
+        "honor_ignore_files": { "type": "boolean", "default": true },
+        "ignore_hidden_files": { "type": "boolean", "default": true },
+        "follow_symlinks": { "type": "boolean", "default": false },
+        "max_file_size_bytes": { "type": "integer", "minimum": 1, "default": 2097152 },
+        "parallelism_limit": { "type": ["integer", "null"], "minimum": 1 },
+        "submodule_breakdown": { "type": "boolean", "default": true },
+        "allowed_scan_roots": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled_languages": { "type": "array", "items": { "type": "string" } },
+        "extension_overrides": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Map file extension (without dot) to a language slug."
+        },
+        "shebang_detection": { "type": "boolean", "default": true },
+        "mixed_line_policy": {
+          "enum": ["code_only", "code_and_comment", "comment_only", "separate_mixed_category"],
+          "default": "code_only"
+        },
+        "python_docstrings_as_comments": { "type": "boolean", "default": true },
+        "generated_file_detection": { "type": "boolean", "default": true },
+        "minified_file_detection": { "type": "boolean", "default": true },
+        "vendor_directory_detection": { "type": "boolean", "default": true },
+        "include_lockfiles": { "type": "boolean", "default": false },
+        "binary_file_behavior": { "enum": ["skip", "fail"], "default": "skip" },
+        "decode_failure_behavior": { "enum": ["warn_skip", "fail"], "default": "warn_skip" },
+        "parse_failure_behavior": { "enum": ["warn_skip", "fail"], "default": "warn_skip" },
+        "continuation_line_policy": {
+          "enum": ["each_physical_line", "collapse_to_logical"],
+          "default": "each_physical_line",
+          "description": "IEEE 1045-1992: how backslash line continuations are counted."
+        },
+        "blank_in_block_comment_policy": {
+          "enum": ["count_as_comment", "count_as_blank"],
+          "default": "count_as_comment"
+        },
+        "count_compiler_directives": { "type": "boolean", "default": true },
+        "budget": { "$ref": "#/definitions/budget" },
+        "coverage_file": { "type": "string" },
+        "style_col_threshold": { "type": "integer", "enum": [80, 100, 120], "default": 80 },
+        "style_analysis_enabled": { "type": "boolean", "default": true },
+        "style_score_threshold": { "type": "integer", "minimum": 0, "maximum": 100, "default": 0 },
+        "style_lang_scope": {
+          "type": "string",
+          "enum": ["all", "c_family"],
+          "default": "all"
+        },
+        "activity_window_days": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": 90,
+          "description": "Git hotspots window in days; 0 or null disables."
+        },
+        "attribution": { "type": "boolean", "default": true }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "SLOC budget thresholds enforced by --fail-on-budget. Zero means unlimited.",
+      "properties": {
+        "total_max": { "type": "integer", "minimum": 0, "default": 0 },
+        "per_language": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "description": "Per-language code-line ceilings keyed by lowercase language display name."
+        }
+      }
+    },
+    "reporting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "report_title": { "type": "string", "default": "OxideSLOC Report" },
+        "output_formats": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["cli", "json", "html", "pdf", "csv", "xlsx"] },
+          "default": ["cli", "json", "html"]
+        },
+        "include_summary_charts": { "type": "boolean", "default": true },
+        "include_skipped_files_section": { "type": "boolean", "default": true },
+        "include_warnings_section": { "type": "boolean", "default": true },
+        "theme": { "type": "string", "enum": ["auto", "light", "dark"], "default": "auto" },
+        "company_name": { "type": "string" },
+        "logo_path": { "type": "string" },
+        "accent_color": {
+          "type": "string",
+          "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+          "description": "CSS hex colour, 3- or 6-digit (e.g. #3b82f6)."
+        },
+        "report_header_footer": { "type": "string" },
+        "bug_report_url": { "type": "string" },
+        "offline_mode": { "type": ["boolean", "null"] }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bind_address": { "type": "string", "default": "127.0.0.1:4317" },
+        "server_mode": { "type": "boolean", "default": false }
+      }
+    },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Non-secret git integration settings. Credentials live only in the environment, never here.",
+      "properties": {
+        "allow_local": { "type": "boolean", "default": false },
+        "local_root": { "type": "string" }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "discovery": { "$ref": "#/definitions/discovery" },
+        "analysis": { "$ref": "#/definitions/analysis" },
+        "reporting": { "$ref": "#/definitions/reporting" }
+      }
+    }
+  }
+}

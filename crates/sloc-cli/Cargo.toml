@@ -26,6 +26,35 @@ path = "src/lib.rs"
 [package.metadata.docs.rs]
 no-default-features = true
 
+# ── OS packages (inert to cargo; read only by cargo-deb / cargo-generate-rpm) ──
+# Build a .deb:  cargo build --release -p oxide-sloc && cargo deb -p oxide-sloc --no-build
+# Build a .rpm:  cargo build --release -p oxide-sloc && cargo generate-rpm -p crates/sloc-cli
+# Both reuse the already-built target/release/oxide-sloc; run from the workspace root.
+[package.metadata.deb]
+maintainer = "Nima Shafie <nimzshafie@gmail.com>"
+copyright = "2026, Nima Shafie <nimzshafie@gmail.com>"
+license-file = ["LICENSE", "0"]
+section = "devel"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+oxide-sloc is a local code metrics workbench: IEEE 1045-1992 physical SLOC analysis, \
+lexical unit-test detection, coverage import, COCOMO I estimation, approximate cyclomatic \
+complexity, git hotspots, and per-author code ownership, with a CLI, a localhost web UI, and \
+HTML/PDF reports."""
+assets = [
+  ["target/release/oxide-sloc", "usr/bin/", "755"],
+  ["README.md", "usr/share/doc/oxide-sloc/README.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Local code metrics workbench (SLOC, tests, coverage, complexity, hotspots)"
+assets = [
+  { source = "target/release/oxide-sloc", dest = "/usr/bin/oxide-sloc", mode = "755" },
+  { source = "README.md", dest = "/usr/share/doc/oxide-sloc/README.md", mode = "644" },
+  { source = "LICENSE", dest = "/usr/share/licenses/oxide-sloc/LICENSE", mode = "644" },
+]
+
 # `native-dialog` (the rfd native directory picker for the server-host `/pick-directory`
 # route) is intentionally NOT in `default`. On Linux rfd drags in wayland-client /
 # wayland-protocols / GTK system libraries, which are pointless for a browser-based web
@@ -51,14 +80,14 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-sloc-config = { path = "../sloc-config", version = "1.6.23" }
-sloc-core = { path = "../sloc-core", version = "1.6.23" }
-sloc-git = { path = "../sloc-git", version = "1.6.23" }
-sloc-report = { path = "../sloc-report", version = "1.6.23" }
-sloc-web = { path = "../sloc-web", version = "1.6.23" }
+sloc-config = { path = "../sloc-config", version = "1.6.24" }
+sloc-core = { path = "../sloc-core", version = "1.6.24" }
+sloc-git = { path = "../sloc-git", version = "1.6.24" }
+sloc-report = { path = "../sloc-report", version = "1.6.24" }
+sloc-web = { path = "../sloc-web", version = "1.6.24" }
 
 # On Windows the native directory picker (rfd) is win32-only and pulls in no extra system
 # libraries, so keep it on by default there. Feature unification means this turns on
 # `native-dialog` for Windows builds without it being a cross-platform default.
 [target.'cfg(windows)'.dependencies]
-sloc-web = { path = "../sloc-web", version = "1.6.23", features = ["native-dialog"] }
+sloc-web = { path = "../sloc-web", version = "1.6.24", features = ["native-dialog"] }

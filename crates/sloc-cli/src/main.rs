@@ -24,8 +24,9 @@ use sloc_core::{
 };
 use sloc_git::{clone_or_fetch, create_worktree, destroy_worktree, get_sha};
 use sloc_report::{
-    render_html, write_csv, write_diff_csv, write_html, write_html_with_pdf_link,
-    write_pdf_from_run, write_xlsx,
+    CodeScanOptions, render_html, write_bitbucket, write_cloc_json, write_codeclimate, write_csv,
+    write_diff_csv, write_html, write_html_with_pdf_link, write_pdf_from_run, write_sarif,
+    write_xlsx,
 };
 
 mod atlassian;
@@ -361,6 +362,29 @@ struct AnalyzeArgs {
     /// Exit with code 6 if any file's cyclomatic complexity exceeds this threshold.
     #[arg(long, value_name = "N")]
     max_complexity: Option<u32>,
+
+    /// Write a SARIF 2.1.0 report to this path. Ingested by GitHub code scanning and GitLab SAST;
+    /// high-complexity files and per-file warnings surface as PR/MR annotations.
+    #[arg(long, value_name = "PATH")]
+    sarif_out: Option<PathBuf>,
+
+    /// Write a GitLab Code Quality (Code Climate) JSON report to this path.
+    #[arg(long, value_name = "PATH")]
+    codeclimate_out: Option<PathBuf>,
+
+    /// Write a Bitbucket Code Insights report ({ report, annotations }) to this path.
+    #[arg(long, value_name = "PATH")]
+    bitbucket_out: Option<PathBuf>,
+
+    /// Write cloc-compatible JSON (header + SUM + per-language) to this path so cloc-consuming
+    /// tooling accepts oxide-sloc output unchanged.
+    #[arg(long, value_name = "PATH")]
+    cloc_out: Option<PathBuf>,
+
+    /// Per-file cyclomatic-complexity threshold used by the SARIF / Code Quality / Bitbucket
+    /// code-scan reports. Defaults to --max-complexity when set, otherwise 25.
+    #[arg(long, value_name = "N")]
+    code_scan_complexity: Option<u32>,
 }
 
 // ── report ────────────────────────────────────────────────────────────────────
@@ -386,6 +410,26 @@ struct ReportArgs {
     /// Write Excel (.xlsx) workbook
     #[arg(long, short = 'x', value_name = "PATH")]
     xlsx_out: Option<PathBuf>,
+
+    /// Write a SARIF 2.1.0 report (GitHub code scanning / GitLab SAST)
+    #[arg(long, value_name = "PATH")]
+    sarif_out: Option<PathBuf>,
+
+    /// Write a GitLab Code Quality (Code Climate) JSON report
+    #[arg(long, value_name = "PATH")]
+    codeclimate_out: Option<PathBuf>,
+
+    /// Write a Bitbucket Code Insights report ({ report, annotations })
+    #[arg(long, value_name = "PATH")]
+    bitbucket_out: Option<PathBuf>,
+
+    /// Write cloc-compatible JSON (header + SUM + per-language)
+    #[arg(long, value_name = "PATH")]
+    cloc_out: Option<PathBuf>,
+
+    /// Per-file cyclomatic-complexity threshold for the code-scan reports (default: 25)
+    #[arg(long, value_name = "N")]
+    code_scan_complexity: Option<u32>,
 
     /// Open the generated HTML in the default browser
     #[arg(long)]
@@ -1108,6 +1152,33 @@ fn write_outputs(run: &AnalysisRun, args: &AnalyzeArgs, quiet: bool) -> Result<(
         log_written(path, quiet);
     }
 
+    let code_scan = CodeScanOptions {
+        complexity_threshold: args
+            .code_scan_complexity
+            .or(args.max_complexity)
+            .unwrap_or(sloc_report::DEFAULT_COMPLEXITY_THRESHOLD),
+    };
+
+    if let Some(path) = &args.sarif_out {
+        write_sarif(run, path, code_scan)?;
+        log_written(path, quiet);
+    }
+
+    if let Some(path) = &args.codeclimate_out {
+        write_codeclimate(run, path, code_scan)?;
+        log_written(path, quiet);
+    }
+
+    if let Some(path) = &args.bitbucket_out {
+        write_bitbucket(run, path, code_scan)?;
+        log_written(path, quiet);
+    }
+
+    if let Some(path) = &args.cloc_out {
+        write_cloc_json(run, path)?;
+        log_written(path, quiet);
+    }
+
     if let Some(path) = &args.scan_config_out {
         write_scan_config(run, path, args)?;
         log_written(path, quiet);
@@ -1343,8 +1414,15 @@ fn run_report(args: &ReportArgs) -> Result<()> {
         && args.pdf_out.is_none()
         && args.csv_out.is_none()
         && args.xlsx_out.is_none()
+        && args.sarif_out.is_none()
+        && args.codeclimate_out.is_none()
+        && args.bitbucket_out.is_none()
+        && args.cloc_out.is_none()
     {
-        anyhow::bail!("provide at least one of --html-out, --pdf-out, --csv-out, --xlsx-out");
+        anyhow::bail!(
+            "provide at least one of --html-out, --pdf-out, --csv-out, --xlsx-out, \
+             --sarif-out, --codeclimate-out, --bitbucket-out, --cloc-out"
+        );
     }
 
     if let Some(path) = &args.html_out {
@@ -1367,6 +1445,32 @@ fn run_report(args: &ReportArgs) -> Result<()> {
 
     if let Some(path) = &args.xlsx_out {
         write_xlsx(&run, path)?;
+        eprintln!("wrote {}", path.display());
+    }
+
+    let code_scan = CodeScanOptions {
+        complexity_threshold: args
+            .code_scan_complexity
+            .unwrap_or(sloc_report::DEFAULT_COMPLEXITY_THRESHOLD),
+    };
+
+    if let Some(path) = &args.sarif_out {
+        write_sarif(&run, path, code_scan)?;
+        eprintln!("wrote {}", path.display());
+    }
+
+    if let Some(path) = &args.codeclimate_out {
+        write_codeclimate(&run, path, code_scan)?;
+        eprintln!("wrote {}", path.display());
+    }
+
+    if let Some(path) = &args.bitbucket_out {
+        write_bitbucket(&run, path, code_scan)?;
+        eprintln!("wrote {}", path.display());
+    }
+
+    if let Some(path) = &args.cloc_out {
+        write_cloc_json(&run, path)?;
         eprintln!("wrote {}", path.display());
     }
 

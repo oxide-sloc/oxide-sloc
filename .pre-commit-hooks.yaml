@@ -1,0 +1,38 @@
+# oxide-sloc pre-commit hook definitions.
+#
+# Consumers add oxide-sloc to their own repository by referencing this repo in their
+# .pre-commit-config.yaml:
+#
+#   repos:
+#     - repo: https://github.com/oxide-sloc/oxide-sloc
+#       rev: v1.6.24          # pin to a released tag
+#       hooks:
+#         - id: oxide-sloc-budget
+#
+# All hooks use `language: system`, so they invoke the `oxide-sloc` binary already on PATH
+# (install via `cargo install oxide-sloc`, the release archive, or `scripts/install.sh`). This
+# keeps pre-commit runs fully offline — pre-commit never builds or downloads the tool itself.
+
+- id: oxide-sloc
+  name: oxide-sloc code metrics
+  description: Run an oxide-sloc SLOC/metrics analysis over the repository.
+  entry: oxide-sloc analyze . --quiet
+  language: system
+  pass_filenames: false
+  require_serial: true
+
+- id: oxide-sloc-budget
+  name: oxide-sloc budget gate
+  description: Fail the commit if the SLOC budgets in oxide-sloc.toml ([analysis.budget]) are exceeded.
+  entry: oxide-sloc analyze . --fail-on-budget --quiet
+  language: system
+  pass_filenames: false
+  require_serial: true
+
+- id: oxide-sloc-complexity
+  name: oxide-sloc complexity gate
+  description: Fail the commit if any file's approximate cyclomatic complexity exceeds the threshold.
+  entry: oxide-sloc analyze . --max-complexity 50 --quiet
+  language: system
+  pass_filenames: false
+  require_serial: true

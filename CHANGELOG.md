@@ -22,6 +22,27 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.24] — 2026-10-16
+
+### Added
+
+- **API contract documentation** (`docs/api-contract.md`): a guide for embedding oxide-sloc,
+  covering the REST surface, webhook, and scan-schedule endpoints, linked from the docs reference
+  section.
+- **Preflight scripts** (`scripts/preflight.sh`, `scripts/preflight.ps1`): verify a running
+  oxide-sloc server's health and version before a CI scan; wired into Jenkins via the new
+  `RUN_PREFLIGHT` parameter and a `SCAN_TOOL_VERSION` pin.
+
+### Changed
+
+- **OpenAPI spec self-stamps its version**: the `/api/openapi.yaml` endpoint now rewrites
+  `info.version` from the running binary's version at serve time, so the published contract can
+  never drift from the crate version even if the committed asset lags between releases.
+- **OpenAPI spec expanded** (`crates/sloc-web/assets/openapi.yaml`, `docs/openapi.yaml`): documented
+  the webhook and scan-schedule paths.
+
+---
+
 ## [1.6.23] — 2026-10-11
 
 ### Fixed
