@@ -27,6 +27,7 @@ jobs:
       packages: write
       id-token: write       # required for SLSA provenance attestation and cosign OIDC signing
       attestations: write   # required to write the GitHub-signed build-provenance attestation
+      security-events: write  # required to upload the Trivy image-scan SARIF to code scanning
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -109,6 +110,28 @@ jobs:
           done
           echo "ERROR: manifest ${DIGEST} never became queryable on GHCR after retries"
           exit 1
+
+      # Industry-standard container scan with Trivy (Aqua Security), by digest so it scans the
+      # exact image just pushed. Report-only — results surface in Security → Code scanning,
+      # alongside the BuildKit SBOM/provenance attached to the image above.
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ghcr.io/${{ github.repository }}@${{ steps.build-push.outputs.digest }}
+          format: sarif
+          output: trivy-image.sarif
+          exit-code: '0'          # report-only — never gates the image publish
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+        continue-on-error: true
+
+      - name: Upload Trivy image SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+        continue-on-error: true
 
       # GitHub-signed SLSA build provenance, generated in GitHub's control plane (not by the
       # build itself) and attached to the image by digest — the non-forgeable provenance that

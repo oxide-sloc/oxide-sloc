@@ -304,6 +304,26 @@ To scan repositories hosted on **different git instances** than the tool/pipelin
 
 ---
 
+## Supply chain security
+
+Because oxide-sloc ships the binaries, vendored crates, and toolchains needed for a fully
+offline build, every release is scanned with the industry-standard tools so you can trust what
+you are deploying:
+
+| Tool | What it produces | Where |
+|---|---|---|
+| **Syft** | SBOM in **SPDX** (`oxide-sloc.spdx.json`) and **CycloneDX** (`oxide-sloc.cdx.json`) | Release assets |
+| **Grype** | Vulnerability scan of the CycloneDX SBOM (`grype-report.txt`) | Release assets + code scanning |
+| **Trivy** | Filesystem + container scan (vulns, secrets, misconfig) | GitHub **Security → Code scanning** |
+
+These complement the existing `cargo-cyclonedx` SBOM, `cargo-audit` / `cargo-deny` gate, SLSA
+provenance, cosign keyless signatures, GitHub build-provenance attestation, and VirusTotal scan.
+The air-gap kit (`scripts/internal/make-airgap-kit.sh`) carries a `security/` folder with these
+reports so they travel with the offline bundle. Full details and offline re-scan steps are in
+[`docs/supply-chain.md`](./docs/supply-chain.md).
+
+---
+
 ## Editor & Build Integrations
 
 Run oxide-sloc reports without leaving your editor or build:

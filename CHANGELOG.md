@@ -8,6 +8,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Industry-standard supply-chain scanning** (Syft, Grype, Trivy): releases now publish Syft
+  SBOMs in SPDX and CycloneDX (`oxide-sloc.spdx.json`, `oxide-sloc.cdx.json`) plus a Grype
+  vulnerability report (`grype-report.txt`) as release assets. Trivy scans the filesystem on
+  every push (`.github/workflows/ci.yml`) and the container image by digest on each GHCR push
+  (`.github/workflows/docker.yml`); Grype scans the release SBOM (`.github/workflows/release.yml`).
+  All three upload SARIF to GitHub code scanning (categories `trivy-fs`, `trivy-image`, `grype`)
+  and are report-only — `cargo-audit` / `cargo-deny` remain the hard gate. The air-gap kit carries
+  a `security/` folder with these reports so they travel with the offline bundle. New
+  `docs/supply-chain.md` documents the layer and offline re-scan steps.
+
 ---
 
 ## [1.6.23] — 2026-10-11

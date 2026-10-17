@@ -112,6 +112,71 @@ cp vendor.checksums.sha256  "$KIT_DIR/vendor.checksums.sha256"
 echo "==> Creating source archive (git archive HEAD)..."
 git archive HEAD --format=tar.gz -o "$KIT_DIR/oxide-sloc-src.tar.gz"
 
+# ── Step 2b: Supply-chain trust reports (best-effort) ────────────────────────
+# The trust reports travel *with* the kit so an air-gapped reviewer can inspect
+# the SBOM and vulnerability scan without any network access. These need Syft /
+# Grype / Trivy on the builder's PATH; if any is absent we print a note and skip
+# it — the kit still builds. Generated now, so the reports are timestamped to the
+# kit-build moment with the DBs current as of this run.
+
+echo "==> Generating supply-chain trust reports (security/)..."
+SEC_DIR="$KIT_DIR/security"
+mkdir -p "$SEC_DIR"
+SEC_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+if command -v syft >/dev/null 2>&1; then
+    syft dir:. -o spdx-json="$SEC_DIR/oxide-sloc.spdx.json" \
+                -o cyclonedx-json="$SEC_DIR/oxide-sloc.cdx.json" \
+        && echo "    ✓ Syft SBOM (SPDX + CycloneDX)" \
+        || echo "    ! Syft run failed — SBOM skipped"
+else
+    echo "    - Syft not found on PATH — SBOM skipped (install: https://github.com/anchore/syft)"
+fi
+
+if command -v grype >/dev/null 2>&1 && [[ -f "$SEC_DIR/oxide-sloc.cdx.json" ]]; then
+    grype "sbom:$SEC_DIR/oxide-sloc.cdx.json" -o table \
+        > "$SEC_DIR/grype-report.txt" 2>/dev/null \
+        && echo "    ✓ Grype vulnerability report" \
+        || echo "    ! Grype run failed — report skipped"
+elif ! command -v grype >/dev/null 2>&1; then
+    echo "    - Grype not found on PATH — vuln report skipped (install: https://github.com/anchore/grype)"
+fi
+
+if command -v trivy >/dev/null 2>&1; then
+    trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
+        --ignore-unfixed --no-progress -f table -o "$SEC_DIR/trivy-report.txt" . \
+        && echo "    ✓ Trivy filesystem report" \
+        || echo "    ! Trivy run failed — report skipped"
+else
+    echo "    - Trivy not found on PATH — fs report skipped (install: https://github.com/aquasecurity/trivy)"
+fi
+
+cat > "$SEC_DIR/README.txt" << SECREADME
+oxide-sloc — supply-chain trust reports
+=======================================
+
+Generated at kit-build time: ${SEC_TS}
+Project version: v${PROJ_VERSION}
+
+These reports let you inspect what this build contains and whether any known
+vulnerabilities apply — entirely offline, from inside the air-gap kit.
+
+  oxide-sloc.spdx.json   Software Bill of Materials (SPDX 2.3, from Syft)
+  oxide-sloc.cdx.json    Software Bill of Materials (CycloneDX, from Syft)
+  grype-report.txt       Vulnerability scan of the CycloneDX SBOM (Grype)
+  trivy-report.txt       Filesystem scan: vulns + secrets + misconfig (Trivy)
+
+Any file missing above means the corresponding tool was not installed on the
+machine that built this kit. The reports are a point-in-time snapshot; the
+vulnerability databases reflect the kit-build date, not the install date.
+
+To re-scan on a networked machine with the same tools:
+  syft  dir:<source> -o cyclonedx-json=sbom.json
+  grype sbom:sbom.json
+  trivy fs <source>
+SECREADME
+echo "    ✓ security/README.txt"
+
 # ── Step 3: Rust host toolchain ──────────────────────────────────────────────
 
 echo "==> Downloading Rust $RUST_DL_VERSION host toolchain ($RUST_HOST_TARGET)..."

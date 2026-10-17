@@ -60,6 +60,42 @@ jobs:
       - name: Test
         run: bash ci/test.sh
 
+  # Industry-standard filesystem scan with Trivy (Aqua Security) — complements the
+  # Rust-native cargo-audit/cargo-deny gate above with the recognized tool procurement
+  # and security reviewers look for. Report-only: results surface in the repo
+  # Security → Code scanning tab; cargo-audit/cargo-deny remain the hard merge gate.
+  trivy-fs:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # upload-sarif → GitHub code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Trivy filesystem scan (vuln + secret + misconfig)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-fs.sarif
+          exit-code: '0'          # report-only — never gates CI
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+        # A transient Trivy DB fetch (GHCR) must not fail the whole CI run.
+        continue-on-error: true
+
+      - name: Upload Trivy SARIF to code scanning
+        # Fork PRs don't get security-events: write; only upload on push to the repo.
+        if: github.event_name == 'push'
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+        continue-on-error: true
+
   check-windows:
     name: Quality gates (Windows)
     runs-on: windows-2022  # windows-latest is rolling out to windows-2025-vs2026 (June 2026); ncc-bundled actions (rust-cache dist) fail on that image — stay on 2022 until upstream fixes land

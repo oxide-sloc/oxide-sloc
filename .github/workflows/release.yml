@@ -360,6 +360,75 @@ jobs:
           path: sbom.cdx.json
           if-no-files-found: error
 
+  # Industry-standard supply-chain scan with Syft (SBOM) + Grype (vulnerabilities) — the
+  # recognized tooling external reviewers trust, alongside the cargo-cyclonedx SBOM above.
+  # Syft emits both SPDX and CycloneDX; Grype scans the CycloneDX SBOM. Report-only: the
+  # SARIF goes to code scanning and the SBOMs + Grype report ship as release assets. A CVE
+  # in a transitive crate must never block shipping, so the scan steps are non-gating.
+  scan-artifacts:
+    name: Supply-chain scan (Syft + Grype)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # upload-sarif → GitHub code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Generate SPDX SBOM (Syft)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: oxide-sloc.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate CycloneDX SBOM (Syft)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: oxide-sloc.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Grype vulnerability scan (SARIF for code scanning)
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
+        with:
+          sbom: oxide-sloc.cdx.json
+          output-format: sarif
+          output-file: grype.sarif
+          fail-build: false       # report-only
+          severity-cutoff: high
+        continue-on-error: true   # a Grype DB fetch hiccup must not fail the release
+
+      - name: Grype vulnerability scan (human-readable table)
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
+        with:
+          sbom: oxide-sloc.cdx.json
+          output-format: table
+          output-file: grype-report.txt
+          fail-build: false
+        continue-on-error: true
+
+      - name: Upload Grype SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        with:
+          sarif_file: grype.sarif
+          category: grype
+        continue-on-error: true
+
+      - name: Upload supply-chain reports artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: supply-chain-reports
+          path: |
+            oxide-sloc.spdx.json
+            oxide-sloc.cdx.json
+            grype-report.txt
+          if-no-files-found: warn
+
   sign:
     name: Sign release artifacts
     needs: [build]
@@ -662,7 +731,7 @@ jobs:
     # The VT scan report is still consumed opportunistically below via a
     # continue-on-error download; if VT has not finished, the release notes
     # simply omit the scan summary.
-    needs: [build, vendor, sign, sbom]
+    needs: [build, vendor, sign, sbom, scan-artifacts]
     runs-on: ubuntu-latest
     # Creating a GitHub Release requires a tag ref; skip on workflow_dispatch (branch run)
     if: github.event_name == 'push'
@@ -709,6 +778,13 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: sbom
+          path: artifacts/
+        continue-on-error: true
+
+      - name: Download supply-chain scan reports (Syft SBOMs + Grype)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: supply-chain-reports
           path: artifacts/
         continue-on-error: true
 
@@ -801,9 +877,13 @@ jobs:
             | macOS x86-64 | `oxide-sloc-macos-x86_64` | Intel Mac |
             | macOS Apple Silicon | `oxide-sloc-macos-arm64` | M1/M2/M3/M4 Mac |
             | Vendor archive | `vendor.tar.gz.aa` + `.ab` + `.ac` + `vendor.checksums.sha256` | Rust dependency sources (split gzip parts) for air-gapped builds |
+            | SBOM (CycloneDX) | `oxide-sloc.cdx.json` / `sbom.cdx.json` | Syft + cargo-cyclonedx software bill of materials |
+            | SBOM (SPDX) | `oxide-sloc.spdx.json` | Syft software bill of materials (SPDX 2.3) |
+            | Vulnerability report | `grype-report.txt` | Grype scan of the CycloneDX SBOM |
 
             Checksums for all release assets are in `SHA256SUMS.txt`.
             GPG detached signatures (`.sig`), Sigstore cosign bundles (`.bundle`), and SLSA provenance attestations (`.sigstore.json`) are included for each binary.
+            Supply chain scanned with **Syft** (SBOM), **Grype**, and **Trivy** — full results also in the repository's Security → Code scanning tab. See `docs/supply-chain.md`.
             The GPG public key used for signing is `oxide-sloc-signing-key.asc`.
 
             ## Quick install
