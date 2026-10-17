@@ -8,6 +8,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [1.6.24] — 2026-10-16
+
 ### Added
 
 - **Industry-standard supply-chain scanning** (Syft, Grype, Trivy): releases now publish Syft
@@ -19,13 +23,6 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   and are report-only — `cargo-audit` / `cargo-deny` remain the hard gate. The air-gap kit carries
   a `security/` folder with these reports so they travel with the offline bundle. New
   `docs/supply-chain.md` documents the layer and offline re-scan steps.
-
----
-
-## [1.6.24] — 2026-10-16
-
-### Added
-
 - **API contract documentation** (`docs/api-contract.md`): a guide for embedding oxide-sloc,
   covering the REST surface, webhook, and scan-schedule endpoints, linked from the docs reference
   section.
