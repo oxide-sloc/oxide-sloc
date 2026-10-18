@@ -11,8 +11,8 @@ in the repository; this is largely a matter of asserting each one in the badge a
 |---|---|
 | Version-controlled with interim history (Silver) | Public git history on GitHub |
 | Unique version numbering + release notes (Silver) | SemVer in `Cargo.toml`; `CHANGELOG.md`; templated GitHub Release notes |
-| Code of conduct (Silver) | [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) |
-| Contribution guide + DCO/roles (Silver) | [`CONTRIBUTING.md`](../CONTRIBUTING.md), `.github/ISSUE_TEMPLATE/` |
+| Code of conduct (Silver) | [`CODE_OF_CONDUCT.md`](../.github/CODE_OF_CONDUCT.md) |
+| Contribution guide + DCO/roles (Silver) | [`CONTRIBUTING.md`](../.github/CONTRIBUTING.md), `.github/ISSUE_TEMPLATE/` |
 | Static analysis on every change (Silver) | CodeQL, clippy `-D warnings`, SonarQube |
 | Dynamic analysis (Silver/Gold) | DAST workflow (`dast.yml`) |
 | Dependency vulnerability scanning (Silver) | `cargo-audit` + `cargo-deny` hard gate; osv-scanner; Grype; Trivy |
