@@ -1,0 +1,29 @@
+# Trivy misconfiguration ignores — PATH-SCOPED on purpose.
+#
+# These suppressions are deliberately pinned to two files that are false
+# positives in context. The runtime Dockerfiles (./Dockerfile, the Jenkins
+# controller/agent images) are intentionally NOT listed here, so a regression
+# that drops their USER or HEALTHCHECK instruction still surfaces as an alert.
+#
+# AVD-DS-0002 — "Image user should not be 'root'"
+# AVD-DS-0026 — "No HEALTHCHECK defined"
+misconfigurations:
+  - id: AVD-DS-0002
+    paths:
+      # Build-only image: its final stage is `FROM scratch AS export` and emits
+      # just the bare binary via BuildKit `--output type=local`. A scratch stage
+      # has no user database, so a non-root USER is not expressible; the builder
+      # stage must run as root to dnf-install the linker and bootstrap rustup,
+      # and it is discarded (never shipped as a runtime layer).
+      - "Dockerfile.rhel-build"
+      # SLOC analyzer test fixture, not a deployable image. It is intentionally a
+      # minimal Dockerfile; adding a USER line would change its line counts and
+      # break the golden line-count assertions in sloc-languages.
+      - "crates/sloc-languages/tests/corpus/dockerfile/basic.dockerfile"
+  - id: AVD-DS-0026
+    paths:
+      # No runtime layer ships (FROM scratch export) — a HEALTHCHECK on a
+      # build-only artifact has nothing to probe.
+      - "Dockerfile.rhel-build"
+      # Test fixture — see the DS-0002 note above.
+      - "crates/sloc-languages/tests/corpus/dockerfile/basic.dockerfile"

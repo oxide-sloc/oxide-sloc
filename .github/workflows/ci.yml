@@ -84,6 +84,9 @@ jobs:
           exit-code: '0'          # report-only — never gates CI
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          # Path-scoped misconfig suppressions for the build-only (FROM scratch)
+          # image and the SLOC test fixture — see .trivyignore.yaml for why.
+          trivyignores: .trivyignore.yaml
         # A transient Trivy DB fetch (GHCR) must not fail the whole CI run.
         continue-on-error: true
 
