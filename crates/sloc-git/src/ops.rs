@@ -2289,6 +2289,96 @@ mod tests {
     }
 
     #[test]
+    fn cred_from_file_parses_comments_quotes_and_is_case_insensitive() {
+        let _g = env_lock();
+        let host = "bulk-cred.example";
+        let env_key = format!("SLOC_GIT_CRED_{}", hostkey(host));
+        let ssh_key = format!("SLOC_GIT_SSHKEY_{}", hostkey(host));
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("creds");
+        // Comment + blank line are skipped; the host is matched case-insensitively and
+        // the value is quote-stripped before the user:token split.
+        std::fs::write(
+            &file,
+            "# bulk credential map\n\nother.host = \"nope:x\"\nBULK-CRED.EXAMPLE = \"carol:filetoken\"\n",
+        )
+        .unwrap();
+        // SAFETY: single-threaded under ENV_LOCK; cleared before the guard drops. No
+        // per-host env key is set, so resolution falls through to the file.
+        unsafe {
+            std::env::remove_var(&env_key);
+            std::env::remove_var(&ssh_key);
+            std::env::set_var("SLOC_GIT_CRED_FILE", &file);
+        }
+        let cred = resolve_credential(host, None);
+        // SAFETY: see above.
+        unsafe { std::env::remove_var("SLOC_GIT_CRED_FILE") };
+        match cred {
+            Some(GitCredential::Https { user, token }) => {
+                assert_eq!(user, "carol");
+                assert_eq!(token, "filetoken");
+            }
+            _ => panic!("expected the HTTPS credential parsed from SLOC_GIT_CRED_FILE"),
+        }
+    }
+
+    #[test]
+    fn cred_injection_ssh_pins_key_with_identitiesonly_and_batchmode() {
+        let _g = env_lock();
+        let host = "ssh-inj.example";
+        let key = format!("SLOC_GIT_SSHKEY_{}", hostkey(host));
+        // SAFETY: single-threaded under ENV_LOCK; cleared before the guard drops.
+        unsafe {
+            std::env::set_var(&key, "/home/u/.ssh/id_ed25519");
+            std::env::remove_var("SLOC_GIT_SSH_ACCEPT_NEW");
+        }
+        let inj = cred_injection(host, None);
+        // SAFETY: see above.
+        unsafe { std::env::remove_var(&key) };
+        // SSH creds inject GIT_SSH_COMMAND, not git config.
+        assert!(inj.config.is_empty());
+        let cmd = inj
+            .env
+            .iter()
+            .find(|(k, _)| k == "GIT_SSH_COMMAND")
+            .map(|(_, v)| v.as_str())
+            .expect("SSH credential must set GIT_SSH_COMMAND");
+        assert!(cmd.contains("-i \"/home/u/.ssh/id_ed25519\""));
+        assert!(cmd.contains("IdentitiesOnly=yes"));
+        assert!(cmd.contains("BatchMode=yes"));
+        // Default (no opt-in) keeps strict host-key checking.
+        assert!(!cmd.contains("accept-new"));
+    }
+
+    #[test]
+    fn cred_injection_ssh_adds_accept_new_when_opted_in() {
+        let _g = env_lock();
+        let host = "ssh-tofu.example";
+        let key = format!("SLOC_GIT_SSHKEY_{}", hostkey(host));
+        // SAFETY: single-threaded under ENV_LOCK; cleared before the guard drops.
+        unsafe {
+            std::env::set_var(&key, "/home/u/.ssh/id_rsa");
+            std::env::set_var("SLOC_GIT_SSH_ACCEPT_NEW", "1");
+        }
+        let inj = cred_injection(host, None);
+        // SAFETY: see above.
+        unsafe {
+            std::env::remove_var(&key);
+            std::env::remove_var("SLOC_GIT_SSH_ACCEPT_NEW");
+        }
+        let cmd = inj
+            .env
+            .iter()
+            .find(|(k, _)| k == "GIT_SSH_COMMAND")
+            .map(|(_, v)| v.as_str())
+            .expect("SSH credential must set GIT_SSH_COMMAND");
+        assert!(
+            cmd.contains("StrictHostKeyChecking=accept-new"),
+            "trust-on-first-use opt-in must append accept-new: {cmd}"
+        );
+    }
+
+    #[test]
     fn explicit_port_of_git_url_extracts_or_none() {
         assert_eq!(
             explicit_port_of_git_url("https://git.corp:7990/team/repo.git"),

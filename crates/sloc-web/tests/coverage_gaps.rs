@@ -682,3 +682,43 @@ async fn real_analyze_then_pdf_and_submodule_pdf_not_5xx() {
     let (st, _) = get(app.clone(), &format!("/runs/pdf/{run_id}?download=1")).await;
     assert!(st.as_u16() < 500, "/runs/pdf?download must not 5xx");
 }
+
+// ── /api/connectivity (connectivity::detect + connectivity_handler) ────────────
+//
+// The connectivity posture resolver and its JSON handler were never driven through
+// the router, so detect() and connectivity_handler() were entirely uncovered. One
+// GET exercises the full air-gap resolution (env override absent, build-origin
+// heuristic, repo_reachable computation) and the JSON serialisation.
+#[tokio::test]
+async fn api_connectivity_reports_posture_json() {
+    let (status, body) = get(make_test_router(), "/api/connectivity").await;
+    assert_eq!(status, StatusCode::OK, "/api/connectivity must be 200");
+    // Public, non-sensitive payload: a boolean plus the repository URL fields.
+    assert!(
+        body.contains("\"offline\""),
+        "missing offline field: {body}"
+    );
+    assert!(
+        body.contains("\"repo_url\""),
+        "missing repo_url field: {body}"
+    );
+    assert!(
+        body.contains("\"repo_reachable\""),
+        "missing repo_reachable field: {body}"
+    );
+}
+
+// ── /report-bug (report_bug::report_bug_handler) ───────────────────────────────
+//
+// The "Report a Bug" page handler resolved its target and rendered the template but
+// had no test, leaving the whole handler body uncovered. A GET renders the page
+// through the real router (CSP-nonce middleware included).
+#[tokio::test]
+async fn report_bug_page_renders() {
+    let (status, body) = get(make_test_router(), "/report-bug").await;
+    assert_eq!(status, StatusCode::OK, "/report-bug must be 200");
+    assert!(
+        body.contains("<!DOCTYPE html>") || body.to_lowercase().contains("<html"),
+        "expected an HTML page body"
+    );
+}
