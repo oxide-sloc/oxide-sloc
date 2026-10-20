@@ -74,7 +74,7 @@ jobs:
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067  # pinned action; Rust version from rust-toolchain.toml
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # pinned action; Rust version from rust-toolchain.toml
         with:
           toolchain: ${{ steps.rust.outputs.channel }}
           targets: ${{ matrix.target }}
@@ -293,7 +293,7 @@ jobs:
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067  # pinned action; Rust version from rust-toolchain.toml
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # pinned action; Rust version from rust-toolchain.toml
         with:
           toolchain: ${{ steps.rust.outputs.channel }}
 
@@ -324,7 +324,7 @@ jobs:
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067  # pinned action; Rust version from rust-toolchain.toml
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # pinned action; Rust version from rust-toolchain.toml
         with:
           toolchain: ${{ steps.rust.outputs.channel }}
 
@@ -1054,7 +1054,7 @@ jobs:
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067  # pinned action; Rust version from rust-toolchain.toml
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # pinned action; Rust version from rust-toolchain.toml
         with:
           toolchain: ${{ steps.rust.outputs.channel }}
 
