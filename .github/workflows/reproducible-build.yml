@@ -35,8 +35,22 @@ jobs:
         with:
           path: build-b
 
+      # Derive the channel from the checked-out rust-toolchain.toml and pass it
+      # explicitly. The pinned action SHA carries no default 'toolchain' input (only
+      # the @stable named ref does), and both checkouts live under build-a/build-b so
+      # the action's working directory has no rust-toolchain.toml to auto-detect —
+      # without this the install fails with "'toolchain' is a required input".
+      # Pinning the exact channel (not a drifting 'stable') also keeps the
+      # reproducibility check stable over time and matches what the build itself uses.
+      - name: Resolve Rust channel from rust-toolchain.toml
+        id: rust
+        shell: bash
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' build-a/rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned action; Rust version from rust-toolchain.toml
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
 
       - name: Build copy A
         working-directory: build-a
