@@ -9,6 +9,7 @@
 - [Quick Start](../README.md)
 - [Air-gap / Offline Builds](airgap.md)
 - [Server Deployment](server-deployment.md)
+- [Local Automation](local-automation.md)
 
 # CI/CD Integration
 

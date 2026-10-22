@@ -419,7 +419,7 @@ check_server_auth() {
 # consumed here and never forwarded; everything else passes through verbatim.
 # `serve` is intentionally NOT a passthrough so `run.sh serve` keeps the managed
 # port-freeing + fail-closed auth banner.
-KNOWN_SUBCOMMANDS=" analyze report diff init validate send bundle git-scan git-compare watch prune pr-comment jira bitbucket-status verify-audit healthz completions help "
+KNOWN_SUBCOMMANDS=" analyze batch report diff init validate send bundle git-scan git-compare watch prune pr-comment jira bitbucket-status verify-audit healthz completions help "
 CLI_SUBCOMMAND=""
 PASSTHROUGH_ARGS=()
 for arg in "$@"; do
