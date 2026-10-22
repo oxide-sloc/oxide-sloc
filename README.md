@@ -260,7 +260,17 @@ oxide-sloc bitbucket-status ...                         # build status on a Bitb
 oxide-sloc prune --older-than 30                        # preview; add --yes to delete
 oxide-sloc validate                                     # check .oxide-sloc.toml
 oxide-sloc completions bash > oxide-sloc.bash           # shell tab-completion
+
+# Batch / queue — scan many projects in one run (each gets its own report + a combined index)
+oxide-sloc batch --from ./projects-dir --html           # each subdirectory is one project
+oxide-sloc batch --from projects.txt --out-dir out/batch --html --csv
+# projects.txt: one "path[, profile]" per line (# comments allowed); or pass a JSON array
+# of {"path","profile","label","config"} objects. --jobs N scans N projects at once.
 ```
+
+The batch feature is also in the web UI: the **Batch Scan** card on the home page (`/batch`) takes a
+pasted list of project paths (optionally `path, profile` per line), scans each one, and links every
+report from a combined index.
 
 Run `oxide-sloc <command> --help` for the full flag list.
 

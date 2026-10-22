@@ -11573,6 +11573,128 @@ pub fn render_confluence_wiki_markup(run: &AnalysisRun) -> String {
     out
 }
 
+// ── batch index ─────────────────────────────────────────────────────────────
+
+/// Render a self-contained HTML index page for a batch/queue scan: a summary
+/// strip over all projects plus a table linking each project's own report.
+#[must_use]
+pub fn render_batch_index_html(index: &sloc_core::BatchIndex) -> String {
+    fn esc(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    }
+    // Group a count with thousands separators (e.g. 3816326 -> "3,816,326").
+    fn commas(n: u64) -> String {
+        let digits = n.to_string();
+        let bytes = digits.as_bytes();
+        let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+        let first = bytes.len() % 3;
+        for (i, b) in bytes.iter().enumerate() {
+            if i != 0 && (i.wrapping_sub(first)) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(*b as char);
+        }
+        out
+    }
+
+    let generated = index.generated_at.format("%Y-%m-%d %H:%M UTC").to_string();
+    let ok = index.ok_count();
+    let failed = index.fail_count();
+    let t = &index.totals;
+
+    let mut rows = String::new();
+    for item in &index.items {
+        let report_link = item
+            .artifacts
+            .iter()
+            .find(|a| a.ends_with(".html"))
+            .map(|a| format!("<a href=\"{0}\">{1}</a>", esc(a), esc(&item.label)))
+            .unwrap_or_else(|| esc(&item.label));
+        let profile = item.profile.as_deref().unwrap_or("default");
+        if item.ok {
+            let s = item.summary.clone().unwrap_or_default();
+            let _ = write!(
+                rows,
+                "<tr><td>{label}</td><td class=\"path\">{path}</td><td>{profile}</td>\
+                 <td class=\"num\">{code}</td><td class=\"num\">{comment}</td>\
+                 <td class=\"num\">{blank}</td><td class=\"num\">{files}</td>\
+                 <td class=\"ok\">OK</td></tr>",
+                label = report_link,
+                path = esc(&item.path),
+                profile = esc(profile),
+                code = commas(s.code_lines),
+                comment = commas(s.comment_lines),
+                blank = commas(s.blank_lines),
+                files = commas(s.files_analyzed),
+            );
+        } else {
+            let _ = write!(
+                rows,
+                "<tr class=\"failed\"><td>{label}</td><td class=\"path\">{path}</td>\
+                 <td>{profile}</td><td class=\"num\" colspan=\"4\">{err}</td>\
+                 <td class=\"bad\">FAILED</td></tr>",
+                label = esc(&item.label),
+                path = esc(&item.path),
+                profile = esc(profile),
+                err = esc(item.error.as_deref().unwrap_or("error")),
+            );
+        }
+    }
+
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+<title>oxide-sloc batch index</title>\
+<style>\
+:root{{--oxide:#c45c10;--green:#2a6846;--bg:#faf6f1;--surface:#fff;--line:#e6d6c6;--text:#43342d;--muted:#7b675b;}}\
+*{{box-sizing:border-box;}}\
+body{{margin:0;padding:32px;background:var(--bg);color:var(--text);\
+font-family:Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;}}\
+h1{{margin:0 0 4px;font-size:22px;color:var(--oxide);}}\
+.sub{{color:var(--muted);font-size:13px;margin-bottom:20px;}}\
+.strip{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px;}}\
+.chip{{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;}}\
+.chip .v{{font-size:20px;font-weight:900;color:var(--oxide);}}\
+.chip .l{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-top:4px;}}\
+table{{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;}}\
+th,td{{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;}}\
+th{{background:#f1e4d6;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);}}\
+td.num{{text-align:right;font-variant-numeric:tabular-nums;}}\
+td.path{{color:var(--muted);font-size:12px;}}\
+td.ok{{color:var(--green);font-weight:700;}}\
+td.bad{{color:#b23030;font-weight:700;}}\
+tr.failed td{{background:#fbecea;}}\
+a{{color:var(--oxide);text-decoration:none;}}a:hover{{text-decoration:underline;}}\
+footer{{margin-top:20px;color:var(--muted);font-size:12px;}}\
+</style></head><body>\
+<h1>oxide-sloc batch index</h1>\
+<div class=\"sub\">{ok} ok &middot; {failed} failed &middot; generated {generated} &middot; v{ver}</div>\
+<div class=\"strip\">\
+<div class=\"chip\"><div class=\"v\">{tcode}</div><div class=\"l\">Code Lines</div></div>\
+<div class=\"chip\"><div class=\"v\">{tcomment}</div><div class=\"l\">Comment Lines</div></div>\
+<div class=\"chip\"><div class=\"v\">{tblank}</div><div class=\"l\">Blank Lines</div></div>\
+<div class=\"chip\"><div class=\"v\">{tfiles}</div><div class=\"l\">Files Analyzed</div></div>\
+</div>\
+<table><thead><tr><th>Project</th><th>Path</th><th>Profile</th><th>Code</th>\
+<th>Comments</th><th>Blank</th><th>Files</th><th>Status</th></tr></thead>\
+<tbody>{rows}</tbody></table>\
+<footer>oxide-sloc batch &mdash; local code metrics workbench</footer>\
+</body></html>\n",
+        ok = ok,
+        failed = failed,
+        generated = esc(&generated),
+        ver = esc(&index.tool_version),
+        tcode = commas(t.code_lines),
+        tcomment = commas(t.comment_lines),
+        tblank = commas(t.blank_lines),
+        tfiles = commas(t.files_analyzed),
+        rows = rows,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

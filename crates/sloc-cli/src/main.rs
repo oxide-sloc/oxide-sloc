@@ -17,16 +17,17 @@ use tracing_subscriber::EnvFilter;
 
 use sloc_config::{AppConfig, BlankInBlockCommentPolicy, ContinuationLinePolicy, MixedLinePolicy};
 use sloc_core::{
-    AnalysisRun, BaselineEntry, BaselineStore, ScanComparison, ScanRegistry, analyze,
-    check_against_baseline, compute_delta, execute_run_prune, plan_run_prune, read_json,
+    AnalysisRun, BaselineEntry, BaselineStore, BatchEntry, BatchIndex, BatchItemResult,
+    ScanComparison, ScanRegistry, ScanSummarySnapshot, analyze, check_against_baseline,
+    compute_delta, execute_run_prune, parse_batch_manifest, plan_run_prune, read_json,
     resolve_baselines_path, resolve_output_root, resolve_registry_path, rotated_log_paths,
     write_json,
 };
 use sloc_git::{clone_or_fetch, create_worktree, destroy_worktree, get_sha};
 use sloc_report::{
-    CodeScanOptions, render_html, write_bitbucket, write_cloc_json, write_codeclimate, write_csv,
-    write_diff_csv, write_html, write_html_with_pdf_link, write_pdf_from_run, write_sarif,
-    write_xlsx,
+    CodeScanOptions, render_batch_index_html, render_html, write_bitbucket, write_cloc_json,
+    write_codeclimate, write_csv, write_diff_csv, write_html, write_html_with_pdf_link,
+    write_pdf_from_run, write_sarif, write_xlsx,
 };
 
 mod atlassian;
@@ -67,6 +68,9 @@ struct Cli {
 enum Commands {
     /// Scan one or more directories and count source lines
     Analyze(Box<AnalyzeArgs>),
+    /// Scan a queue of projects (a directory of projects or a manifest file),
+    /// each as its own run, and write per-project reports plus a combined index.
+    Batch(BatchArgs),
     /// Re-render a report from a saved JSON result (no re-scan)
     Report(ReportArgs),
     /// Compare two saved JSON results and show the delta
@@ -385,6 +389,51 @@ struct AnalyzeArgs {
     /// code-scan reports. Defaults to --max-complexity when set, otherwise 25.
     #[arg(long, value_name = "N")]
     code_scan_complexity: Option<u32>,
+}
+
+// ── batch ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Args)]
+struct BatchArgs {
+    /// Batch source: a directory whose immediate subdirectories are each a
+    /// project, OR a manifest file (plain-text `path[, profile]` per line, or a
+    /// JSON array of `{path, profile?, label?, config?}` objects).
+    #[arg(long, value_name = "PATH")]
+    from: PathBuf,
+
+    /// Directory to write per-project reports and the combined index into.
+    /// Defaults to `out/batch`.
+    #[arg(long, value_name = "DIR")]
+    out_dir: Option<PathBuf>,
+
+    /// Named profile from the config file to apply to every project that does
+    /// not declare its own (file manifests may override this per entry).
+    #[arg(long, value_name = "NAME")]
+    profile: Option<String>,
+
+    /// Write a JSON result per project (always on if no other format is chosen)
+    #[arg(long)]
+    json: bool,
+
+    /// Write an HTML report per project
+    #[arg(long, short = 'H')]
+    html: bool,
+
+    /// Write a CSV summary per project
+    #[arg(long, short = 'c')]
+    csv: bool,
+
+    /// Write an Excel workbook per project
+    #[arg(long, short = 'x')]
+    xlsx: bool,
+
+    /// Maximum number of projects to scan concurrently (default 1)
+    #[arg(long, default_value_t = 1, value_name = "N")]
+    jobs: usize,
+
+    /// Suppress the per-project progress line (still writes the index)
+    #[arg(long, short = 'q')]
+    quiet: bool,
 }
 
 // ── report ────────────────────────────────────────────────────────────────────
@@ -1005,6 +1054,7 @@ async fn main() -> Result<()> {
         server: false,
     })) {
         Commands::Analyze(args) => run_analyze(*args).await,
+        Commands::Batch(args) => run_batch(args).await,
         Commands::Report(args) => run_report(&args),
         Commands::Diff(args) => run_diff(&args),
         Commands::Serve(args) => run_serve(args).await,
@@ -1403,6 +1453,153 @@ async fn run_analyze(args: AnalyzeArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ── batch handler ─────────────────────────────────────────────────────────────
+
+/// Which per-project artifacts to write for each project in a batch.
+#[derive(Debug, Clone, Copy)]
+struct BatchFormats {
+    json: bool,
+    html: bool,
+    csv: bool,
+    xlsx: bool,
+}
+
+async fn run_batch(args: BatchArgs) -> Result<()> {
+    let entries = parse_batch_manifest(&args.from, args.profile.as_deref())?;
+    let out_dir = args
+        .out_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("out/batch"));
+    std::fs::create_dir_all(&out_dir)
+        .with_context(|| format!("creating batch output dir {}", out_dir.display()))?;
+
+    // At least JSON is always produced so the index and any later re-render work.
+    let fmt = BatchFormats {
+        json: args.json || !(args.html || args.csv || args.xlsx),
+        html: args.html,
+        csv: args.csv,
+        xlsx: args.xlsx,
+    };
+
+    let jobs = args.jobs.max(1);
+    let total = entries.len();
+    let quiet = args.quiet;
+    if !quiet {
+        eprintln!(
+            "batch: scanning {total} project(s) into {} (jobs={jobs})",
+            out_dir.display()
+        );
+    }
+
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(jobs));
+    let mut set = tokio::task::JoinSet::new();
+    for (idx, entry) in entries.into_iter().enumerate() {
+        let permit = std::sync::Arc::clone(&sem)
+            .acquire_owned()
+            .await
+            .context("batch scheduler semaphore closed unexpectedly")?;
+        let out_dir = out_dir.clone();
+        set.spawn_blocking(move || {
+            let _permit = permit;
+            let item = scan_one_batch_entry(&entry, &out_dir, fmt);
+            if !quiet {
+                if item.ok {
+                    eprintln!("  [ok]     {}", item.label);
+                } else {
+                    eprintln!(
+                        "  [FAILED] {}: {}",
+                        item.label,
+                        item.error.as_deref().unwrap_or("error")
+                    );
+                }
+            }
+            (idx, item)
+        });
+    }
+
+    let mut collected: Vec<(usize, BatchItemResult)> = Vec::with_capacity(total);
+    while let Some(joined) = set.join_next().await {
+        collected.push(joined.context("a batch scan task panicked")?);
+    }
+    collected.sort_by_key(|(idx, _)| *idx);
+    let items: Vec<BatchItemResult> = collected.into_iter().map(|(_, item)| item).collect();
+
+    let index = BatchIndex::new(env!("CARGO_PKG_VERSION"), items);
+
+    let index_json = out_dir.join("batch-index.json");
+    std::fs::write(&index_json, serde_json::to_string_pretty(&index)?)
+        .with_context(|| format!("writing {}", index_json.display()))?;
+    let index_html = out_dir.join("batch-index.html");
+    std::fs::write(&index_html, render_batch_index_html(&index))
+        .with_context(|| format!("writing {}", index_html.display()))?;
+
+    if !quiet {
+        eprintln!(
+            "batch: {} ok, {} failed",
+            index.ok_count(),
+            index.fail_count()
+        );
+        eprintln!("wrote {}", index_json.display());
+        eprintln!("wrote {}", index_html.display());
+    }
+
+    // Signal a non-zero exit when any project failed so CI can gate on it; the
+    // index + per-project artifacts are already written above.
+    if index.fail_count() > 0 {
+        std::process::exit(7);
+    }
+    Ok(())
+}
+
+/// Scan a single batch entry and write its requested artifacts. Never panics;
+/// any failure is captured into the returned [`BatchItemResult`].
+fn scan_one_batch_entry(entry: &BatchEntry, out_dir: &Path, fmt: BatchFormats) -> BatchItemResult {
+    let outcome = (|| -> Result<(ScanSummarySnapshot, Vec<String>)> {
+        let mut config = load_base_config(entry.config.as_deref())?;
+        config.discovery.root_paths = vec![entry.path.clone()];
+        if let Some(profile) = &entry.profile {
+            config.apply_profile(profile)?;
+        }
+        config.validate()?;
+        let run = analyze(&config, "batch", None, None)?;
+
+        let dir = out_dir.join(&entry.label);
+        std::fs::create_dir_all(&dir)?;
+        let mut artifacts = Vec::new();
+        if fmt.json {
+            write_json(&run, &dir.join("result.json"))?;
+            artifacts.push(format!("{}/result.json", entry.label));
+        }
+        if fmt.html {
+            write_html(&run, &dir.join("report.html"))?;
+            artifacts.push(format!("{}/report.html", entry.label));
+        }
+        if fmt.csv {
+            write_csv(&run, &dir.join("report.csv"))?;
+            artifacts.push(format!("{}/report.csv", entry.label));
+        }
+        if fmt.xlsx {
+            write_xlsx(&run, &dir.join("report.xlsx"))?;
+            artifacts.push(format!("{}/report.xlsx", entry.label));
+        }
+        Ok((ScanSummarySnapshot::from(&run.summary_totals), artifacts))
+    })();
+
+    let (ok, error, summary, artifacts) = match outcome {
+        Ok((summary, artifacts)) => (true, None, Some(summary), artifacts),
+        Err(e) => (false, Some(e.to_string()), None, Vec::new()),
+    };
+    BatchItemResult {
+        label: entry.label.clone(),
+        path: entry.path.display().to_string(),
+        profile: entry.profile.clone(),
+        ok,
+        error,
+        summary,
+        artifacts,
+    }
 }
 
 // ── report handler ────────────────────────────────────────────────────────────

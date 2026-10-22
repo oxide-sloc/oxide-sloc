@@ -3,12 +3,14 @@
 #![allow(clippy::multiple_crate_versions)]
 
 pub mod baseline;
+pub mod batch;
 pub mod coverage;
 pub mod delta;
 pub mod history;
 pub mod maintenance;
 pub mod pathsafe;
 pub use baseline::{BaselineEntry, BaselineStore, check_against_baseline, resolve_baselines_path};
+pub use batch::{BatchEntry, BatchIndex, BatchItemResult, parse_batch_manifest, parse_batch_text};
 pub use coverage::{FileCoverage, aggregate_line_coverage, lookup_coverage, parse_lcov};
 pub use delta::{
     FileChangeStatus, FileDelta, MultiFileDelta, MultiScanComparison, MultiScanPoint,

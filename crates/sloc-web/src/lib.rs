@@ -23,6 +23,7 @@ static IMG_ICON_MAKEFILE: &[u8] = include_bytes!("../assets/icons/makefile.svg")
 static IMG_ICON_PERL: &[u8] = include_bytes!("../assets/icons/perl.svg");
 
 pub(crate) mod audit;
+pub(crate) mod batch_page;
 pub use audit::{AuditVerifyReport, verify_audit_file};
 pub(crate) mod auth;
 pub(crate) mod confluence;
@@ -2381,6 +2382,12 @@ fn build_router(state: AppState) -> Router {
         .route("/scan-setup", get(scan_setup_handler))
         .route("/scan", get(index))
         .route("/analyze", post(analyze_handler))
+        .route("/batch", get(batch_page::batch_page_handler))
+        .route("/batch/run", post(batch_page::batch_run_handler))
+        .route(
+            "/batch-out/{*path}",
+            get(batch_page::batch_artifact_handler),
+        )
         .route("/preview", get(preview_handler))
         .route("/api/suggest-coverage", get(api_suggest_coverage))
         .route("/api/attribution-estimate", get(api_attribution_estimate))
@@ -25748,7 +25755,7 @@ struct IndexTemplate {
 
       <div>
         <div class="card-section-label">Analysis</div>
-        <div class="card-section-grid-2">
+        <div class="card-section-grid-3">
           <a class="action-card scan card-split" href="/scan-setup">
             <div class="action-card-left">
               <div class="action-card-icon">
@@ -25764,6 +25771,22 @@ struct IndexTemplate {
               <div class="ac-right-row"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg><span>Load from config</span></div>
               <div class="ac-right-row"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span>Browse history</span></div>
               <div class="ac-right-stat" id="acp-scan-stat"></div>
+            </div>
+          </a>
+          <a class="action-card scan card-split" href="/batch">
+            <div class="action-card-left">
+              <div class="action-card-icon">
+                <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect></svg>
+              </div>
+              <div class="action-card-title">Batch Scan</div>
+              <p class="action-card-desc">Queue many projects in one run &mdash; paste a list of directories, pick a default profile (or override per project), and get a combined index linking every report.</p>
+              <span class="action-card-cta">Scan a queue <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg></span>
+            </div>
+            <div class="action-card-sep"></div>
+            <div class="action-card-right">
+              <div class="ac-right-row"><svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg><span>List of projects</span></div>
+              <div class="ac-right-row"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg><span>Per-project profile</span></div>
+              <div class="ac-right-row"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg><span>Combined index</span></div>
             </div>
           </a>
           <a class="action-card test-metrics card-split" href="/test-metrics">

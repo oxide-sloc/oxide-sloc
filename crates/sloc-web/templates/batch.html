@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OxideSLOC | Batch Scan</title>
+  <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <style nonce="__CSP_NONCE__">
+    :root{--radius:18px;--bg:#f5efe8;--surface:rgba(255,255,255,0.86);--surface-2:#fbf7f2;--line:#e6d0bf;--line-strong:#dcb89f;--text:#43342d;--muted:#7b675b;--muted-2:#a08878;--nav:#283790;--nav-2:#013e6b;--accent:#6f9bff;--accent-2:#4a78ee;--oxide:#d37a4c;--oxide-2:#b85d33;--shadow:0 18px 42px rgba(77,44,20,0.12);}
+    body.dark-theme{--bg:#1b1511;--surface:#261c17;--surface-2:#2d221d;--line:#524238;--line-strong:#6b5548;--text:#f5ece6;--muted:#c7b7aa;--muted-2:#9c877a;}
+    *{box-sizing:border-box;}html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);}body{display:flex;flex-direction:column;}
+    .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+    .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
+    .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
+    .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
+    .brand{display:flex;align-items:center;gap:14px;text-decoration:none;flex-shrink:0;}.brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
+    .brand-copy{display:flex;flex-direction:column;justify-content:center;flex-shrink:0;}
+    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;line-height:1.1;}.brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;line-height:1.2;white-space:nowrap;}
+    .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
+    @media(max-width:1150px){.nav-right{gap:4px;}.nav-pill,.nav-dropdown-btn,.theme-toggle{padding:0 8px;font-size:11px;min-height:34px;}.brand-subtitle{display:none;}}
+    .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;transition:background .15s ease,transform .15s ease;}
+    .nav-pill:hover{background:rgba(255,255,255,0.18);transform:translateY(-1px);}
+    .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;}
+    .theme-toggle:hover{transform:translateY(-1px);background:rgba(255,255,255,0.16);}
+    .theme-toggle svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;}
+    .theme-toggle .icon-sun{display:none;}body.dark-theme .theme-toggle .icon-sun{display:block;}body.dark-theme .theme-toggle .icon-moon{display:none;}
+    .nav-dropdown{position:relative;display:inline-flex;}.nav-dropdown-btn{cursor:pointer;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;border-radius:999px;padding:0 14px;min-height:38px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;text-decoration:none;}.nav-dropdown-btn:hover,.nav-dropdown:focus-within .nav-dropdown-btn{background:rgba(255,255,255,0.18);}.nav-dropdown-menu{opacity:0;visibility:hidden;position:absolute;top:calc(100% + 8px);right:0;background:linear-gradient(180deg,var(--nav),var(--nav-2));border:1px solid rgba(255,255,255,0.15);border-radius:12px;min-width:165px;overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,0.28);z-index:100;transition:opacity 0.13s ease,visibility 0s ease 0.13s;}.nav-dropdown:hover .nav-dropdown-menu,.nav-dropdown:focus-within .nav-dropdown-menu{opacity:1;visibility:visible;transition:opacity 0.13s ease,visibility 0s ease 0s;}.nav-dropdown-menu a{display:flex;align-items:center;gap:9px;padding:11px 16px;color:rgba(255,255,255,0.92);text-decoration:none;font-size:12px;font-weight:700;border-bottom:1px solid rgba(255,255,255,0.10);}.nav-dropdown-menu a:last-child{border-bottom:none;}.nav-dropdown-menu a:hover{background:rgba(255,255,255,0.14);color:#fff;}.nav-dropdown-menu a svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;flex:0 0 auto;}
+    .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
+    .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip{display:block;}
+    .settings-modal{position:fixed;z-index:9999;background:var(--surface);border:1px solid var(--line-strong);border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,0.22);min-width:240px;max-width:300px;opacity:0;pointer-events:none;transform:translateY(-8px) scale(0.97);transition:opacity 0.18s ease,transform 0.18s ease;overflow:hidden;}
+    .settings-modal.open{opacity:1;pointer-events:auto;transform:translateY(0) scale(1);}
+    .settings-modal-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px;border-bottom:1px solid var(--line);font-size:13px;font-weight:800;color:var(--text);}
+    .settings-close{background:none;border:none;cursor:pointer;padding:4px;color:var(--muted-2);display:flex;align-items:center;border-radius:6px;}
+    .settings-close svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2.5;}
+    .settings-modal-body{padding:14px 16px 16px;}
+    .settings-modal-label{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted-2);margin-bottom:10px;}
+    .scheme-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;}
+    .scheme-swatch{display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:1.5px solid var(--line);border-radius:10px;cursor:pointer;padding:7px 4px 6px;transition:border-color 0.15s ease,transform 0.12s ease;}
+    .scheme-swatch:hover{border-color:var(--line-strong);transform:translateY(-1px);}
+    .scheme-swatch.active{border-color:#6f9bff;box-shadow:0 0 0 2px rgba(111,155,255,0.25);}
+    .scheme-preview{width:28px;height:28px;border-radius:7px;flex-shrink:0;}
+    .scheme-label{font-size:9px;font-weight:700;color:var(--muted-2);white-space:nowrap;}
+    .page{width:100%;max-width:1040px;margin:0 auto;padding:28px 24px 36px;position:relative;z-index:1;}
+    .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:28px;}
+    h1{margin:0 0 6px;font-size:26px;font-weight:850;letter-spacing:-0.03em;color:var(--oxide-2);}
+    .panel-subtitle{font-size:13px;color:var(--muted);margin:0 0 20px;line-height:1.55;}
+    .field-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);margin:16px 0 6px;}
+    textarea.projects{width:100%;min-height:170px;padding:12px 14px;border-radius:12px;border:1px solid var(--line-strong);background:var(--surface);color:var(--text);font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;}
+    textarea.projects:focus,.inp:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(111,155,255,0.15);}
+    body.dark-theme textarea.projects,body.dark-theme .inp{background:var(--surface-2);}
+    .inp{padding:10px 14px;border-radius:10px;border:1px solid var(--line-strong);background:var(--surface);color:var(--text);font-size:13px;}
+    .opts{display:flex;flex-wrap:wrap;gap:18px;align-items:center;margin-top:8px;}
+    .opt{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--text);}
+    .opt input{width:16px;height:16px;accent-color:var(--oxide);}
+    .mini{font-size:12px;color:var(--muted);line-height:1.5;margin:6px 0 0;}
+    .btn-row{margin-top:20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+    .btn-primary{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:0 22px;border-radius:14px;border:none;color:white;background:linear-gradient(135deg,var(--accent),var(--accent-2));font-weight:800;font-size:14px;box-shadow:0 10px 22px rgba(73,106,255,0.22);cursor:pointer;}
+    .btn-secondary{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:0 18px;border-radius:14px;border:1px solid var(--line-strong);text-decoration:none;color:var(--text);background:var(--surface-2);font-weight:700;font-size:14px;cursor:pointer;}
+    .btn-secondary:hover{background:var(--line);}
+    .site-footer{margin-top:auto;padding:16px 24px;text-align:center;font-size:11px;color:var(--muted);border-top:1px solid var(--line);position:relative;z-index:1;}
+    .site-footer a{color:var(--muted);text-decoration:none;}.site-footer a:hover{color:var(--oxide);}
+  </style>
+</head>
+<body>
+  <div class="background-watermarks" aria-hidden="true">
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+  </div>
+  <div class="code-particles" id="code-particles" aria-hidden="true"></div>
+  <div class="top-nav">
+    <div class="top-nav-inner">
+      <a class="brand" href="/">
+        <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo" />
+        <div class="brand-copy">
+          <div class="brand-title">OxideSLOC</div>
+          <div class="brand-subtitle">local code analysis - metrics, history and reports</div>
+        </div>
+      </a>
+      <div class="nav-right">
+        <a class="nav-pill" href="/">Home</a>
+        <div class="nav-dropdown">
+          <a href="/view-reports" class="nav-dropdown-btn">View Reports <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
+          <div class="nav-dropdown-menu">
+            <a href="/trend-reports"><svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>Trend Reports</a>
+          </div>
+        </div>
+        <a class="nav-pill" href="/compare-scans">Compare Scans</a>
+        <a class="nav-pill" href="/test-metrics">Test Metrics</a>
+        <div class="nav-dropdown">
+          <a href="/git-browser" class="nav-dropdown-btn">Git Browser <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg></a>
+          <div class="nav-dropdown-menu">
+            <a href="/code-ownership"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Code Ownership</a>
+            <a href="/integrations"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>Integrations</a>
+          </div>
+        </div>
+        <div class="server-status-wrap" id="server-status-wrap">
+          <div class="nav-pill server-online-pill" id="server-status-pill">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="server-status-label">__SERVER_LABEL__</span>
+          </div>
+          <div class="server-status-tip">__SERVER_TIP__</div>
+        </div>
+        <button type="button" class="theme-toggle" id="settings-btn" aria-label="Color scheme" title="Color scheme settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </button>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+          <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <div class="panel">
+      <h1>Batch / Queue Scan</h1>
+      <p class="panel-subtitle">Scan a queue of projects in one run. Each project is scanned on its own and gets its own report; a combined index links them all with aggregate totals.</p>
+      <form method="post" action="/batch/run">
+        <div class="field-label">Projects &mdash; one per line</div>
+        <textarea class="projects" name="projects" spellcheck="false" placeholder="One project directory per line. Add &quot;, profile&quot; to override the default profile for that project:&#10;&#10;C:\code\service-a&#10;C:\code\service-b, strict&#10;/home/me/lib-c, full-scope&#10;# lines starting with # are ignored"></textarea>
+        <p class="mini">__SERVER_NOTE__</p>
+
+        <div class="field-label">Default profile (optional)</div>
+        <input class="inp" type="text" name="profile" autocomplete="off" spellcheck="false" placeholder="e.g. strict &mdash; leave blank to use built-in defaults" style="width:min(360px,100%);">
+        <p class="mini">Applied to every project that does not name its own profile. The profile must exist in the project's .oxide-sloc.toml.</p>
+
+        <div class="field-label">Per-project reports to write</div>
+        <div class="opts">
+          <label class="opt"><input type="checkbox" checked disabled> JSON (always)</label>
+          <label class="opt"><input type="checkbox" name="fmt_html" checked> HTML</label>
+          <label class="opt"><input type="checkbox" name="fmt_csv"> CSV</label>
+          <label class="opt"><input type="checkbox" name="fmt_xlsx"> Excel (.xlsx)</label>
+        </div>
+
+        <div class="field-label">Concurrency</div>
+        <input class="inp" type="number" name="jobs" min="1" max="8" value="1" style="width:110px;">
+        <p class="mini">Projects to scan at once (1&ndash;8). Higher values finish faster on multi-core hosts but use more memory.</p>
+
+        <div class="btn-row">
+          <button type="submit" class="btn-primary">Run Batch</button>
+          <a class="btn-secondary" href="/">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    oxide-sloc v__VERSION__ &mdash; local code metrics workbench &nbsp;&middot;&nbsp;
+    Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
+    &nbsp;&middot;&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;&middot;&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
+    &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
+  </footer>
+
+  <script nonce="__CSP_NONCE__">(function(){
+    var k="oxide-theme",b=document.body,s=localStorage.getItem(k);
+    if(s==="dark")b.classList.add("dark-theme");
+    var tt=document.getElementById("theme-toggle");
+    if(tt)tt.addEventListener("click",function(){var d=b.classList.toggle("dark-theme");localStorage.setItem(k,d?"dark":"light");});
+  })();</script>
+  <script nonce="__CSP_NONCE__">(function randomizeWatermarks(){
+    var wms=Array.prototype.slice.call(document.querySelectorAll('.background-watermarks img'));if(!wms.length)return;var placed=[];
+    function tooClose(t,l){for(var i=0;i<placed.length;i++){if(Math.abs(placed[i][0]-t)<16&&Math.abs(placed[i][1]-l)<12)return true;}return false;}
+    function pick(lb){for(var a=0;a<50;a++){var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;if(!tooClose(t,l)){placed.push([t,l]);return[t,l];}}var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;placed.push([t,l]);return[t,l];}
+    var half=Math.floor(wms.length/2);wms.forEach(function(img,i){var pos=pick(i<half),w=Math.floor(Math.random()*100+120),rot=(Math.random()*360).toFixed(1),op=(Math.random()*0.08+0.12).toFixed(2);img.style.cssText='width:'+w+'px;top:'+pos[0].toFixed(1)+'%;left:'+pos[1].toFixed(1)+'%;transform:rotate('+rot+'deg);opacity:'+op+';';});
+  })();
+  (function spawnCodeParticles(){
+    var c=document.getElementById('code-particles');if(!c)return;
+    var snippets=['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main()','.rs .go .py','sloc_core','render_html','2,163 code'];
+    for(var i=0;i<38;i++){(function(idx){var el=document.createElement('span');el.className='code-particle';el.textContent=snippets[idx%snippets.length];el.style.left=(Math.random()*94+2).toFixed(1)+'%';el.style.top=(Math.random()*88+6).toFixed(1)+'%';el.style.setProperty('--rot',(Math.random()*26-13).toFixed(1)+'deg');el.style.setProperty('--op',(Math.random()*0.09+0.06).toFixed(3));el.style.animationDuration=(Math.random()*10+9).toFixed(1)+'s';el.style.animationDelay='-'+(Math.random()*18).toFixed(1)+'s';c.appendChild(el);})(i);}
+  })();</script>
+  <script nonce="__CSP_NONCE__">(function(){
+    var S=[{n:'Classic',a:'#b85d33',b:'#7a371b'},{n:'Navy',a:'#283790',b:'#1e1e24'},{n:'Ember',a:'#ce5d3d',b:'#1e1e24'},{n:'Ocean',a:'#1f439b',b:'#1e1e24'},{n:'Royal',a:'#003184',b:'#1e1e24'}];
+    function ap(s){document.documentElement.style.setProperty('--nav',s.a);document.documentElement.style.setProperty('--nav-2',s.b);try{localStorage.setItem('sloc-ns',JSON.stringify(s));}catch(e){}document.querySelectorAll('.scheme-swatch').forEach(function(x){x.classList.toggle('active',x.dataset.n===s.n);});}
+    try{var sv=JSON.parse(localStorage.getItem('sloc-ns'));if(sv&&sv.a){ap(sv);}else{ap(S[0]);}}catch(e){ap(S[0]);}
+    var btn=document.getElementById('settings-btn');if(!btn)return;
+    var m=document.createElement('div');m.id='settings-modal';m.className='settings-modal';
+    m.innerHTML='<div class="settings-modal-header"><span>Appearance</span><button type="button" class="settings-close" id="settings-close" aria-label="Close"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="settings-modal-body"><div class="settings-modal-label">Navigation color scheme</div><div class="scheme-grid" id="scheme-grid"></div></div>';
+    document.body.appendChild(m);
+    var g=document.getElementById('scheme-grid');
+    if(g)S.forEach(function(s){var el=document.createElement('button');el.type='button';el.className='scheme-swatch';el.dataset.n=s.n;el.title=s.n;var p=document.createElement('div');p.className='scheme-preview';p.style.background='linear-gradient(135deg,'+s.a+','+s.b+')';var l=document.createElement('span');l.className='scheme-label';l.textContent=s.n;el.appendChild(p);el.appendChild(l);try{var c=JSON.parse(localStorage.getItem('sloc-ns'));if(c&&c.n===s.n)el.classList.add('active');}catch(e){}el.addEventListener('click',function(){ap(s);});g.appendChild(el);});
+    var cl=document.getElementById('settings-close');
+    btn.addEventListener('click',function(e){e.stopPropagation();var r=btn.getBoundingClientRect();m.style.top=(r.bottom+6)+'px';m.style.right=(window.innerWidth-r.right)+'px';m.classList.toggle('open');});
+    if(cl)cl.addEventListener('click',function(){m.classList.remove('open');});
+    document.addEventListener('click',function(e){if(!m.contains(e.target)&&e.target!==btn)m.classList.remove('open');});
+  })();</script>
+  <script nonce="__CSP_NONCE__">(function(){var dot=document.getElementById('status-dot');function setDot(ms){if(!dot)return;if(ms<100){dot.style.background='#26d768';dot.style.boxShadow='0 0 0 4px rgba(38,215,104,0.14)';}else if(ms<300){dot.style.background='#f5a623';dot.style.boxShadow='0 0 0 4px rgba(245,166,35,0.14)';}else{dot.style.background='#e05c5c';dot.style.boxShadow='0 0 0 4px rgba(224,92,92,0.14)';}}function doPing(){var t0=performance.now();fetch('/healthz',{cache:'no-store'}).then(function(){setDot(Math.round(performance.now()-t0));}).catch(function(){if(dot){dot.style.background='#e05c5c';dot.style.boxShadow='0 0 0 4px rgba(224,92,92,0.14)';}});}doPing();setInterval(doPing,5000);})();</script>
+</body>
+</html>
