@@ -19,8 +19,8 @@
 # attack surface and the pure-Rust PDF path covers the default case). Opt back in
 # for high-fidelity headless-Chromium PDF with --build-arg INSTALL_CHROMIUM=1.
 # NOTE: ARGs used in FROM must be declared before the first FROM (global scope).
-ARG BUILDER_IMAGE=rust:1.97-slim-bookworm@sha256:b93beca49a16e4459e51e3886658afece337bb2e991325b2919e84f7ae4a42ef
-ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+ARG BUILDER_IMAGE=rust:1.97-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3
+ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 FROM ${BUILDER_IMAGE} AS builder
 
 # Fail a piped RUN if any stage in the pipe fails (e.g. `cat vendor.tar.gz.* |
