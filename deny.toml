@@ -65,7 +65,6 @@ skip = [
   { name = "getrandom", version = "0.4" },
   { name = "r-efi", version = "5" },
   { name = "windows-sys", version = "0.52" },
-  { name = "windows-sys", version = "0.59" },
   # thiserror v1 (via prometheus→protobuf) and v2 (via headless_chrome) coexist
   { name = "thiserror", version = "1" },
   { name = "thiserror-impl", version = "1" },
@@ -82,12 +81,18 @@ skip = [
 
 [advisories]
 version = 2
-# No ignores: the current dependency graph is clean under cargo-audit and cargo-deny.
 # Previously-ignored advisories are all resolved — lopdf is >= 0.42 (RUSTSEC-2026-0187
 # patched), anyhow is on a fixed release (RUSTSEC-2026-0190), and printpdf 0.12 no longer
-# pulls the unmaintained ttf-parser (RUSTSEC-2026-0192). Add a scoped ignore back here only
+# pulls the unmaintained ttf-parser (RUSTSEC-2026-0192). Add a scoped ignore here only
 # if a genuinely unreachable advisory surfaces.
-ignore = []
+ignore = [
+  # basic-toml is unmaintained (not a vulnerability). It is pulled in transitively and
+  # unavoidably by askama's compile-time proc-macro (askama -> askama_derive -> basic-toml);
+  # it is not reachable from runtime code and there is no newer askama that drops it. Scoped
+  # to the exact advisory so any real vulnerability still fails the gate. cargo-audit already
+  # treats this as an allowed warning; this keeps cargo-deny consistent.
+  "RUSTSEC-2026-0374",
+]
 
 [sources]
 unknown-registry = "deny"
