@@ -188,11 +188,11 @@ def _attach(api: str, pid: str, auth: str, out_dir: str) -> None:
                 )
 
         if status is None:
-            print(f"notify-confluence: attachment '{name}' skipped (unreachable) — non-fatal.")
+            print(f"notify-confluence: attachment '{name}' skipped (unreachable) - non-fatal.")
         elif 200 <= status < 300:
             print(f"notify-confluence: attachment '{name}' uploaded.")
         else:
-            print(f"notify-confluence: attachment '{name}' upload returned {status} — non-fatal.")
+            print(f"notify-confluence: attachment '{name}' upload returned {status} - non-fatal.")
 
 
 def _storage_body(data: dict, report_url: str) -> str:
@@ -247,7 +247,7 @@ def _load_scan_result(out_dir: str, slug: str) -> dict:
                 return json.load(fh)
         except (OSError, ValueError):
             continue
-    print(f"notify-confluence: warning — no scan result JSON found in '{out_dir}'; "
+    print(f"notify-confluence: warning - no scan result JSON found in '{out_dir}'; "
           "summary table will be empty.")
     return {}
 
@@ -297,6 +297,13 @@ def _upsert_page(api: str, title: str, common: dict, results: list, auth: str):
 
 
 def main() -> None:
+    # Jenkins on Windows defaults stdout/stderr to cp1252, which cannot encode
+    # some glyphs; force UTF-8 so a print never aborts the build.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     out_dir = sys.argv[1] if len(sys.argv) >= 2 else "."
     slug = sys.argv[2] if len(sys.argv) >= 3 else ""
 

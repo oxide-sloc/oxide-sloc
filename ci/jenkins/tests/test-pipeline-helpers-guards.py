@@ -113,7 +113,7 @@ def main() -> None:
           + "\n        ".join(bad))
 
     print("=" * 78)
-    print("pipeline-helpers.groovy — static guard tests")
+    print("pipeline-helpers.groovy - static guard tests")
     print("=" * 78)
     all_ok = True
     for name, ok, detail in RESULTS:

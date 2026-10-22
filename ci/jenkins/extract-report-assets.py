@@ -20,7 +20,19 @@ import re
 import sys
 
 
+def _force_utf8_console() -> None:
+    # Jenkins on Windows defaults stdout/stderr to cp1252, which cannot encode
+    # report glyphs; force UTF-8 so a print never aborts the build. Best-effort:
+    # older Python or a non-reconfigurable stream is fine as-is.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main() -> None:
+    _force_utf8_console()
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <html-file>", file=sys.stderr)
         sys.exit(1)
@@ -70,12 +82,12 @@ def main() -> None:
     if css_chunks:
         with open(css_path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(css_chunks))
-        print(f"CSS → {css_path} ({os.path.getsize(css_path):,} bytes)")
+        print(f"CSS -> {css_path} ({os.path.getsize(css_path):,} bytes)")
 
     if js_chunks:
         with open(js_path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(js_chunks))
-        print(f"JS  → {js_path} ({os.path.getsize(js_path):,} bytes)")
+        print(f"JS  -> {js_path} ({os.path.getsize(js_path):,} bytes)")
 
     with open(html_path, "w", encoding="utf-8") as fh:
         fh.write(html)

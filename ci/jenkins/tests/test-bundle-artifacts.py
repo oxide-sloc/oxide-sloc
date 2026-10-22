@@ -201,7 +201,7 @@ def main():
     test_trend_schema()
 
     print("=" * 78)
-    print("bundle-artifacts.py + trend-csv schema — contract tests")
+    print("bundle-artifacts.py + trend-csv schema - contract tests")
     print("=" * 78)
     all_ok = True
     for name, ok, detail in RESULTS:

@@ -2055,6 +2055,13 @@ body {{
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # Jenkins on Windows defaults stdout/stderr to cp1252, which cannot encode
+    # some report glyphs; force UTF-8 so a print never aborts the build.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     if len(sys.argv) < 2:
         print(
             "Usage: python3 ci/jenkins/generate-dashboard.py <output-dir> [project-slug] [history-file]",

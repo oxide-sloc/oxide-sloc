@@ -60,7 +60,7 @@ def _csv_field(value: str) -> str:
 def _write_style_csv(out, style_summary):
     """Write the optional style_analysis.csv (no-op with a note when absent)."""
     if not style_summary:
-        print("No style_summary in result.json — skipping style CSV")
+        print("No style_summary in result.json - skipping style CSV")
         return
     col_threshold = style_summary.get("col_threshold", 80)
     with open(os.path.join(out, "style_analysis.csv"), "w", newline="") as f:
@@ -106,7 +106,7 @@ def _write_coverage_csv(out):
     """Write coverage.csv from coverage/lcov.info (no-op with a note when absent)."""
     lcov_path = os.path.join(out, "coverage", "lcov.info")
     if not os.path.exists(lcov_path):
-        print("lcov.info not found — skipping coverage CSV")
+        print("lcov.info not found - skipping coverage CSV")
         return
     total = hit = 0
     with open(lcov_path) as f:
@@ -177,7 +177,18 @@ def _append_history(history_file, data, totals):
     print(f"Trend history updated: {history_file} ({len(lines)} entries)")
 
 
+def _force_utf8_console():
+    # Jenkins on Windows defaults stdout/stderr to cp1252, which cannot encode
+    # some report glyphs; force UTF-8 so a print never aborts the build.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main():
+    _force_utf8_console()
     if len(sys.argv) < 4:
         print("Usage: generate-trend-csv.py <out_dir> <project_slug> <history_file>")
         sys.exit(1)
@@ -196,7 +207,7 @@ def main():
         totals = data["summary_totals"]
         _write_sloc_csvs(out, data)
     else:
-        print("result.json not found — skipping SLOC CSV generation")
+        print("result.json not found - skipping SLOC CSV generation")
 
     # ── Coverage CSV ─────────────────────────────────────────────────────────
     _write_coverage_csv(out)

@@ -136,6 +136,13 @@ def _write_tar(tar_path: str, plan) -> None:
 
 
 def main() -> int:
+    # Jenkins on Windows defaults stdout/stderr to cp1252, which cannot encode
+    # some glyphs; force UTF-8 so a print never aborts the build.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     if len(sys.argv) < 3:
         print("Usage: bundle-artifacts.py <out_dir> <project_slug>", file=sys.stderr)
         return 1
@@ -147,7 +154,7 @@ def main() -> int:
 
     plan = _plan(out_dir, slug)
     if not plan:
-        print(f"No artifacts found to bundle in {out_dir} — skipping.", file=sys.stderr)
+        print(f"No artifacts found to bundle in {out_dir} - skipping.", file=sys.stderr)
         # Not an error: a scan with no outputs still lets the build proceed.
         return 0
 

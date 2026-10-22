@@ -83,7 +83,7 @@ def scan_file(path, api_key):
             api_key=api_key,
         )
     except RuntimeError as exc:
-        print(f"  ERROR: upload failed — {exc}", file=sys.stderr)
+        print(f"  ERROR: upload failed - {exc}", file=sys.stderr)
         return False
 
     analysis_id = resp.get("data", {}).get("id", "")
@@ -106,7 +106,7 @@ def scan_file(path, api_key):
                 api_key=api_key,
             )
         except RuntimeError as exc:
-            print(f"  Attempt {attempt}/{POLL_ATTEMPTS}: poll error — {exc}", file=sys.stderr)
+            print(f"  Attempt {attempt}/{POLL_ATTEMPTS}: poll error - {exc}", file=sys.stderr)
             continue
 
         status = poll.get("data", {}).get("attributes", {}).get("status", "unknown")
@@ -144,6 +144,13 @@ def scan_file(path, api_key):
 
 
 def main():
+    # Windows consoles default to cp1252, which cannot encode some glyphs; force
+    # UTF-8 so a print never aborts the scan. Best-effort.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     api_key = os.environ.get("VT_API_KEY", "")
     if not api_key:
         print("ERROR: VT_API_KEY environment variable is not set.", file=sys.stderr)
@@ -169,7 +176,7 @@ def main():
             print(f"ERROR: file not found: {f}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"VirusTotal scan — {len(files)} file(s)")
+    print(f"VirusTotal scan - {len(files)} file(s)")
     print(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
 
     any_failed = False
