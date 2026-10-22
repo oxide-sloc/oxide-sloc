@@ -10,6 +10,34 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.25] — 2026-10-22
+
+### Added
+
+- **Batch scanning**: scan a queue of projects in one pass from both the CLI (`oxide-sloc batch`)
+  and the web UI, with per-project artifacts and an aggregate summary.
+- **CLI subcommands through `run.sh`**: the cross-platform launcher now dispatches every CLI
+  subcommand, with documentation distinguishing CLI vs web-UI usage.
+- **PR-merge / tag / release webhook triggers + run profiles**: new git webhook trigger types and
+  reusable run profiles for CI-driven scans.
+- **Master CI preset for fleet inheritance** plus an opt-in Jira publish step.
+
+### Changed
+
+- Refreshed the vendored dependency archive and bumped workspace dependencies to pull in upstream
+  security and bug fixes (including an updated `rustls-webpki`).
+- Bumped Docker base-image digests to pick up patched `ca-certificates`.
+
+### Fixed
+
+- Jenkins Python helper scripts now run cleanly on cp1252 Windows consoles.
+
+### Documentation
+
+- Added a local-automation guide and relocated top-level docs under `docs/` and `.github/`.
+
+---
+
 ## [1.6.24] — 2026-10-16
 
 ### Added
