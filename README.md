@@ -47,12 +47,12 @@ powershell -ExecutionPolicy Bypass -File scripts\internal\install.ps1
 
 ## Features
 
-- **CLI + web UI** — `analyze / report / diff / serve / send / init` commands; guided 4-step web flow with Quick Scan
+- **CLI + web UI** — `analyze / report / diff / serve / init / send / git-scan / git-compare / watch / prune / pr-comment / jira / bitbucket-status / validate / completions` commands; guided 4-step web flow with Quick Scan
 - **IEEE 1045-1992 physical SLOC** — configurable mixed-line, continuation-line, compiler-directive, and blank-in-comment policies; symbol counting (functions, classes, variables, imports)
 - **Deep metrics** — COCOMO I effort/cost estimate, approximate cyclomatic complexity (branch-keyword count), ULOC / DRYness, and duplicate-file detection on every run
 - **Git Hotspots** — ranks refactor candidates by `code lines × commit activity` over a configurable window (90 days by default); per-file commit counts and last-changed dates from a single `git log` pass
 - **Code Ownership** — per-author line attribution via `git blame`; contributor leaderboard, per-author file drill-down, hotspot ownership, and `.mailmap` identity merge/export; on by default
-- **Test Metrics** — lexical test function detection across 60 languages; test-to-code density; multi-format coverage import (LCOV, Cobertura XML, JaCoCo XML, coverage.py JSON, Istanbul/NYC JSON)
+- **Test Metrics** — lexical test-function detection across 36 of the 60 languages; test-to-code density; multi-format coverage import (LCOV, Cobertura XML, JaCoCo XML, coverage.py JSON, Istanbul/NYC JSON)
 - **Flexible output** — HTML reports, PDF, CSV, and 4-sheet Excel export; re-render any saved JSON
 - **Code-scanning exports** — SARIF 2.1.0 (GitHub code scanning / GitLab SAST), GitLab Code Quality (Code Climate) JSON, Bitbucket Code Insights, and cloc-compatible JSON; see [docs/ci-integrations.md](docs/ci-integrations.md#code-scanning--interchange-exports)
 - **Git integration** — branch/tag/commit browser (remote URLs *and* local checkouts), recursive submodule scanning, GitHub/GitLab/Bitbucket webhooks and polling, submodule breakdown
@@ -63,7 +63,7 @@ powershell -ExecutionPolicy Bypass -File scripts\internal\install.ps1
 
 | Capability | oxide-sloc | cloc | tokei | scc | UCC |
 |---|---|---|---|---|---|
-| Languages | 60 | 250+ | 240+ | 240+ | ~30 |
+| Languages | 60 | 250+ | 150+ | 250+ | ~30 |
 | Web UI + HTML/PDF reports | ✓ | — | — | — | — |
 | MCP server (AI agent tools) | ✓ | — | — | — | — |
 | Test function detection | ✓ | — | — | — | — |
@@ -205,6 +205,25 @@ the Windows-agents section of [`docs/ci-integrations.md`](./docs/ci-integrations
 
 ### CLI
 
+`bash scripts/run.sh` with **no subcommand** launches the web UI and then blocks (it is running
+the server), so that terminal will not accept further commands. To run a one-shot CLI command
+instead, you have three equivalent options:
+
+```bash
+# 1. Pass a subcommand straight to the launcher (it forwards to the binary and does NOT serve):
+bash scripts/run.sh analyze ./my-repo --per-file --html-out out/report.html
+
+# 2. Call the installed binary directly (after the first run.sh has built/installed it):
+./oxide-sloc analyze ./my-repo --plain          #  .\oxide-sloc.exe on Windows
+
+# 3. From a source checkout with Rust available:
+cargo run -p oxide-sloc -- analyze ./my-repo --plain
+```
+
+This is the path for **automating report generation with flags** in scripts and CI. To keep the web
+UI running *and* use the CLI, open a second terminal for option 2 or 3. For a dedicated LAN server
+with API-key setup see `bash scripts/serve-server.sh`.
+
 ```bash
 # Analyze — common forms
 oxide-sloc analyze ./my-repo                            # colored summary
@@ -226,6 +245,21 @@ oxide-sloc serve                                        # http://127.0.0.1:4317
 oxide-sloc init                                         # creates .oxide-sloc.toml
 oxide-sloc send result.json --smtp-to team@example.com --smtp-host smtp.example.com
 oxide-sloc healthz                                      # probe a running server (Docker HEALTHCHECK)
+
+# Scan / compare / watch git refs directly (clones, then scans a branch/tag/SHA)
+oxide-sloc git-scan <repo-url> --git-ref v1.2.0 -H report.html
+oxide-sloc git-compare <repo-url> main feature-branch -j delta.json
+oxide-sloc watch <repo-url> --branch main --interval 300
+
+# Post results into CI / trackers (GitHub, GitLab, Bitbucket, Jira)
+oxide-sloc pr-comment ...                               # SLOC diff comment on a pull request
+oxide-sloc jira ...                                     # SLOC summary on a Jira issue
+oxide-sloc bitbucket-status ...                         # build status on a Bitbucket commit
+
+# Housekeeping
+oxide-sloc prune --older-than 30                        # preview; add --yes to delete
+oxide-sloc validate                                     # check .oxide-sloc.toml
+oxide-sloc completions bash > oxide-sloc.bash           # shell tab-completion
 ```
 
 Run `oxide-sloc <command> --help` for the full flag list.
@@ -381,7 +415,7 @@ crates/
 ci/                 # CI scripts + config presets
 cmake/              # OxideSloc.cmake reusable CMake module
 docs/               # airgap.md, ci-integrations.md, ide-integrations.md, server-deployment.md, openapi.yaml
-dist/               # Windows pre-built binary (committed by CI after each release)
+dist/               # Windows + Linux pre-built binaries (committed by CI after each release)
 examples/           # examples/cmake/ runnable CMake integration sample
 scripts/            # run.sh, serve-server.sh (user-facing entry points)
 testing/            # fixtures/ (scan sample repo) + examples/ (CI configs, sloc.example.toml)

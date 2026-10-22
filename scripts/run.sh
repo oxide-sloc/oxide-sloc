@@ -9,6 +9,13 @@
 #   bash scripts/run.sh --rebuild    # force recompile from source (implies --build)
 #   SLOC_HOST=1 bash scripts/run.sh  # env-var form of --host
 #
+# Run a one-shot CLI command instead of the web UI by passing a subcommand:
+#   bash scripts/run.sh analyze ./my-repo --per-file --html-out out/report.html
+#   bash scripts/run.sh report result.json --pdf-out result.pdf
+#   bash scripts/run.sh --help       # full CLI usage
+# Any known subcommand (analyze, report, diff, git-scan, watch, prune, ...) is
+# forwarded to the binary; the server is not started.
+#
 # For a dedicated LAN-server launcher with API-key setup and IP guidance see:
 #   bash scripts/serve-server.sh
 set -euo pipefail
@@ -402,16 +409,38 @@ check_server_auth() {
     exit 1
 }
 
+# ── CLI passthrough vs. web-UI launch ────────────────────────────────────────
+# With no subcommand, run.sh launches the web UI (serve). The same launcher also
+# runs one-shot CLI commands for automation, e.g.:
+#   bash scripts/run.sh analyze ./my-repo --per-file --html-out out/report.html
+# If the first non-flag argument is a known oxide-sloc subcommand (or a help /
+# version query), the whole argument list is handed to the binary and the server
+# is NOT started. Launcher-only flags (--host/--lan/--build/--rebuild) are
+# consumed here and never forwarded; everything else passes through verbatim.
+# `serve` is intentionally NOT a passthrough so `run.sh serve` keeps the managed
+# port-freeing + fail-closed auth banner.
+KNOWN_SUBCOMMANDS=" analyze report diff init validate send bundle git-scan git-compare watch prune pr-comment jira bitbucket-status verify-audit healthz completions help "
+CLI_SUBCOMMAND=""
+PASSTHROUGH_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --rebuild|--force|-f) REBUILD_MODE=true; BUILD_MODE=true ;;
         --host|--lan) HOST_MODE=1 ;;
         --build) BUILD_MODE=true ;;
-        *) ;;
+        -h|--help|-V|--version)
+            [[ -z "$CLI_SUBCOMMAND" ]] && CLI_SUBCOMMAND="help"
+            PASSTHROUGH_ARGS+=("$arg") ;;
+        -*) PASSTHROUGH_ARGS+=("$arg") ;;
+        *)
+            if [[ -z "$CLI_SUBCOMMAND" && "$KNOWN_SUBCOMMANDS" == *" $arg "* ]]; then
+                CLI_SUBCOMMAND="$arg"
+            fi
+            PASSTHROUGH_ARGS+=("$arg") ;;
     esac
 done
 
-check_server_auth
+# The fail-closed server-auth gate only applies to the web/server launch path.
+[[ -z "$CLI_SUBCOMMAND" ]] && check_server_auth
 
 # ── Auto-install or rebuild if requested ─────────────────────────────────────
 # On Windows this extracts the committed pre-built binary from dist/ (the .tar.gz
@@ -431,6 +460,21 @@ if [[ ! -f "$EXE" ]] || [[ "$REBUILD_MODE" == true ]]; then
     bash "$SCRIPT_DIR/internal/install.sh" $_INSTALL_FLAGS \
         || { printf '\n [ERROR] Install failed. See above for details.\n' >&2; exit 1; }
     echo ""
+fi
+
+# CLI passthrough: run the requested subcommand directly and exit (no server).
+if [[ -n "$CLI_SUBCOMMAND" ]]; then
+    cd "$REPO_ROOT"
+    export OXIDE_SLOC_ROOT="$REPO_ROOT"
+    if [[ -f "$EXE" ]]; then
+        exec "$EXE" "${PASSTHROUGH_ARGS[@]}"
+    fi
+    if command -v cargo &>/dev/null && [[ -f "$REPO_ROOT/Cargo.toml" ]]; then
+        exec cargo run --quiet -p oxide-sloc -- "${PASSTHROUGH_ARGS[@]}"
+    fi
+    printf '\noxide-sloc: no binary found and cargo is unavailable.\n' >&2
+    printf '  Run the installer first: bash scripts/internal/install.sh\n\n' >&2
+    exit 1
 fi
 
 # Prefer the installed binary built by install.sh (release, no recompile needed).
