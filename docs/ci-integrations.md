@@ -435,6 +435,38 @@ injected natively by the git plugin — never in an env var, argv, or the URL. S
 For a fully disconnected agent, check `SCAN_ALLOW_LOCAL` and set `SCAN_LOCAL_ROOT`, then pass the
 imported bundle/path as `SCAN_REPO_URL` (air-gap Case B in [multi-instance.md](multi-instance.md)).
 
+### One job for many repos, with a shared master config
+
+**Recommended topology: one parameterized `oxide-sloc` pipeline that scans every repository**, rather
+than a separate SLOC pipeline per repo. A single job keeps the pipeline logic, plugin requirements,
+and upload/notify targets in one place; you pick the repo per run via `SCAN_REPO_URL` (or let a
+webhook fill it in). Reserve a per-repo pipeline (drop-in `Jenkinsfile`, option **B** above) only for
+teams that insist on owning their own CI file.
+
+To give that one job a **fleet-wide default environment that projects inherit**, set
+`CI_PRESET=master`. It loads [`ci/sloc-ci-master.toml`](../ci/sloc-ci-master.toml) — the single
+master scan configuration (what counts as code, which directories to skip, IEEE policies, style
+bucket, hotspot window). Change a rule there once and every repository picks it up on its next scan.
+A repo that must differ overrides only what it needs: a repo-local `.oxide-sloc.toml` / `[profile.*]`,
+or the per-job parameters (`MIXED_LINE_POLICY`, `ENABLED_LANGUAGES`, `EXCLUDE_GLOBS`,
+`STYLE_COL_THRESHOLD`, `ACTIVITY_WINDOW`, …) which layer on top of the preset.
+
+The **upload / notify targets are environment-wide**, so they live on the shared job as parameters +
+credentials — not in the TOML — which is exactly what "one place defines where results go" means:
+
+| Target | Job parameters | Jenkins credential (Secret Text) |
+|---|---|---|
+| Nexus / Artifactory / S3 / … | `ARTIFACT_REPO_TYPE`, `ARTIFACT_REPO_URL`, `ARTIFACT_REPO_PATH` | `SLOC_ARTIFACT_REPO_USER` / `_PASS` |
+| Confluence | `CONFLUENCE_BASE_URL`, `CONFLUENCE_SPACE_KEY` | `confluence-api-token` |
+| Jira | `JIRA_BASE_URL`, `JIRA_ISSUE_KEY`, `JIRA_MODE` | `jira-api-token` |
+| Bitbucket status | `BITBUCKET_BASE_URL` (+ Cloud `_WORKSPACE`/`_REPO`/`_USER`) | `bitbucket-build-token` |
+| Webhook / email | `NOTIFY_WEBHOOK_URL`, `NOTIFY_EMAIL` | `SLOC_WEBHOOK_TOKEN`, `SLOC_SMTP_*` |
+
+Every target is opt-in and no-ops when its URL/credential is blank, so the master job can define them
+all and individual runs simply leave unused ones empty. For the declarative "when to scan + which
+profile" side (PR-merge / tag / release triggers, retained-run deltas), see the run-profile JSON and
+the Integrations schedule UI described in the README.
+
 #### Option A — GUI setup
 
 1. Create a **Pipeline** job in Jenkins (**New Item → Pipeline**).

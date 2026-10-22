@@ -1,0 +1,58 @@
+# oxide-sloc CI configuration — MASTER / shared default environment
+#
+# This is the single, organization-wide "master" scan configuration that every
+# repository inherits. Point one parameterized Jenkins "oxide-sloc" job at many
+# repositories (via SCAN_REPO_URL) and set CI_PRESET=master so they all share
+# these defaults — change a rule here once and every project picks it up on its
+# next scan.
+#
+# Inheritance model:
+#   * This file holds the fleet-wide SCAN defaults (what counts as code, which
+#     dirs to skip, IEEE policies, style bucket, hotspot window, etc.).
+#   * A repo that needs to differ overrides only what it must — either with a
+#     repo-local `.oxide-sloc.toml` / `[profile.*]`, or with the per-job
+#     Jenkins parameters (MIXED_LINE_POLICY, ENABLED_LANGUAGES, EXCLUDE_GLOBS,
+#     STYLE_COL_THRESHOLD, ACTIVITY_WINDOW, ...), which layer on top of the preset.
+#   * The upload / notify TARGETS (Nexus, Confluence, Jira, Bitbucket, webhook,
+#     email) are environment-wide and live on the shared Jenkins job as
+#     parameters / credentials, NOT in this TOML — so one place defines "where
+#     results go" for the whole fleet. See docs/ci-integrations.md.
+#
+# Use with: oxide-sloc analyze ./src --config ci/sloc-ci-master.toml
+#   (the Jenkins pipeline passes this automatically when CI_PRESET=master).
+
+[discovery]
+honor_ignore_files    = true
+ignore_hidden_files   = true
+follow_symlinks       = false
+max_file_size_bytes   = 2097152
+# Skip regeneratable build-tooling / vendored trees so self-scans stay fast and
+# the warning list stays short. Adopting repos can extend this via EXCLUDE_GLOBS.
+excluded_directories  = [".git", "node_modules", "target", ".venv", "__pycache__", "dist", "build", "vendor", "toolchain", "python", ".tools"]
+exclude_globs         = ["vendor.tar.gz.*", "docs/screenshots/**", "docs/*.pptx", "docs/*.pdf"]
+
+[analysis]
+enabled_languages             = []           # empty = autodetect all
+extension_overrides           = {}
+shebang_detection             = true
+mixed_line_policy             = "code_only"
+python_docstrings_as_comments = true
+generated_file_detection      = true
+minified_file_detection       = true
+vendor_directory_detection    = true
+include_lockfiles             = false
+binary_file_behavior          = "skip"
+decode_failure_behavior       = "warn_skip"
+parse_failure_behavior        = "warn_skip"
+attribution                   = true         # per-author code ownership via git blame
+activity_window_days          = 90           # Git Hotspots window in days (0 disables)
+style_col_threshold           = 80           # column-width bucket for N-col compliance (80/100/120)
+
+[reporting]
+# Left generic on purpose: the Jenkins job derives a project-scoped title from
+# the repo being scanned (REPORT_TITLE), so the same master config reads well
+# for every repository that inherits it.
+report_title                  = "oxide-sloc Report"
+include_summary_charts        = true
+include_skipped_files_section = true
+include_warnings_section      = true

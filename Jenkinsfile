@@ -251,10 +251,13 @@ pipeline {
         // ── CI config preset ───────────────────────────────────────────────────
         choice(
             name:    'CI_PRESET',
-            choices: ['default', 'none', 'strict', 'full-scope'],
-            description: 'CI configuration preset loaded from the ci/ directory:\n' +
-                         '  none        — no preset; individual flags below control everything\n' +
+            choices: ['default', 'master', 'none', 'strict', 'full-scope'],
+            description: 'CI configuration preset loaded from the ci/ directory. Per-job parameters ' +
+                         'below (policies, globs, languages, ...) still layer on top and override it:\n' +
                          '  default     — balanced defaults, mirrors web UI defaults  (ci/sloc-ci-default.toml)\n' +
+                         '  master      — org-wide shared default environment that many repos inherit; ' +
+                         'change rules once and every project picks them up  (ci/sloc-ci-master.toml)\n' +
+                         '  none        — no preset; individual flags below control everything\n' +
                          '  strict      — fail the pipeline if binary files are found  (ci/sloc-ci-strict.toml)\n' +
                          '  full-scope  — count everything including vendor and lockfiles  (ci/sloc-ci-full-scope.toml)'
         )
@@ -667,6 +670,44 @@ pipeline {
                           'notify-bitbucket.sh uses Basic auth (user:app_password) — required for Cloud ' +
                           'APP PASSWORDS. Leave BLANK for a Cloud/Server ACCESS TOKEN or Server PAT ' +
                           '(Bearer auth). See docs/ci-integrations.md § Atlassian auth schemes.'
+        )
+        // ── Jira (optional) ────────────────────────────────────────────────────
+        // Post an SLOC summary (and delta, when a baseline exists) to a Jira issue
+        // on success. Opt-in and no-op when JIRA_BASE_URL or JIRA_ISSUE_KEY is blank.
+        // The API token is NOT a parameter — add it as a Jenkins Secret Text
+        // credential so it is masked in the log:
+        //   jira-api-token   Jira Cloud API token OR Server/DC personal access token
+        // See docs/ci-integrations.md § Atlassian.
+        string(
+            name:         'JIRA_BASE_URL',
+            defaultValue: '',
+            description:  '(optional) Jira base URL. Server/DC: https://jira.example.com ; ' +
+                          'Cloud: https://your-domain.atlassian.net . Blank = skip Jira publish.'
+        )
+        string(
+            name:         'JIRA_ISSUE_KEY',
+            defaultValue: '',
+            description:  '(optional) Target issue key to attach the SLOC summary to, e.g. ENG-1234. ' +
+                          'Required for the Jira publish to run.'
+        )
+        string(
+            name:         'JIRA_USER',
+            defaultValue: '',
+            description:  '(optional) Jira Cloud account email for basic auth (email + API token). ' +
+                          'Leave BLANK for Server/DC when jira-api-token is a Personal Access Token (Bearer).'
+        )
+        choice(
+            name:    'JIRA_MODE',
+            choices: ['comment', 'remote-link', 'field'],
+            description: 'How to attach the summary to the issue:\n' +
+                         '  comment      — add an issue comment (default)\n' +
+                         '  remote-link  — add a remote link to the HTML report\n' +
+                         '  field        — write to a custom field (set JIRA_FIELD_ID, e.g. customfield_10050)'
+        )
+        string(
+            name:         'JIRA_FIELD_ID',
+            defaultValue: '',
+            description:  '(optional) Custom field id to write when JIRA_MODE=field, e.g. customfield_10050.'
         )
 
         // ── Pipeline-of-Pipelines chaining ─────────────────────────────────────
@@ -1239,6 +1280,7 @@ pipeline {
             // on a non-SUCCESS result.
             script {
                 if (h != null) { h.runPostSuccess() }
+                if (h != null) { h.runJiraNotify() }
             }
         }
         failure {

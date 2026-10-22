@@ -886,7 +886,7 @@ def publishHtmlSafe(Map target) {
 
 def runAnalyze() {
     def allowedPolicies = ['code-only', 'code-and-comment', 'comment-only', 'separate-mixed-category']
-    def allowedPresets  = ['none', 'default', 'strict', 'full-scope']
+    def allowedPresets  = ['none', 'default', 'master', 'strict', 'full-scope']
     if (!allowedPolicies.contains(params.MIXED_LINE_POLICY)) {
         error("Invalid MIXED_LINE_POLICY value: ${params.MIXED_LINE_POLICY}")
     }
@@ -1860,6 +1860,46 @@ def runBitbucketNotify() {
         }
     } catch (Exception ex) {
         echo "Confluence notify skipped (no 'confluence-api-token' credential): ${ex.message}"
+    }
+}
+
+// Post an SLOC summary to a Jira issue on success. Fully opt-in: no-ops unless
+// JIRA_BASE_URL and JIRA_ISSUE_KEY are both set. The API token comes from the
+// 'jira-api-token' Secret Text credential (masked); absent credential => skip.
+// Uses the built-in `oxide-sloc jira` subcommand (no Jira plugin required).
+def runJiraNotify() {
+    if (!(env.JIRA_BASE_URL?.trim()) || !(env.JIRA_ISSUE_KEY?.trim())) {
+        return
+    }
+    def proj      = env.SLOC_PROJECT ?: 'project'
+    def outDir    = "${env.WS_POSIX}/${params.OUTPUT_SUBDIR}"
+    def reportUrl = env.BUILD_URL ? "${env.BUILD_URL}OxideSLOC_CI_Report_${proj}/" : ''
+    def mode      = params.JIRA_MODE ?: 'comment'
+    def fieldArg  = (mode == 'field' && params.JIRA_FIELD_ID?.trim())
+                        ? "--field-id '${params.JIRA_FIELD_ID.trim()}'" : ''
+    def linkArg   = reportUrl ? "--report-url '${reportUrl}'" : ''
+    try {
+        withCredentials([string(credentialsId: 'jira-api-token',
+                                variable: 'SLOC_JIRA_TOKEN')]) {
+            // Read $SLOC_JIRA_TOKEN inside sh (masked). The CLI also reads
+            // SLOC_JIRA_URL / SLOC_JIRA_USER / SLOC_JIRA_ISSUE from the env.
+            withEnv(["SLOC_JIRA_URL=${env.JIRA_BASE_URL}",
+                     "SLOC_JIRA_USER=${env.JIRA_USER ?: ''}",
+                     "SLOC_JIRA_ISSUE=${env.JIRA_ISSUE_KEY}"]) {
+                // --allow-private permits on-prem (HTTP / RFC-1918) Jira hosts.
+                shx """
+                    RJSON="\$(ls -1t '${outDir}'/result_*.json 2>/dev/null | head -1)"
+                    if [ -n "\$RJSON" ]; then
+                        SLOC_JIRA_TOKEN="\$SLOC_JIRA_TOKEN" "\$BINARY" jira "\$RJSON" \
+                            --mode '${mode}' ${fieldArg} ${linkArg} --allow-private || true
+                    else
+                        echo "Jira notify skipped: no result_*.json found in ${outDir}"
+                    fi
+                """
+            }
+        }
+    } catch (Exception ex) {
+        echo "Jira notify skipped (no 'jira-api-token' credential): ${ex.message}"
     }
 }
 
