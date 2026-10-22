@@ -272,6 +272,29 @@ The batch feature is also in the web UI: the **Batch Scan** card on the home pag
 pasted list of project paths (optionally `path, profile` per line), scans each one, and links every
 report from a combined index.
 
+#### Automated scans — run profiles and triggers
+
+A **webhook/polling schedule** (web UI → *Git Browser → Integrations*, or the `/api/schedules` endpoint)
+can fire a scan on specific repository activity. Tick the activities under **Run on**:
+
+- **Commit push** — any push to the watched branch
+- **PR / MR merged** — a pull/merge request merged into the watched (target) branch
+- **Tag pushed** / **Release published** — scans that tag
+
+Leaving every box unticked means *any* event triggers (the historical default). GitHub `pull_request`
+(merged) and `release` (published) deliveries are handled alongside push/tag.
+
+The declarative equivalent is a **run profile** JSON (conventionally `.oxide-sloc/run-profile.json`):
+
+```json
+{ "triggers": ["pr_merge", "release"], "target_branches": ["main", "develop"],
+  "scan_profile": "strict", "retain": 10 }
+```
+
+To see **deltas between runs** (the last run, or the last N), use **Compare Scans** (two builds),
+**Multi Compare** (several builds), and **Trend Reports** (full history) in the web UI, or
+`oxide-sloc diff baseline.json current.json`. `retain` controls how many recent runs are kept for comparison.
+
 Run `oxide-sloc <command> --help` for the full flag list.
 
 ### Web UI

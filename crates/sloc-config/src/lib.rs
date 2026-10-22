@@ -545,9 +545,128 @@ impl AppConfig {
     }
 }
 
+// ── run profile ─────────────────────────────────────────────────────────────
+
+/// Declarative "run profile": describes WHEN oxide-sloc should automatically
+/// scan a repository and WHICH scan profile to use, plus how many recent runs
+/// to retain for delta comparison. Persisted as JSON (conventionally
+/// `.oxide-sloc/run-profile.json`) and consumed by CI and the web schedule UI.
+///
+/// Trigger strings match `sloc_git::TriggerEvent`'s serde names:
+/// `push`, `pr_merge`, `tag`, `release`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunProfile {
+    /// Events that should trigger a scan. Empty = any event.
+    #[serde(default)]
+    pub triggers: Vec<String>,
+    /// Branches an event must target to qualify (empty = any branch).
+    #[serde(default)]
+    pub target_branches: Vec<String>,
+    /// Named scan profile from `.oxide-sloc.toml` to apply; `None` = base config.
+    #[serde(default)]
+    pub scan_profile: Option<String>,
+    /// How many recent runs to retain and compare against (deltas vs last N).
+    #[serde(default = "default_retain")]
+    pub retain: u32,
+}
+
+fn default_retain() -> u32 {
+    10
+}
+
+impl Default for RunProfile {
+    /// A sensible starting profile: scan when a PR merges into `main`, keep the
+    /// last 10 runs for trend/delta comparison.
+    fn default() -> Self {
+        Self {
+            triggers: vec!["pr_merge".to_owned()],
+            target_branches: vec!["main".to_owned()],
+            scan_profile: None,
+            retain: default_retain(),
+        }
+    }
+}
+
+impl RunProfile {
+    /// Load a run profile from a JSON file.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be read or parsed.
+    pub fn load(path: &Path) -> Result<Self> {
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("reading run profile {}", path.display()))?;
+        serde_json::from_str(&raw)
+            .with_context(|| format!("parsing run profile {}", path.display()))
+    }
+
+    /// Serialize this run profile to a pretty-printed JSON file.
+    ///
+    /// # Errors
+    /// Returns an error if the parent directory cannot be created or the file
+    /// cannot be written.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let json = serde_json::to_string_pretty(self)?;
+        fs::write(path, json).with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Whether a trigger event (by its serde name) should fire this profile.
+    /// An empty `triggers` list means "any event".
+    #[must_use]
+    pub fn fires_on(&self, event: &str) -> bool {
+        self.triggers.is_empty() || self.triggers.iter().any(|t| t == event)
+    }
+
+    /// Whether a branch qualifies under `target_branches` (empty = any).
+    #[must_use]
+    pub fn targets_branch(&self, branch: &str) -> bool {
+        self.target_branches.is_empty() || self.target_branches.iter().any(|b| b == branch)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── run profile ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_profile_default_and_gating() {
+        let rp = RunProfile::default();
+        assert_eq!(rp.retain, 10);
+        assert!(rp.fires_on("pr_merge"));
+        assert!(!rp.fires_on("push"));
+        assert!(rp.targets_branch("main"));
+        assert!(!rp.targets_branch("feature/x"));
+        // Empty lists mean "any".
+        let any = RunProfile {
+            triggers: vec![],
+            target_branches: vec![],
+            scan_profile: None,
+            retain: 5,
+        };
+        assert!(any.fires_on("tag"));
+        assert!(any.targets_branch("whatever"));
+    }
+
+    #[test]
+    fn run_profile_round_trips_through_disk() {
+        let dir = std::env::temp_dir().join(format!("sloc-rp-{}", std::process::id()));
+        let path = dir.join("run-profile.json");
+        let rp = RunProfile {
+            triggers: vec!["pr_merge".into(), "release".into()],
+            target_branches: vec!["main".into(), "develop".into()],
+            scan_profile: Some("strict".into()),
+            retain: 20,
+        };
+        rp.save(&path).unwrap();
+        let loaded = RunProfile::load(&path).unwrap();
+        assert_eq!(rp, loaded);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // ── validate_hex_color ───────────────────────────────────────────────────
 

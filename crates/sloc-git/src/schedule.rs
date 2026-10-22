@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::webhook::TriggerEvent;
+
 // ── enums ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,6 +65,10 @@ pub struct ScanSchedule {
     /// the same key is treated as a duplicate and does not re-trigger a scan.
     #[serde(default)]
     pub last_ci_build: Option<String>,
+    /// Which repository activities this schedule fires on. Empty means "any"
+    /// (back-compat with schedules saved before trigger filtering existed).
+    #[serde(default)]
+    pub trigger_events: Vec<TriggerEvent>,
     pub enabled: bool,
 }
 
@@ -88,8 +94,16 @@ impl ScanSchedule {
             last_scan_at: None,
             last_run_id: None,
             last_ci_build: None,
+            trigger_events: Vec::new(),
             enabled: true,
         }
+    }
+
+    /// Whether this schedule should fire for the given trigger event. An empty
+    /// `trigger_events` list means "any event" (the historical behaviour).
+    #[must_use]
+    pub fn fires_on(&self, event: TriggerEvent) -> bool {
+        self.trigger_events.is_empty() || self.trigger_events.contains(&event)
     }
 
     #[must_use]
@@ -107,6 +121,7 @@ impl ScanSchedule {
             last_scan_at: None,
             last_run_id: None,
             last_ci_build: None,
+            trigger_events: Vec::new(),
             enabled: true,
         }
     }

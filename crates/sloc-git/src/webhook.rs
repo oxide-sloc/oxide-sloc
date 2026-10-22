@@ -19,6 +19,34 @@ pub enum WebhookProvider {
     Ci,
 }
 
+/// What kind of repository activity triggered a webhook. Lets a schedule fire
+/// only on the events an operator opted into (e.g. "PR merged into main" or
+/// "a release was published") rather than on every push.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerEvent {
+    /// A branch push (ordinary commit).
+    Push,
+    /// A pull / merge request merged into its target branch.
+    PrMerge,
+    /// A tag was pushed.
+    Tag,
+    /// A release was published.
+    Release,
+}
+
+impl TriggerEvent {
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Push => "Commit push",
+            Self::PrMerge => "PR / MR merged",
+            Self::Tag => "Tag pushed",
+            Self::Release => "Release published",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookEvent {
     pub provider: WebhookProvider,
@@ -26,6 +54,13 @@ pub struct WebhookEvent {
     pub branch: String,
     pub commit_sha: String,
     pub pusher: Option<String>,
+    /// The activity that produced this event (push by default for back-compat).
+    #[serde(default = "default_push_event")]
+    pub event: TriggerEvent,
+}
+
+const fn default_push_event() -> TriggerEvent {
+    TriggerEvent::Push
 }
 
 // ── HMAC-SHA256 verification ──────────────────────────────────────────────────
@@ -89,7 +124,7 @@ pub fn parse_github_push(body: &[u8]) -> Result<WebhookEvent> {
     let ref_str = v["ref"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing field: ref"))?;
-    let branch = strip_refs_heads(ref_str);
+    let (branch, is_tag) = strip_ref(ref_str);
     let commit_sha = v["after"]
         .as_str()
         .filter(|s| !s.is_empty())
@@ -102,6 +137,75 @@ pub fn parse_github_push(body: &[u8]) -> Result<WebhookEvent> {
         branch,
         commit_sha,
         pusher,
+        event: if is_tag {
+            TriggerEvent::Tag
+        } else {
+            TriggerEvent::Push
+        },
+    })
+}
+
+/// Parse a GitHub `pull_request` webhook payload. Only a *merged* PR (action
+/// `closed` with `merged == true`) yields a `PrMerge` event; anything else
+/// returns an error so the caller can ignore it.
+///
+/// # Errors
+/// Returns an error if the body is not valid JSON, the PR was not merged, or
+/// required fields are missing.
+pub fn parse_github_pull_request(body: &[u8]) -> Result<WebhookEvent> {
+    let v: serde_json::Value = serde_json::from_slice(body)?;
+    let action = v["action"].as_str().unwrap_or_default();
+    let merged = v["pull_request"]["merged"].as_bool().unwrap_or(false);
+    if action != "closed" || !merged {
+        anyhow::bail!("pull_request event is not a merge (action={action}, merged={merged})");
+    }
+    let repo_url = require_str(&v, &["repository", "clone_url"], "repository.clone_url")?;
+    // The target branch the PR merged into (scan reflects the post-merge state).
+    let branch = require_str(
+        &v,
+        &["pull_request", "base", "ref"],
+        "pull_request.base.ref",
+    )?;
+    let commit_sha = require_str(
+        &v,
+        &["pull_request", "merge_commit_sha"],
+        "pull_request.merge_commit_sha",
+    )?;
+    let pusher = v["pull_request"]["user"]["login"]
+        .as_str()
+        .map(str::to_owned);
+    Ok(WebhookEvent {
+        provider: WebhookProvider::GitHub,
+        repo_url,
+        branch,
+        commit_sha,
+        pusher,
+        event: TriggerEvent::PrMerge,
+    })
+}
+
+/// Parse a GitHub `release` webhook payload. Only a `published` release yields a
+/// `Release` event; the scanned ref is the release tag.
+///
+/// # Errors
+/// Returns an error if the body is not valid JSON, the release was not
+/// published, or required fields are missing.
+pub fn parse_github_release(body: &[u8]) -> Result<WebhookEvent> {
+    let v: serde_json::Value = serde_json::from_slice(body)?;
+    let action = v["action"].as_str().unwrap_or_default();
+    if action != "published" {
+        anyhow::bail!("release event is not a publish (action={action})");
+    }
+    let repo_url = require_str(&v, &["repository", "clone_url"], "repository.clone_url")?;
+    let tag = require_str(&v, &["release", "tag_name"], "release.tag_name")?;
+    let pusher = v["release"]["author"]["login"].as_str().map(str::to_owned);
+    Ok(WebhookEvent {
+        provider: WebhookProvider::GitHub,
+        repo_url,
+        branch: tag.clone(),
+        commit_sha: tag,
+        pusher,
+        event: TriggerEvent::Release,
     })
 }
 
@@ -115,7 +219,7 @@ pub fn parse_gitlab_push(body: &[u8]) -> Result<WebhookEvent> {
     let ref_str = v["ref"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing field: ref"))?;
-    let branch = strip_refs_heads(ref_str);
+    let (branch, is_tag) = strip_ref(ref_str);
     let commit_sha = v["checkout_sha"]
         .as_str()
         .filter(|s| !s.is_empty())
@@ -128,6 +232,11 @@ pub fn parse_gitlab_push(body: &[u8]) -> Result<WebhookEvent> {
         branch,
         commit_sha,
         pusher,
+        event: if is_tag {
+            TriggerEvent::Tag
+        } else {
+            TriggerEvent::Push
+        },
     })
 }
 
@@ -151,12 +260,19 @@ pub fn parse_bitbucket_push(body: &[u8]) -> Result<WebhookEvent> {
         .ok_or_else(|| anyhow::anyhow!("missing field: push.changes[0].new.target.hash"))?
         .to_owned();
     let pusher = v["actor"]["display_name"].as_str().map(str::to_owned);
+    // Bitbucket marks tag refs with new.type == "tag".
+    let is_tag = push["type"].as_str() == Some("tag");
     Ok(WebhookEvent {
         provider: WebhookProvider::Bitbucket,
         repo_url,
         branch,
         commit_sha,
         pusher,
+        event: if is_tag {
+            TriggerEvent::Tag
+        } else {
+            TriggerEvent::Push
+        },
     })
 }
 
@@ -172,8 +288,14 @@ fn require_str(v: &serde_json::Value, path: &[&str], field: &str) -> Result<Stri
     Ok(s.to_owned())
 }
 
-fn strip_refs_heads(r: &str) -> String {
-    r.strip_prefix("refs/heads/").unwrap_or(r).to_owned()
+/// Strip a git ref down to its short name and report whether it was a tag.
+/// `refs/heads/main` -> ("main", false); `refs/tags/v1.2` -> ("v1.2", true).
+fn strip_ref(r: &str) -> (String, bool) {
+    if let Some(tag) = r.strip_prefix("refs/tags/") {
+        (tag.to_owned(), true)
+    } else {
+        (r.strip_prefix("refs/heads/").unwrap_or(r).to_owned(), false)
+    }
 }
 
 fn extract_bitbucket_clone_url(v: &serde_json::Value) -> Option<String> {
@@ -183,4 +305,63 @@ fn extract_bitbucket_clone_url(v: &serde_json::Value) -> Option<String> {
         .and_then(|e| e["href"].as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_push_to_branch_is_push_event() {
+        let body = br#"{"ref":"refs/heads/main","after":"abc123",
+            "repository":{"clone_url":"https://github.com/o/r.git"},"pusher":{"name":"nima"}}"#;
+        let e = parse_github_push(body).unwrap();
+        assert_eq!(e.event, TriggerEvent::Push);
+        assert_eq!(e.branch, "main");
+    }
+
+    #[test]
+    fn github_push_to_tag_is_tag_event() {
+        let body = br#"{"ref":"refs/tags/v1.2.0","after":"abc123",
+            "repository":{"clone_url":"https://github.com/o/r.git"}}"#;
+        let e = parse_github_push(body).unwrap();
+        assert_eq!(e.event, TriggerEvent::Tag);
+        assert_eq!(e.branch, "v1.2.0");
+    }
+
+    #[test]
+    fn github_merged_pr_yields_prmerge_on_base_branch() {
+        let body = br#"{"action":"closed","repository":{"clone_url":"https://github.com/o/r.git"},
+            "pull_request":{"merged":true,"base":{"ref":"develop"},
+            "merge_commit_sha":"deadbeef","user":{"login":"nima"}}}"#;
+        let e = parse_github_pull_request(body).unwrap();
+        assert_eq!(e.event, TriggerEvent::PrMerge);
+        assert_eq!(e.branch, "develop");
+        assert_eq!(e.commit_sha, "deadbeef");
+    }
+
+    #[test]
+    fn github_unmerged_pr_close_is_rejected() {
+        let body = br#"{"action":"closed","repository":{"clone_url":"https://github.com/o/r.git"},
+            "pull_request":{"merged":false,"base":{"ref":"main"},"merge_commit_sha":null}}"#;
+        assert!(parse_github_pull_request(body).is_err());
+    }
+
+    #[test]
+    fn github_published_release_yields_release_on_tag() {
+        let body =
+            br#"{"action":"published","repository":{"clone_url":"https://github.com/o/r.git"},
+            "release":{"tag_name":"v2.0.0","author":{"login":"nima"}}}"#;
+        let e = parse_github_release(body).unwrap();
+        assert_eq!(e.event, TriggerEvent::Release);
+        assert_eq!(e.branch, "v2.0.0");
+        assert_eq!(e.commit_sha, "v2.0.0");
+    }
+
+    #[test]
+    fn github_draft_release_is_rejected() {
+        let body = br#"{"action":"created","repository":{"clone_url":"https://github.com/o/r.git"},
+            "release":{"tag_name":"v2.0.0"}}"#;
+        assert!(parse_github_release(body).is_err());
+    }
 }

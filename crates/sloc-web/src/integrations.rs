@@ -95,6 +95,9 @@ use super::{AppState, CspNonce};
     .tier-radio input[type=radio]{width:auto;accent-color:var(--oxide-2);}
     .sched-auto-row{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-radius:8px;background:var(--surface-2);border:1px solid var(--line);margin-bottom:8px;}
     .sched-auto-label{font-size:13px;font-weight:600;}
+    .trigger-checks{display:flex;flex-wrap:wrap;gap:14px;}
+    .trigger-check{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text);}
+    .trigger-check input{width:15px;height:15px;accent-color:var(--oxide);}
     .toggle-switch{position:relative;display:inline-block;width:40px;height:22px;}
     .toggle-switch input{opacity:0;width:0;height:0;}
     .toggle-slider{position:absolute;cursor:pointer;inset:0;background:var(--line-strong);border-radius:999px;transition:.2s;}
@@ -248,6 +251,17 @@ use super::{AppState, CspNonce};
           <div class="form-group">
             <div class="label-row"><label>Provider</label><button type="button" class="info-btn" aria-label="About provider">i<span class="info-tip">The git hosting platform sending webhook payloads. Each provider signs payloads differently — select the one that matches where your repository is hosted.</span></button></div>
             <select id="fProvider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option></select>
+          </div>
+        </div>
+        <div class="form-row" id="triggerRow">
+          <div class="form-group">
+            <div class="label-row"><label>Run on</label><button type="button" class="info-btn" aria-label="About triggers">i<span class="info-tip">Which repository activities trigger a scan. Leave all unchecked to run on any event. "PR / MR merged" scans the target branch after a pull/merge request is merged; "Release published" and "Tag pushed" scan that tag.</span></button></div>
+            <div class="trigger-checks">
+              <label class="trigger-check"><input type="checkbox" name="fTrigger" value="push" checked/> Commit push</label>
+              <label class="trigger-check"><input type="checkbox" name="fTrigger" value="pr_merge" checked/> PR / MR merged</label>
+              <label class="trigger-check"><input type="checkbox" name="fTrigger" value="tag"/> Tag pushed</label>
+              <label class="trigger-check"><input type="checkbox" name="fTrigger" value="release"/> Release published</label>
+            </div>
           </div>
         </div>
         <div class="form-row sx-6aa34d74" id="pollRow" >
@@ -405,6 +419,8 @@ use super::{AppState, CspNonce};
 
     async function addSchedule() {
       var kind = document.getElementById('fKind').value;
+      var triggers = [];
+      document.querySelectorAll('input[name=fTrigger]:checked').forEach(function(cb){ triggers.push(cb.value); });
       var body = {
         label: document.getElementById('fLabel').value.trim() || 'Unnamed',
         repo_url: document.getElementById('fRepo').value.trim(),
@@ -412,6 +428,7 @@ use super::{AppState, CspNonce};
         kind: kind,
         provider: kind === 'webhook' ? document.getElementById('fProvider').value : null,
         interval_secs: kind === 'poll' ? parseInt(document.getElementById('fInterval').value, 10) : null,
+        trigger_events: triggers,
       };
       if (!body.repo_url) { showAddStatus('Repository URL is required.', false); return; }
       var r = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -453,9 +470,13 @@ use super::{AppState, CspNonce};
           : rawSecret.length > 0 ? '••••' : '';
         var secret = maskedSecret ? '<div>Secret: <span class="sched-secret">' + maskedSecret + '</span></div>' : '';
         var last = s.last_scan_at ? 'Last scanned: ' + new Date(s.last_scan_at).toLocaleString() : 'Not yet scanned';
+        var trigNames = { push: 'Commit push', pr_merge: 'PR / MR merged', tag: 'Tag pushed', release: 'Release published' };
+        var trigs = (s.trigger_events && s.trigger_events.length)
+          ? s.trigger_events.map(function(t){ return esc(trigNames[t] || t); }).join(', ')
+          : 'Any event';
         return '<div class="sched-item">'
           + '<div class="sched-header">' + badge + '<span class="sched-label">' + esc(s.label) + '</span></div>'
-          + '<div class="sched-meta"><div>' + esc(s.repo_url) + ' \u00b7 <strong>' + esc(s.branch) + '</strong>' + extra + '</div>' + secret + '<div>' + last + '</div></div>'
+          + '<div class="sched-meta"><div>' + esc(s.repo_url) + ' \u00b7 <strong>' + esc(s.branch) + '</strong>' + extra + '</div><div>Runs on: ' + trigs + '</div>' + secret + '<div>' + last + '</div></div>'
           + '<div class="sched-actions"><button class="btn btn-danger btn-sm" data-action="delete-schedule" data-id="' + esc(s.id) + '" type="button">Remove</button></div>'
           + '</div>';
       }).join('');

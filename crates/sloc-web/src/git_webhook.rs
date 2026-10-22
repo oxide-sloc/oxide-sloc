@@ -20,7 +20,8 @@ use tracing::info;
 use sloc_git::{
     ScanSchedule, ScanScheduleKind, ScanScheduleProvider, ScheduleStore, WebhookEvent,
     WebhookProvider, clone_or_fetch, create_worktree, destroy_worktree, get_sha,
-    parse_bitbucket_push, parse_github_push, parse_gitlab_push,
+    parse_bitbucket_push, parse_github_pull_request, parse_github_push, parse_github_release,
+    parse_gitlab_push,
     webhook::{verify_bitbucket_sig, verify_github_sig},
 };
 
@@ -42,6 +43,10 @@ pub struct CreateScheduleRequest {
     pub interval_secs: Option<u64>,
     /// Webhook HMAC secret. If omitted, a random secret is auto-generated.
     pub webhook_secret: Option<String>,
+    /// Which repository activities fire this schedule (`push`, `pr_merge`,
+    /// `tag`, `release`). Omitted / empty = any event (back-compat).
+    #[serde(default)]
+    pub trigger_events: Vec<sloc_git::TriggerEvent>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,9 +129,10 @@ pub async fn api_delete_schedule(
 // ── webhook receivers ─────────────────────────────────────────────────────────
 
 /// Validate the X-GitHub-Event header; return a short-circuit `Response` for
-/// missing or non-push events, or `None` to continue processing a push.
+/// missing or unhandled events, or `None` to continue processing a supported
+/// event (`push`, `pull_request`, or `release`).
 fn check_github_event_header(event: &str) -> Option<Response> {
-    if event == "push" {
+    if matches!(event, "push" | "pull_request" | "release") {
         return None;
     }
     let resp = if event.is_empty() {
@@ -135,7 +141,7 @@ fn check_github_event_header(event: &str) -> Option<Response> {
         );
         (StatusCode::BAD_REQUEST, "missing X-GitHub-Event header").into_response()
     } else {
-        info!(event = %event, "github webhook: ignoring non-push event");
+        info!(event = %event, "github webhook: ignoring unhandled event");
         StatusCode::OK.into_response()
     };
     Some(resp)
@@ -164,18 +170,31 @@ pub async fn handle_github_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Some(resp) = check_github_event_header(&header_str(&headers, "x-github-event")) {
+    let event_kind = header_str(&headers, "x-github-event");
+    if let Some(resp) = check_github_event_header(&event_kind) {
         return resp;
     }
-    let event = match parse_github_push(&body) {
+    // Route to the parser for the delivered event type. A pull_request that is
+    // not a merge, or a non-published release, parses as an error and is ACKed
+    // as an ignorable no-op (200) rather than a client error.
+    let parsed = match event_kind.as_str() {
+        "pull_request" => parse_github_pull_request(&body),
+        "release" => parse_github_release(&body),
+        _ => parse_github_push(&body),
+    };
+    let event = match parsed {
         Ok(e) => e,
         Err(e) => {
-            info!(error = %e, "github webhook payload parse failed");
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("invalid github push payload: {e}"),
-            )
-                .into_response();
+            if event_kind == "push" {
+                info!(error = %e, "github webhook payload parse failed");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid github push payload: {e}"),
+                )
+                    .into_response();
+            }
+            info!(event = %event_kind, reason = %e, "github webhook: ignoring event");
+            return StatusCode::OK.into_response();
         }
     };
     let sig = header_str(&headers, "x-hub-signature-256");
@@ -331,6 +350,7 @@ pub async fn handle_ci_webhook(
         branch,
         commit_sha: commit_ref,
         pusher: build_key,
+        event: sloc_git::TriggerEvent::Push,
     };
     spawn_scans(state, event, fresh);
     StatusCode::ACCEPTED.into_response()
@@ -410,7 +430,11 @@ async fn dispatch_hmac_webhook<F>(
     F: Fn(&[u8], &str, &str) -> bool,
 {
     let store = state.schedules.lock().await;
-    let candidates = store.find_matching(&event.repo_url, &event.branch);
+    let candidates: Vec<&ScanSchedule> = store
+        .find_matching(&event.repo_url, &event.branch)
+        .into_iter()
+        .filter(|s| s.fires_on(event.event))
+        .collect();
     let candidate_count = candidates.len();
     let matching: Vec<ScanSchedule> = candidates
         .into_iter()
@@ -438,7 +462,11 @@ async fn dispatch_hmac_webhook<F>(
 
 async fn dispatch_token_webhook(state: AppState, event: WebhookEvent, token: &str) {
     let store = state.schedules.lock().await;
-    let candidates = store.find_matching(&event.repo_url, &event.branch);
+    let candidates: Vec<&ScanSchedule> = store
+        .find_matching(&event.repo_url, &event.branch)
+        .into_iter()
+        .filter(|s| s.fires_on(event.event))
+        .collect();
     let candidate_count = candidates.len();
     let matching: Vec<ScanSchedule> = candidates
         .into_iter()
@@ -614,7 +642,7 @@ fn fetch_and_resolve_sha(repo: &str, branch: &str, clones_dir: &Path) -> anyhow:
 // ── small helpers ─────────────────────────────────────────────────────────────
 
 fn build_schedule(req: CreateScheduleRequest) -> ScanSchedule {
-    if req.kind == "poll" {
+    let mut schedule = if req.kind == "poll" {
         ScanSchedule::new_poll(
             req.repo_url,
             req.branch,
@@ -635,7 +663,9 @@ fn build_schedule(req: CreateScheduleRequest) -> ScanSchedule {
             req.label,
             req.webhook_secret,
         )
-    }
+    };
+    schedule.trigger_events = req.trigger_events;
+    schedule
 }
 
 fn header_str(headers: &HeaderMap, name: &str) -> String {
@@ -1010,6 +1040,7 @@ mod tests {
             provider: Some("github".into()),
             interval_secs: None,
             webhook_secret: Some("secret123".into()),
+            trigger_events: Vec::new(),
         };
         let s = build_schedule(req);
         assert_eq!(s.kind, ScanScheduleKind::Webhook);
@@ -1029,6 +1060,7 @@ mod tests {
             provider: None,
             interval_secs: Some(600),
             webhook_secret: None,
+            trigger_events: Vec::new(),
         };
         let s = build_schedule(req);
         assert_eq!(s.kind, ScanScheduleKind::Poll);
@@ -1045,6 +1077,7 @@ mod tests {
             provider: None,
             interval_secs: None,
             webhook_secret: None,
+            trigger_events: Vec::new(),
         };
         let s = build_schedule(req);
         assert_eq!(s.kind, ScanScheduleKind::Poll);
@@ -1061,6 +1094,7 @@ mod tests {
             provider: Some("github".into()),
             interval_secs: None,
             webhook_secret: None,
+            trigger_events: Vec::new(),
         };
         let s = build_schedule(req);
         assert_eq!(s.provider, ScanScheduleProvider::GitHub);
@@ -1076,6 +1110,7 @@ mod tests {
             provider: Some("gitlab".into()),
             interval_secs: None,
             webhook_secret: None,
+            trigger_events: Vec::new(),
         };
         let s = build_schedule(req);
         assert_eq!(s.provider, ScanScheduleProvider::GitLab);
@@ -1091,6 +1126,7 @@ mod tests {
             provider: Some("bitbucket".into()),
             interval_secs: None,
             webhook_secret: None,
+            trigger_events: Vec::new(),
         };
         let s = build_schedule(req);
         assert_eq!(s.provider, ScanScheduleProvider::Bitbucket);
@@ -1106,6 +1142,7 @@ mod tests {
             provider: Some("unknown".into()),
             interval_secs: None,
             webhook_secret: None,
+            trigger_events: Vec::new(),
         };
         let s = build_schedule(req);
         assert_eq!(s.provider, ScanScheduleProvider::Any);
@@ -1146,6 +1183,7 @@ mod tests {
             provider: None,
             interval_secs: None,
             webhook_secret: None,
+            trigger_events: Vec::new(),
         };
         let s = build_schedule(req);
         assert_eq!(s.provider, ScanScheduleProvider::Any);
@@ -1162,6 +1200,7 @@ mod tests {
             provider: Some("github".into()),
             interval_secs: None,
             webhook_secret: None,
+            trigger_events: Vec::new(),
         };
         let s = build_schedule(req);
         // When no secret is provided, the schedule either has None or an
@@ -1179,6 +1218,7 @@ mod tests {
             provider: None,
             interval_secs: Some(60),
             webhook_secret: None,
+            trigger_events: Vec::new(),
         };
         let s = build_schedule(req);
         assert_eq!(s.kind, ScanScheduleKind::Poll);
@@ -1188,12 +1228,19 @@ mod tests {
     // ── check_github_event_header — additional event types ────────────────────
 
     #[test]
-    fn github_pull_request_event_returns_200() {
-        let resp = check_github_event_header("pull_request");
+    fn github_pull_request_event_is_handled() {
+        // pull_request and release are now first-class handled events (merge /
+        // publish trigger scans), so the header check lets them through.
         assert!(
-            resp.is_some(),
-            "pull_request must return a response (not push)"
+            check_github_event_header("pull_request").is_none(),
+            "pull_request is a handled event and must continue processing"
         );
+        assert!(
+            check_github_event_header("release").is_none(),
+            "release is a handled event and must continue processing"
+        );
+        // An unrelated event is still short-circuited.
+        assert!(check_github_event_header("issues").is_some());
     }
 
     #[test]
@@ -1331,6 +1378,7 @@ mod tests {
             provider: Some("github".into()),
             interval_secs: Some(300),
             webhook_secret: Some("sec".into()),
+            trigger_events: Vec::new(),
         };
         let json = serde_json::to_string(&req).expect("must serialize");
         let deser: CreateScheduleRequest = serde_json::from_str(&json).expect("must deserialize");
