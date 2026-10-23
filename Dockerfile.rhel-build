@@ -70,7 +70,7 @@ RUN dnf -y --setopt=install_weak_deps=false install \
 # (Scorecard Pinned-Dependencies). To update after a rustup.rs change:
 #   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh
 #   sha256sum rustup-init.sh
-ARG RUSTUP_INIT_SHA256=7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af
+ARG RUSTUP_INIT_SHA256=9502b514362a21096210d498f143b8cdacda365d3dfcf45e8f5541e089ccafc0
 ENV RUSTUP_HOME=/opt/rustup \
     CARGO_HOME=/opt/cargo \
     PATH=/opt/cargo/bin:$PATH
