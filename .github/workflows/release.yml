@@ -822,17 +822,24 @@ jobs:
             fi
           done
 
-      - name: Create Windows zip archive
+      - name: Create Windows zip + tar.gz archives
         shell: bash
         run: |
-          # Package the exe as oxide-sloc.exe inside the zip so that winget's
-          # NestedInstallerFiles RelativeFilePath: oxide-sloc.exe resolves correctly.
+          # Package the exe as oxide-sloc.exe inside BOTH archives: the name lets
+          # winget's NestedInstallerFiles RelativeFilePath: oxide-sloc.exe resolve,
+          # and lets install.sh (the default scripts/run.sh prebuilt path) unpack it.
+          # install.sh PREFERS the .tar.gz on locked-down hosts where `unzip` is
+          # absent and PowerShell is restricted but GNU tar (bundled with Git Bash)
+          # works. Ship both every release — update-dist.yml later clobbers them with
+          # the MSVC-signed build, but the release must not depend on that follow-on
+          # running, or it is left without the .tar.gz the run.sh path needs. Both are
+          # packaged from the SAME exe so they carry a byte-identical binary.
           if [[ -f "artifacts/oxide-sloc-windows-x86_64.exe" ]]; then
             cp artifacts/oxide-sloc-windows-x86_64.exe artifacts/oxide-sloc.exe
-            cd artifacts
-            zip oxide-sloc-windows-x64.zip oxide-sloc.exe
-            rm oxide-sloc.exe
-            echo "Created oxide-sloc-windows-x64.zip"
+            ( cd artifacts && zip oxide-sloc-windows-x64.zip oxide-sloc.exe )
+            tar -czf artifacts/oxide-sloc-windows-x64.tar.gz -C artifacts oxide-sloc.exe
+            rm artifacts/oxide-sloc.exe
+            echo "Created oxide-sloc-windows-x64.zip and oxide-sloc-windows-x64.tar.gz"
           fi
 
       - name: Generate SHA-256 checksums
@@ -874,6 +881,7 @@ jobs:
             | Linux x86-64 | `oxide-sloc-linux-x86_64` | Static binary (musl) — works on any x86-64 Linux |
             | Linux arm64 | `oxide-sloc-linux-arm64` | Requires glibc ≥ 2.17 (Raspberry Pi 4, AWS Graviton, Ampere, etc.) |
             | Windows x86-64 | `oxide-sloc-windows-x86_64.exe` | Windows 10/11 |
+            | Windows x86-64 (archive) | `oxide-sloc-windows-x64.zip` / `oxide-sloc-windows-x64.tar.gz` | Same exe, zipped/tarred — used by `scripts/run.sh` + `install.sh` prebuilt path (`.tar.gz` preferred on locked-down hosts) |
             | macOS x86-64 | `oxide-sloc-macos-x86_64` | Intel Mac |
             | macOS Apple Silicon | `oxide-sloc-macos-arm64` | M1/M2/M3/M4 Mac |
             | Vendor archive | `vendor.tar.gz.aa` + `.ab` + `.ac` + `vendor.checksums.sha256` | Rust dependency sources (split gzip parts) for air-gapped builds |

@@ -9,10 +9,31 @@ Usage:
 """
 
 import json
+import os
 import sys
 
 MARKER = "<!-- oxide-sloc-report -->"  # sticky-comment identity marker
 _TABLE_SEP = "|---|--:|"  # right-aligned two-column Markdown table separator
+
+# Logo path committed in the repo; served via the runner's own host so it
+# resolves on github.com AND a private GitHub Enterprise instance alike.
+_LOGO_PATH = "crates/sloc-web/assets/logo/logo-text.png"
+
+
+def _logo_url() -> str:
+    """Build a host-correct raw URL for the committed logo, or "" when unknown.
+
+    Derives the host from the Actions env (``GITHUB_SERVER_URL``) so it points at
+    github.com on the public cloud and at the internal hostname on a self-hosted
+    GitHub Enterprise instance (works on an air-gapped GHE network). Returns ""
+    when run outside Actions so a comment never shows a broken-image icon.
+    """
+    server = os.environ.get("GITHUB_SERVER_URL", "").strip().rstrip("/")
+    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if not server or not repo:
+        return ""
+    ref = os.environ.get("GITHUB_SHA", "").strip() or "main"
+    return f"{server}/{repo}/raw/{ref}/{_LOGO_PATH}"
 
 
 def _fmt(n) -> str:
@@ -35,7 +56,7 @@ def _delta(n) -> str:
         return ""
     if v == 0:
         return "±0"
-    return ("🟢 +" if v > 0 else "🔴 −") + _fmt(abs(v))
+    return ("**+" if v > 0 else "**-") + _fmt(abs(v)) + "**"
 
 
 def _load(path):
@@ -47,10 +68,19 @@ def _load(path):
 
 
 def _header_lines(tool) -> list:
-    out = [MARKER, "## 📊 oxide-sloc report", ""]
+    # A centered logo + title banner. GitHub strips CSS from comments, so the
+    # modern look comes from a <div align="center"> with the committed wordmark
+    # and an <h3>; the logo is omitted cleanly when no host is resolvable.
     ver = tool.get("version", "")
+    logo = _logo_url()
+    out = [MARKER, '<div align="center">']
+    if logo:
+        out.append(f'  <img src="{logo}" alt="oxide-sloc" width="168">')
+        out.append("  <br>")
+    out.append("  <h3>oxide-sloc report</h3>")
     if ver:
-        out.append(f"<sub>oxide-sloc v{ver}</sub>\n")
+        out.append(f"  <sub>v{ver}</sub>")
+    out += ["</div>", ""]
     return out
 
 

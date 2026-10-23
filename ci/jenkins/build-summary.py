@@ -30,7 +30,6 @@ import sys
 # Oxide palette (matches the dashboard / CLAUDE.md canon).
 _PALETTE = ["#c45c10", "#2a6846", "#d4a017", "#4472c4", "#805099",
             "#2e75b6", "#70ad47", "#e07038", "#9e480e", "#156082"]
-_BAR_CELLS = 22  # width of the Unicode bar in cells
 
 
 def _fmt(n) -> str:
@@ -67,30 +66,19 @@ def _languages(data):
     return rows
 
 
-def _unicode_bar(value, max_value, cells=_BAR_CELLS):
-    if max_value <= 0:
-        return "░" * cells
-    filled = int(round(cells * value / max_value))
-    filled = max(1 if value > 0 else 0, min(cells, filled))
-    return "█" * filled + "░" * (cells - filled)
-
-
 def build_description(data, scan_path, tests, coverage, style):
     """Plain-text, emoji-free description.
 
-    Jenkins renders this in a proportional font, so we never rely on
-    space-padded columns to line up *before* variable-width text. The language
-    chart puts a FIXED-width bar first (every bar is the same number of block
-    glyphs), so the value + label that follow it start at the same x on every
-    row regardless of the page font.
+    Clean key/value lines only — no rule bars, no block-glyph bar chart. Jenkins
+    renders this in a proportional font, so decorative alignment never lines up
+    reliably anyway; a simple "Label: value" layout reads cleanly in any font.
     """
     t = data.get("summary_totals", {})
     tool = data.get("tool", {}) if isinstance(data.get("tool"), dict) else {}
     langs = _languages(data)
-    maxv = langs[0][1] if langs else 0
 
-    title = f"oxide-sloc  -  {scan_path}" if scan_path else "oxide-sloc report"
-    lines = [title, "-" * 60]
+    title = f"oxide-sloc  ·  {scan_path}" if scan_path else "oxide-sloc report"
+    lines = [title, ""]
 
     lines.append(
         "Totals:   "
@@ -113,14 +101,25 @@ def build_description(data, scan_path, tests, coverage, style):
 
     if langs:
         top = langs[:8]
-        cw = max(len(_fmt(v)) for _, v in top)
         lines.append("")
         lines.append("Languages by code lines")
         for name, code in top:
-            lines.append(f"  {_unicode_bar(code, maxv)}  {_fmt(code).rjust(cw)}  {name}")
+            lines.append(f"  {name}: {_fmt(code)}")
         if len(langs) > len(top):
             lines.append(f"  ... and {len(langs) - len(top)} more")
     return "\n".join(lines)
+
+
+def _wordmark() -> str:
+    """Self-contained text wordmark (no external image fetch → air-gap safe)."""
+    return (
+        '<span style="display:inline-flex;align-items:center;gap:7px">'
+        '<span style="display:inline-flex;align-items:center;justify-content:center;'
+        'width:26px;height:26px;border-radius:7px;background:#556b2f;color:#fff;'
+        'font-weight:900;font-size:15px;line-height:1">O</span>'
+        '<span style="font-weight:800;font-size:15px;color:#556b2f;'
+        'letter-spacing:-.01em">oxide-sloc</span></span>'
+    )
 
 
 def build_html(data, scan_path, tests, coverage, style):
@@ -132,11 +131,14 @@ def build_html(data, scan_path, tests, coverage, style):
     def esc(x):
         return html.escape(str(x))
 
+    # Metric table: real 1px cell borders + generous padding so each figure reads
+    # as its own padded card even in Jenkins' bare badge frame.
     metric_cells = "".join(
-        f'<td style="padding:6px 14px;text-align:center">'
-        f'<div style="font-size:20px;font-weight:800;color:#c45c10">{_fmt(v)}</div>'
-        f'<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;'
-        f'color:#8a6a5a">{esc(lbl)}</div></td>'
+        f'<td style="padding:12px 20px;text-align:center;border:1px solid #e4dace;'
+        f'background:#fcf9f5">'
+        f'<div style="font-size:21px;font-weight:800;color:#c45c10;line-height:1.1">{_fmt(v)}</div>'
+        f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;'
+        f'letter-spacing:.07em;color:#8a6a5a;margin-top:5px">{esc(lbl)}</div></td>'
         for lbl, v in [
             ("Code", t.get("code_lines", 0)),
             ("Comments", t.get("comment_lines", 0)),
@@ -150,10 +152,11 @@ def build_html(data, scan_path, tests, coverage, style):
         colour = _PALETTE[i % len(_PALETTE)]
         pct = code / maxv * 100 if maxv else 0
         bars.append(
-            '<div style="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px">'
-            f'<span style="width:88px;font-weight:600;color:#2d1a0e;text-align:right">{esc(name)}</span>'
-            f'<span style="flex:0 0 220px;background:#efe6dd;border-radius:4px;overflow:hidden">'
-            f'<span style="display:block;height:13px;width:{pct:.1f}%;background:{colour}"></span></span>'
+            '<div style="display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12px">'
+            f'<span style="width:92px;font-weight:600;color:#2d1a0e;text-align:right">{esc(name)}</span>'
+            f'<span style="flex:0 0 230px;background:#efe6dd;border-radius:5px;overflow:hidden">'
+            f'<span style="display:block;height:14px;width:{pct:.1f}%;background:{colour};'
+            f'border-radius:5px"></span></span>'
             f'<span style="color:#5a3820;font-weight:700">{_fmt(code)}</span></div>'
         )
 
@@ -165,20 +168,25 @@ def build_html(data, scan_path, tests, coverage, style):
     if coverage not in (None, "", "N/A"):
         chips.append(f"<b>Coverage</b> {esc(coverage)}%")
     chip_row = (
-        '<div style="margin:8px 0;font-size:12px;color:#5a3820">'
+        '<div style="margin:12px 0 4px;font-size:12px;color:#5a3820">'
         + "  &middot;  ".join(chips) + "</div>"
     ) if chips else ""
 
-    ver = f" · v{esc(tool['version'])}" if tool.get("version") else ""
+    ver = f" &middot; v{esc(tool['version'])}" if tool.get("version") else ""
+    scan_meta = f'{esc(scan_path)}{ver}' if scan_path else f'report{ver}'
     return (
-        '<div style="font-family:Inter,system-ui,Segoe UI,sans-serif;max-width:640px">'
-        f'<div style="font-weight:800;color:#c45c10;font-size:14px;margin-bottom:6px">'
-        f'oxide-sloc — {esc(scan_path or "report")}{ver}</div>'
-        '<table style="border-collapse:collapse;background:#faf6f1;border:1px solid #e0d8d0;'
-        f'border-radius:10px;margin-bottom:8px"><tr>{metric_cells}</tr></table>'
+        '<div style="font-family:Inter,system-ui,Segoe UI,sans-serif;max-width:660px;'
+        'background:#faf6f1;border:1px solid #e0d8d0;border-radius:14px;'
+        'padding:18px 20px;color:#2d1a0e">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;'
+        'gap:12px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #ece3d8">'
+        f'{_wordmark()}'
+        f'<span style="font-size:12px;color:#8a6a5a">{scan_meta}</span></div>'
+        '<table style="border-collapse:collapse;border-radius:10px;overflow:hidden;'
+        f'margin-bottom:4px"><tr>{metric_cells}</tr></table>'
         f'{chip_row}'
-        '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;'
-        'color:#8a6a5a;margin:6px 0 2px">Language breakdown</div>'
+        '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;'
+        'color:#8a6a5a;margin:14px 0 6px">Language breakdown</div>'
         + "".join(bars) +
         "</div>"
     )

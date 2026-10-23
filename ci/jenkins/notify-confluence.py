@@ -195,13 +195,33 @@ def _attach(api: str, pid: str, auth: str, out_dir: str) -> None:
             print(f"notify-confluence: attachment '{name}' upload returned {status} - non-fatal.")
 
 
+def _top_languages(data: dict, limit: int = 10) -> list:
+    """Return the top languages by code lines: list of (name, code_lines)."""
+    rows = []
+    for e in data.get("totals_by_language", []):
+        if not isinstance(e, dict):
+            continue
+        name = e.get("language", "?")
+        if isinstance(name, dict):
+            name = name.get("display_name") or name.get("name") or "?"
+        rows.append((str(name), int(e.get("code_lines", 0))))
+    rows.sort(key=lambda x: x[1], reverse=True)
+    return rows[:limit]
+
+
 def _storage_body(data: dict, report_url: str) -> str:
-    """Confluence 'storage' (XHTML) body summarising the scan."""
+    """Confluence 'storage' (XHTML) body summarising the scan.
+
+    Confluence styles native tables/headings itself (borders, padding, header
+    shading), so the clean look comes from well-structured markup, not inline CSS
+    (which Confluence strips from storage format).
+    """
     t = data.get("summary_totals", {})
     tool = data.get("tool", {}) if isinstance(data.get("tool"), dict) else {}
     job = os.environ.get("JOB_NAME", "")
     build = os.environ.get("BUILD_NUMBER", "")
-    rows = "".join(
+
+    metric_rows = "".join(
         f"<tr><th>{k}</th><td>{_fmt(v)}</td></tr>"
         for k, v in [
             ("Code lines", t.get("code_lines", 0)),
@@ -210,6 +230,23 @@ def _storage_body(data: dict, report_url: str) -> str:
             ("Files analyzed", t.get("files_analyzed", 0)),
         ]
     )
+    summary_table = (
+        "<table><thead><tr><th>Metric</th><th>Value</th></tr></thead>"
+        f"<tbody>{metric_rows}</tbody></table>"
+    )
+
+    langs = _top_languages(data)
+    lang_section = ""
+    if langs:
+        lang_rows = "".join(
+            f"<tr><td>{name}</td><td>{_fmt(code)}</td></tr>" for name, code in langs
+        )
+        lang_section = (
+            "<h3>Language breakdown</h3>"
+            "<table><thead><tr><th>Language</th><th>Code lines</th></tr></thead>"
+            f"<tbody>{lang_rows}</tbody></table>"
+        )
+
     link = (
         f'<p><a href="{report_url}">Open the full oxide-sloc report</a></p>'
         if report_url else ""
@@ -218,8 +255,10 @@ def _storage_body(data: dict, report_url: str) -> str:
     if job:
         meta += f" · job {job}" + (f" #{build}" if build else "")
     return (
+        "<h2>oxide-sloc report</h2>"
         f"<p>{meta}</p>"
-        f"<table><tbody>{rows}</tbody></table>"
+        f"{summary_table}"
+        f"{lang_section}"
         f"{link}"
         "<p><em>Updated automatically by the oxide-sloc CI pipeline.</em></p>"
     )
