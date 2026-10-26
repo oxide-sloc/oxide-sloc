@@ -124,6 +124,11 @@ jobs:
           exit-code: '0'          # report-only — never gates the image publish
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          # The `severity` input filters only the table/exit-code; by default the
+          # SARIF (what lands in code scanning) still carries every severity, so
+          # UNKNOWN/LOW OS-package noise (e.g. a tzdata timezone-DB bump) opens
+          # alerts that contradict the HIGH,CRITICAL policy. Limit the SARIF too.
+          limit-severities-for-sarif: true
         continue-on-error: true
 
       - name: Upload Trivy image SARIF to code scanning

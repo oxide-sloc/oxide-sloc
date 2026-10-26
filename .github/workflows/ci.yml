@@ -84,6 +84,10 @@ jobs:
           exit-code: '0'          # report-only — never gates CI
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          # `severity` filters only the table/exit-code; the SARIF uploaded to
+          # code scanning carries every severity unless this is set, so sub-HIGH
+          # noise would open alerts that contradict the HIGH,CRITICAL policy.
+          limit-severities-for-sarif: true
           # Path-scoped misconfig suppressions for the build-only (FROM scratch)
           # image and the SLOC test fixture — see .trivyignore.yaml for why.
           trivyignores: .trivyignore.yaml
