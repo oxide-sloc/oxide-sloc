@@ -1018,6 +1018,14 @@ def runAnalyze() {
     def configArg    = (params.CI_PRESET != 'none')
                         ? "--config 'ci/sloc-ci-${params.CI_PRESET}.toml'"
                         : ''
+    // These six output args are exactly what the interactive shorthand
+    // `oxide-sloc analyze <path> --all-formats --out-dir <DIR>` expands to
+    // (result/report .json/.html/.pdf/.csv/.xlsx + scan-config) — same binary,
+    // same sloc-report writers, same bytes. CI keeps them explicit rather than
+    // using --all-formats because it needs per-project slug filenames
+    // (result_<slug>.json) that the dashboard/bundle/test -s steps read, and it
+    // gates HTML/PDF behind REPORT_HTML/REPORT_PDF; --all-formats uses fixed
+    // canonical names and always writes all six.
     def jsonArg      = "--json-out  '${outDir}/result_${projectSlug}.json'"
     def csvArg       = "--csv-out   '${outDir}/report_${projectSlug}.csv'"
     def xlsxArg      = "--xlsx-out  '${outDir}/report_${projectSlug}.xlsx'"

@@ -195,6 +195,18 @@ struct AnalyzeArgs {
     #[arg(long, short = 'x', value_name = "PATH")]
     xlsx_out: Option<PathBuf>,
 
+    /// Write the full web-UI artifact bundle into --out-dir using canonical
+    /// filenames: result.json, report.html, report.pdf, report.csv, report.xlsx,
+    /// and scan-config.json. Shorthand for passing all six --*-out flags at once,
+    /// giving the same output set as a GUI run. Explicit --*-out flags still win
+    /// per format, so you can redirect one and bundle the rest. Requires --out-dir.
+    #[arg(long, requires = "out_dir")]
+    all_formats: bool,
+
+    /// Output directory for the --all-formats bundle (created if missing).
+    #[arg(long, value_name = "DIR")]
+    out_dir: Option<PathBuf>,
+
     /// Open the generated HTML report in the default browser
     #[arg(long)]
     open: bool,
@@ -1169,6 +1181,32 @@ fn log_written(path: &Path, quiet: bool) {
     }
 }
 
+/// Expand the `--all-formats` convenience into the six canonical web-UI
+/// artifact paths under `--out-dir`, mirroring the bundle a GUI run writes
+/// (`RunArtifacts`: json, html, pdf, csv, xlsx, scan-config). Any format whose
+/// explicit `--*-out` flag was already given is left untouched, so an explicit
+/// path always wins. No-op when `--all-formats` is not set. Clap's `requires`
+/// guarantees `--out-dir` is present whenever `--all-formats` is, so a missing
+/// directory here is treated as a no-op rather than an error.
+fn expand_all_formats(args: &mut AnalyzeArgs) -> Result<()> {
+    if !args.all_formats {
+        return Ok(());
+    }
+    let Some(dir) = args.out_dir.clone() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating output dir {}", dir.display()))?;
+    args.json_out.get_or_insert_with(|| dir.join("result.json"));
+    args.html_out.get_or_insert_with(|| dir.join("report.html"));
+    args.pdf_out.get_or_insert_with(|| dir.join("report.pdf"));
+    args.csv_out.get_or_insert_with(|| dir.join("report.csv"));
+    args.xlsx_out.get_or_insert_with(|| dir.join("report.xlsx"));
+    args.scan_config_out
+        .get_or_insert_with(|| dir.join("scan-config.json"));
+    Ok(())
+}
+
 /// Write all requested output artifacts and print paths when not quiet.
 fn write_outputs(run: &AnalysisRun, args: &AnalyzeArgs, quiet: bool) -> Result<()> {
     if let Some(path) = &args.json_out {
@@ -1385,7 +1423,8 @@ fn apply_complexity_gate(run: &AnalysisRun, max_cc: u32) {
     }
 }
 
-async fn run_analyze(args: AnalyzeArgs) -> Result<()> {
+async fn run_analyze(mut args: AnalyzeArgs) -> Result<()> {
+    expand_all_formats(&mut args)?;
     let config = resolve_analyze_config(&args)?;
     let quiet = args.quiet;
     let mut run = tokio::task::spawn_blocking(move || analyze(&config, "analyze", None, None))
@@ -4276,6 +4315,77 @@ fn git_clone_path(repo_url: &str, clones_dir: &Path) -> PathBuf {
 
 fn uuid_simple() -> String {
     uuid::Uuid::new_v4().simple().to_string()
+}
+
+#[cfg(test)]
+mod all_formats_tests {
+    use super::{AnalyzeArgs, Cli, Commands, expand_all_formats};
+    use clap::Parser;
+
+    fn parse_analyze(argv: &[&str]) -> AnalyzeArgs {
+        match Cli::try_parse_from(argv).expect("args parse").command {
+            Some(Commands::Analyze(a)) => *a,
+            other => panic!("expected analyze subcommand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_formats_fills_the_six_canonical_paths() {
+        let dir = std::env::temp_dir().join("oxide_sloc_all_fmt_test");
+        let dir_s = dir.to_str().unwrap();
+        let mut args = parse_analyze(&[
+            "oxide-sloc",
+            "analyze",
+            ".",
+            "--all-formats",
+            "--out-dir",
+            dir_s,
+        ]);
+        expand_all_formats(&mut args).expect("expand");
+        assert_eq!(args.json_out.unwrap(), dir.join("result.json"));
+        assert_eq!(args.html_out.unwrap(), dir.join("report.html"));
+        assert_eq!(args.pdf_out.unwrap(), dir.join("report.pdf"));
+        assert_eq!(args.csv_out.unwrap(), dir.join("report.csv"));
+        assert_eq!(args.xlsx_out.unwrap(), dir.join("report.xlsx"));
+        assert_eq!(args.scan_config_out.unwrap(), dir.join("scan-config.json"));
+    }
+
+    #[test]
+    fn explicit_path_wins_over_all_formats_default() {
+        let dir = std::env::temp_dir().join("oxide_sloc_all_fmt_test2");
+        let dir_s = dir.to_str().unwrap();
+        let mut args = parse_analyze(&[
+            "oxide-sloc",
+            "analyze",
+            ".",
+            "--all-formats",
+            "--out-dir",
+            dir_s,
+            "--json-out",
+            "custom/run.json",
+        ]);
+        expand_all_formats(&mut args).expect("expand");
+        // Explicit --json-out is preserved; the rest are still derived.
+        assert_eq!(
+            args.json_out.unwrap(),
+            std::path::PathBuf::from("custom/run.json")
+        );
+        assert_eq!(args.csv_out.unwrap(), dir.join("report.csv"));
+    }
+
+    #[test]
+    fn no_all_formats_is_a_noop() {
+        let mut args = parse_analyze(&["oxide-sloc", "analyze", "."]);
+        expand_all_formats(&mut args).expect("expand");
+        assert!(args.json_out.is_none());
+        assert!(args.csv_out.is_none());
+    }
+
+    #[test]
+    fn all_formats_without_out_dir_is_rejected_at_parse_time() {
+        let err = Cli::try_parse_from(["oxide-sloc", "analyze", ".", "--all-formats"]);
+        assert!(err.is_err(), "--all-formats must require --out-dir");
+    }
 }
 
 #[cfg(test)]
