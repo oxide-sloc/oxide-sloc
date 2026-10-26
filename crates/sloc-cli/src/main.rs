@@ -207,7 +207,12 @@ struct AnalyzeArgs {
     #[arg(long, value_name = "DIR")]
     out_dir: Option<PathBuf>,
 
-    /// Open the generated HTML report in the default browser
+    /// Open the HTML report in your browser AND reveal the output folder in your
+    /// file manager once the scan finishes. If no output target is given
+    /// (--html-out / --out-dir / --all-formats / any --*-out), the full report
+    /// bundle is first written to
+    /// Desktop/oxide-sloc-reports/<project>-<timestamp>/ so results land
+    /// somewhere predictable instead of inside the repo.
     #[arg(long)]
     open: bool,
 
@@ -1207,6 +1212,71 @@ fn expand_all_formats(args: &mut AnalyzeArgs) -> Result<()> {
     Ok(())
 }
 
+/// When `--open` is passed with no explicit output target, default to writing the
+/// full artifact bundle into `~/Desktop/oxide-sloc-reports/<project>-<timestamp>/`
+/// so results land somewhere predictable and openable rather than inside the repo
+/// (where a relative `out/…` path would otherwise resolve). A no-op when `--open`
+/// is absent or any output flag was already given — an explicit target always wins.
+fn apply_default_open_location(args: &mut AnalyzeArgs) {
+    if !args.open {
+        return;
+    }
+    if args.all_formats
+        || args.out_dir.is_some()
+        || args.json_out.is_some()
+        || args.html_out.is_some()
+        || args.pdf_out.is_some()
+        || args.csv_out.is_some()
+        || args.xlsx_out.is_some()
+    {
+        return;
+    }
+    let project = args
+        .paths
+        .first()
+        .and_then(|p| derive_project_name(p))
+        .unwrap_or_else(|| "scan".to_string());
+    let stamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S");
+    let dir = desktop_dir()
+        .join("oxide-sloc-reports")
+        .join(format!("{project}-{stamp}"));
+    args.out_dir = Some(dir);
+    args.all_formats = true;
+}
+
+/// Resolve the current user's Desktop directory. Uses `%USERPROFILE%` on Windows
+/// (falling back to the OneDrive-redirected Desktop common on Windows 11) and
+/// `$HOME` elsewhere; defaults to the current directory if neither is set.
+fn desktop_dir() -> PathBuf {
+    let profile = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let primary = profile.join("Desktop");
+    if primary.is_dir() {
+        return primary;
+    }
+    let onedrive = profile.join("OneDrive").join("Desktop");
+    if onedrive.is_dir() {
+        return onedrive;
+    }
+    primary
+}
+
+/// Derive a filesystem-safe project name from a scanned path (its final
+/// component), stripping characters that are invalid in Windows paths.
+fn derive_project_name(path: &Path) -> Option<String> {
+    let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let name: String = abs
+        .file_name()?
+        .to_string_lossy()
+        .chars()
+        .map(|c| if "<>:\"/\\|?*".contains(c) { '-' } else { c })
+        .collect();
+    let trimmed = name.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// Write all requested output artifacts and print paths when not quiet.
 fn write_outputs(run: &AnalysisRun, args: &AnalyzeArgs, quiet: bool) -> Result<()> {
     if let Some(path) = &args.json_out {
@@ -1220,9 +1290,6 @@ fn write_outputs(run: &AnalysisRun, args: &AnalyzeArgs, quiet: bool) -> Result<(
         // HTML Publisher (or any static host) without a live oxide-sloc server.
         write_html_with_pdf_link(run, path, args.pdf_out.as_deref())?;
         log_written(path, quiet);
-        if args.open {
-            open_path(path);
-        }
     }
 
     if let Some(path) = &args.pdf_out {
@@ -1424,6 +1491,7 @@ fn apply_complexity_gate(run: &AnalysisRun, max_cc: u32) {
 }
 
 async fn run_analyze(mut args: AnalyzeArgs) -> Result<()> {
+    apply_default_open_location(&mut args);
     expand_all_formats(&mut args)?;
     let config = resolve_analyze_config(&args)?;
     let quiet = args.quiet;
@@ -1444,6 +1512,10 @@ async fn run_analyze(mut args: AnalyzeArgs) -> Result<()> {
     }
 
     write_outputs(&run, &args, quiet)?;
+
+    if args.open {
+        open_outputs(&args, quiet);
+    }
 
     // Save baseline snapshot if requested.
     if let Some(name) = &args.set_baseline {
@@ -1665,7 +1737,8 @@ fn run_report(args: &ReportArgs) -> Result<()> {
         write_html(&run, path)?;
         eprintln!("wrote {}", path.display());
         if args.open {
-            open_path(path);
+            open_default_app(path);
+            reveal_in_file_manager(path);
         }
     }
 
@@ -3056,20 +3129,96 @@ fn truncate(input: &str, width: usize) -> String {
     format!("{}…", &input[..cut])
 }
 
-fn open_path(path: &Path) {
+/// Handle `--open` for an analyze run: launch the HTML report in the default
+/// browser (when one was written) and reveal the primary artifact in the OS file
+/// manager. Falls back to opening the output directory, or a note, when nothing
+/// openable was produced.
+fn open_outputs(args: &AnalyzeArgs, quiet: bool) {
+    let primary = args
+        .html_out
+        .as_deref()
+        .or(args.json_out.as_deref())
+        .or(args.csv_out.as_deref())
+        .or(args.xlsx_out.as_deref())
+        .or(args.pdf_out.as_deref());
+    match primary {
+        Some(file) => {
+            // Browser launch only makes sense for the HTML report.
+            if let Some(html) = &args.html_out {
+                open_default_app(html);
+            }
+            reveal_in_file_manager(file);
+        }
+        None => match &args.out_dir {
+            Some(dir) => open_default_app(dir),
+            None if !quiet => {
+                eprintln!("note: --open had nothing to open (no output artifacts written)")
+            }
+            None => {}
+        },
+    }
+}
+
+/// Absolutize and native-normalize a path for the OS shell / file manager.
+/// explorer.exe (and, to a lesser extent, `open` / `xdg-open`) cannot resolve
+/// CWD-relative or forward-slash paths and silently fall back to a default folder,
+/// so we anchor against the current directory and switch to backslashes on Windows.
+fn native_path(path: &Path) -> PathBuf {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    #[cfg(target_os = "windows")]
+    let out = PathBuf::from(abs.to_string_lossy().replace('/', "\\"));
+    #[cfg(not(target_os = "windows"))]
+    let out = abs;
+    out
+}
+
+/// Open a file or directory in its default application (a browser, for HTML).
+fn open_default_app(path: &Path) {
+    let p = native_path(path);
     #[cfg(target_os = "windows")]
     {
-        // Use explorer.exe, which receives the path as a single, non-shell argument.
+        // explorer.exe receives the path as a single, non-shell argument;
         // `cmd /c start` is shell-parsed and mishandles `&`, `%`, `^` in paths.
-        let _ = std::process::Command::new("explorer").arg(path).spawn();
+        let _ = std::process::Command::new("explorer").arg(&p).spawn();
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").arg(path).spawn();
+        let _ = std::process::Command::new("open").arg(&p).spawn();
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+        let _ = std::process::Command::new("xdg-open").arg(&p).spawn();
+    }
+}
+
+/// Reveal a file in the OS file manager, selecting it where the platform supports
+/// it (Explorer `/select`, Finder `open -R`); elsewhere open its parent directory.
+fn reveal_in_file_manager(path: &Path) {
+    let p = native_path(path);
+    #[cfg(target_os = "windows")]
+    {
+        // `/select,<path>` as a single argument highlights the file in Explorer.
+        let mut arg = std::ffi::OsString::from("/select,");
+        arg.push(p.as_os_str());
+        let _ = std::process::Command::new("explorer").arg(arg).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg("-R").arg(&p).spawn();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let dir = p
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| p.clone());
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
     }
 }
 
