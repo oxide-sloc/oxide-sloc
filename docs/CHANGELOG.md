@@ -10,6 +10,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.26] — 2026-10-25
+
+### Added
+
+- **`analyze --all-formats`**: a single bundle flag that writes JSON, HTML, PDF, and CSV artifacts
+  from one scan instead of requiring a separate `--*-out` flag per format.
+
+### Changed
+
+- **`analyze --open`** is now reliable, and reports default to the Desktop when no output path is
+  given, so the generated report always lands somewhere predictable and opens as expected.
+- Refreshed report styling and bumped workspace dependencies to the latest compatible versions.
+
+### Fixed
+
+- Trivy SARIF upload is now limited to HIGH/CRITICAL severities so sub-HIGH OS-package noise no
+  longer opens code-scanning alerts.
+
+---
+
 ## [1.6.25] — 2026-10-22
 
 ### Added

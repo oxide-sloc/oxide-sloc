@@ -163,7 +163,7 @@ pipeline {
         string(
             name:         'SCAN_TOOL_VERSION',
             defaultValue: '',
-            description:  'Pin the oxide-sloc scanner to an exact version (e.g. 1.6.25 or v1.6.25). ' +
+            description:  'Pin the oxide-sloc scanner to an exact version (e.g. 1.6.26 or v1.6.26). ' +
                           'When set, the pipeline runs the resolved binary --version after the Build ' +
                           'stage and FAILS the build if it does not match, so an upstream/downstream ' +
                           'job chain runs one reproducible tool version. The value is forwarded to ' +
