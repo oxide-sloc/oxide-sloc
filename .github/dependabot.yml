@@ -26,3 +26,10 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    groups:
+      # All github/codeql-action/* steps must share one version — a split bump
+      # leaves init/analyze/upload-sarif mismatched and CodeQL refuses to run.
+      # Group them so Dependabot bumps them together in a single PR.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
