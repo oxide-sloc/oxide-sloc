@@ -45,7 +45,7 @@ rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "fs", "net", "sync", "time", "process", "signal"] }
 tokio-rustls = { version = "0.26", features = ["ring"], default-features = false }
 toml = "1.1"
 tower = { version = "0.5", features = ["util"] }
@@ -68,6 +68,15 @@ base64 = "0.23"
 #   base64     0.22 (headless_chrome / hyper-util) vs 0.23 (our direct dep)
 #   syn        2 (older proc-macros) vs 3 (async-trait / clap_derive transition)
 multiple_crate_versions = "allow"
+
+# Optimized release build. Benefits the CPU-bound analysis state machine (cross-crate
+# inlining) and shrinks the air-gapped dist binaries (symbols stripped). `panic` is left at
+# the default "unwind" on purpose: sloc-web is a long-running server and abort-on-panic would
+# turn a single bad request into a full-process crash.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
 
 [workspace.metadata.oxide-sloc]
 product_name = "oxide-sloc"
