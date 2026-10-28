@@ -13,8 +13,10 @@ BeforeAll {
     $script:InstallerPath = Join-Path $PSScriptRoot '..\internal\install-service.ps1'
     $script:InstallDir = Join-Path $env:TEMP ("sloc-pester-" + [guid]::NewGuid().ToString('N'))
     function Invoke-Installer {
-        param([string[]] $Args)
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:InstallerPath @Args 2>&1 |
+        # NB: parameter must NOT be named $Args — that shadows PowerShell's
+        # automatic $args and the @-splat would pass nothing to the child process.
+        param([string[]] $InstallerArgs)
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:InstallerPath @InstallerArgs 2>&1 |
             Out-String
     }
 }
@@ -25,7 +27,7 @@ AfterAll {
 
 Describe 'install-service.ps1 (dry-run install)' {
     BeforeAll {
-        $script:Out = Invoke-Installer -Args @(
+        $script:Out = Invoke-Installer -InstallerArgs @(
             '-DryRun', '-InstallDir', $script:InstallDir,
             '-Bind', '0.0.0.0:4321',
             '-TlsCert', 'C:\certs\server.crt', '-TlsKey', 'C:\certs\server.key',
@@ -68,7 +70,7 @@ Describe 'install-service.ps1 (dry-run install)' {
 
 Describe 'install-service.ps1 (dry-run uninstall)' {
     BeforeAll {
-        $script:UOut = Invoke-Installer -Args @('-Uninstall', '-DryRun', '-InstallDir', $script:InstallDir)
+        $script:UOut = Invoke-Installer -InstallerArgs @('-Uninstall', '-DryRun', '-InstallDir', $script:InstallDir)
     }
     It 'plans scheduled-task removal' {
         $script:UOut | Should -Match 'Unregister-ScheduledTask'
