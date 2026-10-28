@@ -523,6 +523,23 @@ fn render_html_inner(
         semantic_chart_json: build_semantic_chart_json(run),
         file_size_histogram_json: build_file_size_histogram_json(run),
         has_submodule_data: !run.submodule_summaries.is_empty(),
+        submodule_report_rows: run
+            .submodule_summaries
+            .iter()
+            .map(|s| SubmoduleReportRow {
+                name: s.name.clone(),
+                files: s.files_analyzed,
+                code: s.code_lines,
+                physical: s.total_physical_lines,
+                commit_short: s.git_commit_short.clone().unwrap_or_default(),
+                last_changed: s
+                    .git_commit_date
+                    .as_deref()
+                    .map_or_else(String::new, |d| d.split('T').next().unwrap_or(d).to_string()),
+                checksum: s.git_commit_long.clone().unwrap_or_default(),
+                branch: s.git_branch.clone().unwrap_or_default(),
+            })
+            .collect(),
         has_semantic_data: run
             .totals_by_language
             .iter()
@@ -704,6 +721,7 @@ fn render_html_inner(
         own_test_code: own_summary.test_code,
         own_test_pct_str: own_summary.test_pct_str,
         own_total_comment: own_summary.total_comment,
+        own_total_blank: own_summary.total_blank,
     };
 
     template.render().context("failed to render HTML report")
@@ -817,6 +835,11 @@ struct AuthorReportRow {
     total: u64,
     /// Share of total code lines owned, pre-formatted to one decimal (e.g. "42.7").
     code_pct_str: String,
+    /// Leaderboard bar fill width, pre-formatted to one decimal. Normalised to the top
+    /// contributor (rank 1 = 100) so the leader's bar is always visibly full and the rest
+    /// scale proportionally against it — otherwise a many-contributor repo leaves even the
+    /// #1 bar nearly empty because its absolute code share is small.
+    bar_pct_str: String,
     /// Files where this author is the single largest owner.
     files_owned: u64,
     /// The files this author owns (top owner of), for the per-author drill-down. Ordered by
@@ -833,6 +856,19 @@ struct AuthorReportRow {
     color: &'static str,
     /// Best-effort profile URL (GitHub/GHE no-reply email → profile); `None` when not derivable.
     profile_url: Option<String>,
+}
+
+/// One row of the report's Submodule breakdown table. Mirrors the Scan Delta page's submodule
+/// table so both surfaces share the same columns — the commit SHA doubles as a content checksum.
+struct SubmoduleReportRow {
+    name: String,
+    files: u64,
+    code: u64,
+    physical: u64,
+    commit_short: String,
+    last_changed: String,
+    checksum: String,
+    branch: String,
 }
 
 /// One file a contributor owns, for the Code Ownership per-author drill-down: the lines *this*
@@ -917,6 +953,7 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
                 blank: a.counts.blank_lines,
                 total: a.counts.total_lines,
                 code_pct_str: format!("{pct:.1}"),
+                bar_pct_str: "0".to_string(),
                 files_owned: files.len() as u64,
                 files,
                 rank: 0,
@@ -929,6 +966,10 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
         .collect();
     // Assign leaderboard rank + medal class + accent colour among file-owning contributors
     // (already ordered by code lines owned).
+    let top_code = rows
+        .iter()
+        .find(|r| !r.files.is_empty())
+        .map_or(0, |r| r.code);
     let mut rank = 0usize;
     for row in &mut rows {
         if row.files.is_empty() {
@@ -943,6 +984,14 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
             _ => "",
         };
         row.color = REPORT_PALETTE[(rank - 1) % REPORT_PALETTE.len()];
+        // Bar width is normalised to the leader so rank 1 is always a full bar and the rest
+        // scale against it; clamp to a small floor so any contributor stays visible.
+        let bar = if top_code > 0 {
+            (row.code as f64 / top_code as f64 * 100.0).max(2.0)
+        } else {
+            0.0
+        };
+        row.bar_pct_str = format!("{bar:.1}");
     }
     rows
 }
@@ -960,6 +1009,7 @@ struct OwnershipSummary {
     test_code: u64,
     test_pct_str: String,
     total_comment: u64,
+    total_blank: u64,
 }
 
 /// Compute the ownership summary stats (contributors, top owner, bus factor, dev/test split,
@@ -970,6 +1020,7 @@ fn build_ownership_summary(run: &AnalysisRun) -> OwnershipSummary {
     }
     let total_code: u64 = run.authors.iter().map(|a| a.counts.code_lines).sum();
     let total_comment: u64 = run.authors.iter().map(|a| a.counts.comment_lines).sum();
+    let total_blank: u64 = run.authors.iter().map(|a| a.counts.blank_lines).sum();
     // Bus factor: fewest top contributors (already ordered by code owned) covering >= 50% of code.
     let mut acc = 0u64;
     let mut bus_factor = 0usize;
@@ -1009,6 +1060,7 @@ fn build_ownership_summary(run: &AnalysisRun) -> OwnershipSummary {
         test_code,
         test_pct_str: format!("{test_pct:.0}"),
         total_comment,
+        total_blank,
     }
 }
 
@@ -5305,7 +5357,7 @@ struct WarningOpportunityRow {
     .lb-r1 { background:linear-gradient(135deg,#f7d774,#e0a92e); color:#5a3d00; border-color:#e0a92e; box-shadow:0 3px 10px rgba(224,169,46,0.45); }
     .lb-r2 { background:linear-gradient(135deg,#e6e7ea,#b9bcc4); color:#3d4048; border-color:#b9bcc4; box-shadow:0 3px 10px rgba(150,153,160,0.35); }
     .lb-r3 { background:linear-gradient(135deg,#eabd92,#cd7f4c); color:#4d2a0e; border-color:#cd7f4c; box-shadow:0 3px 10px rgba(205,127,76,0.35); }
-    .lb-avatar { flex:0 0 auto; width:36px; height:36px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:14px; letter-spacing:.02em; text-shadow:0 0 2px rgba(0,0,0,0.75),0 1px 1px rgba(0,0,0,0.55); box-shadow:inset 0 0 0 1px rgba(255,255,255,0.28),0 2px 6px rgba(0,0,0,0.20); }
+    .lb-avatar { flex:0 0 auto; width:36px; height:36px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; background:var(--oxide); color:#fff; font-weight:800; font-size:14px; letter-spacing:.02em; text-shadow:0 1px 2px rgba(0,0,0,0.85),0 0 3px rgba(0,0,0,0.7); box-shadow:inset 0 0 0 1px rgba(255,255,255,0.28),0 2px 6px rgba(0,0,0,0.20); }
     body.dark-theme .lb-avatar { box-shadow:inset 0 0 0 1px rgba(255,255,255,0.18),0 2px 6px rgba(0,0,0,0.45); }
     .lb-name { flex:0 0 210px; font-size:16px; font-weight:800; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     /* Contributor profile links (ownership table, leaderboard, hotspot owner column) — inherit the
@@ -5315,7 +5367,7 @@ struct WarningOpportunityRow {
     .lb-name a.author-link { color:inherit; }
     .lb-name a.author-link:hover { color:var(--oxide); }
     .lb-bar-wrap { flex:1 1 auto; height:12px; min-width:60px; background:var(--surface-3); border-radius:7px; overflow:hidden; box-shadow:inset 0 1px 2px rgba(0,0,0,0.08); }
-    .lb-bar { display:block; height:100%; border-radius:7px; transition:width .5s cubic-bezier(.16,1,.3,1); }
+    .lb-bar { display:block; height:100%; min-width:4px; border-radius:7px; transition:width .5s cubic-bezier(.16,1,.3,1); }
     .lb-stats { flex:0 0 auto; font-size:13px; color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
     .lb-stats strong { color:var(--oxide); font-size:16px; font-weight:900; }
     .own-files-shell { margin:2px 14px 14px; max-height:420px; }
@@ -6615,6 +6667,39 @@ struct WarningOpportunityRow {
           </div>
         </section>
       </div>
+      <section class="panel" id="submodule-table-section">
+        <div class="toolbar"><div class="toolbar-left"><h2>Submodule Details</h2></div></div>
+        <p class="section-desc">Each submodule's pinned git identity alongside its line counts. The <strong>checksum</strong> is the submodule's full commit SHA — it uniquely identifies the exact tree. The same columns appear on the Scan Delta page's submodule table.</p>
+        <div class="table-shell">
+          <table class="table-resizable" data-sort-table>
+            <colgroup><col><col><col><col><col><col><col><col></colgroup>
+            <thead><tr>
+              <th data-sort-type="text">Submodule<div class="col-resize-handle"></div></th>
+              <th data-sort-type="number" class="num-col">Files<div class="col-resize-handle"></div></th>
+              <th data-sort-type="number" class="num-col">Code<div class="col-resize-handle"></div></th>
+              <th data-sort-type="number" class="num-col">Physical<div class="col-resize-handle"></div></th>
+              <th data-sort-type="text">Commit<div class="col-resize-handle"></div></th>
+              <th data-sort-type="text">Branch<div class="col-resize-handle"></div></th>
+              <th data-sort-type="text">Last modified<div class="col-resize-handle"></div></th>
+              <th data-sort-type="text">Checksum (commit SHA)<div class="col-resize-handle"></div></th>
+            </tr></thead>
+            <tbody>
+            {% for s in submodule_report_rows %}
+              <tr>
+                <td>{{ s.name }}</td>
+                <td class="num-col">{{ s.files|commas }}</td>
+                <td class="num-col">{{ s.code|commas }}</td>
+                <td class="num-col">{{ s.physical|commas }}</td>
+                <td class="mono">{% if s.commit_short != "" %}{{ s.commit_short }}{% else %}-{% endif %}</td>
+                <td>{% if s.branch != "" %}{{ s.branch }}{% else %}-{% endif %}</td>
+                <td style="color:var(--muted);">{% if s.last_changed != "" %}{{ s.last_changed }}{% else %}-{% endif %}</td>
+                <td class="mono" style="color:var(--muted);" title="{{ s.checksum }}">{% if s.checksum != "" %}{{ s.checksum }}{% else %}-{% endif %}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
       {% endif %}
 
       {% if has_cocomo %}
@@ -6707,6 +6792,7 @@ struct WarningOpportunityRow {
           <div class="stat-chip"><div class="stat-chip-val" data-fmt="{{ own_dev_code }}">{{ own_dev_code|commas }}</div><div class="stat-chip-label">Development Code</div><div class="stat-chip-tip">Code lines owned in non-test files (total code minus code in files detected as tests).</div></div>
           <div class="stat-chip"><div class="stat-chip-val" data-fmt="{{ own_test_code }}">{{ own_test_code|commas }}</div><div class="stat-chip-label">Test Code &middot; {{ own_test_pct_str }}% of code</div><div class="stat-chip-tip">Code lines owned in files classified as tests (detected test functions/assertions or a test-path convention).</div></div>
           <div class="stat-chip"><div class="stat-chip-val" data-fmt="{{ own_total_comment }}">{{ own_total_comment|commas }}</div><div class="stat-chip-label">Total Comment Lines</div><div class="stat-chip-tip">Physical comment / documentation lines attributed across all contributors.</div></div>
+          <div class="stat-chip"><div class="stat-chip-val" data-fmt="{{ own_total_blank }}">{{ own_total_blank|commas }}</div><div class="stat-chip-label">Total Blank Lines</div><div class="stat-chip-tip">Physical blank / whitespace lines attributed across all contributors.</div></div>
         </div>
         <p class="table-hint hs-hint">Click a column header to sort; drag its right edge to resize.</p>
         <div class="table-shell">
@@ -6747,8 +6833,8 @@ struct WarningOpportunityRow {
             <span class="lb-rank {{ a.rank_class }}">{{ a.rank }}</span>
             <span class="lb-avatar" style="background:{{ a.color }};">{{ a.initials }}</span>
             <span class="lb-name">{% match a.profile_url %}{% when Some with (url) %}<a class="author-link" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ a.name }}</a>{% when None %}{{ a.name }}{% endmatch %}</span>
-            <span class="lb-bar-wrap"><span class="lb-bar" style="width:{{ a.code_pct_str }}%;background:{{ a.color }};"></span></span>
-            <span class="lb-stats"><strong>{{ a.code|commas }}</strong> code lines &middot; {{ a.files_owned }} file{% if a.files_owned != 1 %}s{% endif %} &middot; {{ a.code_pct_str }}%</span>
+            <span class="lb-bar-wrap"><span class="lb-bar" style="width:{{ a.bar_pct_str }}%;background:{{ a.color }};"></span></span>
+            <span class="lb-stats"><strong>{{ a.code|commas }}</strong> code lines &middot; {{ a.files_owned }} file{% if a.files_owned != 1 %}s{% endif %} &middot; {{ a.comment|commas }} comment &middot; {{ a.total|commas }} total &middot; {{ a.code_pct_str }}%</span>
           </summary>
           <div class="table-shell own-files-shell">
             <table class="table-resizable">
@@ -10388,6 +10474,7 @@ struct ReportTemplate<'a> {
     semantic_chart_json: String,
     file_size_histogram_json: String,
     has_submodule_data: bool,
+    submodule_report_rows: Vec<SubmoduleReportRow>,
     has_semantic_data: bool,
     has_coverage_data: bool,
     has_fn_coverage: bool,
@@ -10495,6 +10582,7 @@ struct ReportTemplate<'a> {
     own_test_code: u64,
     own_test_pct_str: String,
     own_total_comment: u64,
+    own_total_blank: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

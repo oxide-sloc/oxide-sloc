@@ -4190,7 +4190,7 @@ body.dark-theme .rpt-progress{background:rgba(196,92,16,.2);}
   // MIN: minimum time the overlay stays up. SETTLE: extra buffer after the page
   // reports ready so the final chart paint completes. CHART_CAP: stop waiting on
   // charts after this. HARD_CAP: absolute backstop so the overlay can never stick.
-  var MIN=1200,SETTLE=750,CHART_CAP=12000,HARD_CAP=25000;
+  var MIN=250,SETTLE=200,CHART_CAP=12000,HARD_CAP=25000;
   function setProg(p){prog=p;if(bar)bar.style.transform='scaleX('+(p/100).toFixed(3)+')';if(pct)pct.textContent=Math.round(p)+'%';}
   function nextMsg(){if(statusEl)statusEl.textContent=msgs[mi%msgs.length];mi++;}
   setProg(8);
@@ -11281,6 +11281,138 @@ struct CompareFileDeltaRow {
     churn_str: String,
 }
 
+/// One row of the interactive submodule comparison table on the Scan Delta page: the per-submodule
+/// code churn between the two scans plus the submodule's own git identity (commit/branch/date). The
+/// commit SHA doubles as the submodule's content checksum — it uniquely identifies the exact tree.
+struct CompareSubmoduleRow {
+    name: String,
+    /// Link that scopes the comparison to this submodule — or back to the full scan when this
+    /// submodule is already the active scope (so clicking the current row deselects it).
+    scope_href: String,
+    active: bool,
+    /// True when anything differs between the two scans (code churn, file count, or pinned commit).
+    changed: bool,
+    /// True when actual submodule *code* changed between scans (added/removed lines) — i.e. a real
+    /// content change, not merely a moved submodule pointer. Drives the attention highlight.
+    code_changed: bool,
+    /// True when the submodule's pinned commit SHA differs between the two scans.
+    commit_changed: bool,
+    lines_added: i64,
+    lines_removed: i64,
+    code_delta_str: String,
+    code_delta_class: String,
+    baseline_code_fmt: String,
+    current_code_fmt: String,
+    files_changed: usize,
+    baseline_commit_short: String,
+    current_commit_short: String,
+    /// Full commit SHA of the submodule at the current scan — its content checksum.
+    checksum: String,
+    branch: String,
+    last_changed: String,
+}
+
+/// Build the per-submodule comparison rows for the Scan Delta page from the *full* (un-narrowed)
+/// baseline/current runs. Aggregates per-file code churn by submodule and attaches each submodule's
+/// own git metadata. Always covers every submodule so the table can switch scope regardless of the
+/// currently-active scope.
+#[allow(clippy::ref_option)]
+fn build_compare_submodule_rows(
+    baseline: &AnalysisRun,
+    current: &AnalysisRun,
+    names: &[String],
+    active_sub: &Option<String>,
+    base_id: &str,
+    curr_id: &str,
+) -> Vec<CompareSubmoduleRow> {
+    // Map every scanned path to its owning submodule so the flat file-delta list can be bucketed.
+    let mut path_sub: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for rec in baseline
+        .per_file_records
+        .iter()
+        .chain(&current.per_file_records)
+    {
+        if let Some(sub) = rec.submodule.as_deref() {
+            path_sub.insert(rec.relative_path.as_str(), sub);
+        }
+    }
+    let full = compute_delta(baseline, current);
+
+    names
+        .iter()
+        .map(|name| {
+            let (mut added, mut removed, mut delta, mut files_changed) = (0i64, 0i64, 0i64, 0usize);
+            let (mut base_code, mut curr_code) = (0i64, 0i64);
+            for fd in &full.file_deltas {
+                if path_sub.get(fd.relative_path.as_str()).copied() != Some(name.as_str()) {
+                    continue;
+                }
+                base_code += fd.baseline_code;
+                curr_code += fd.current_code;
+                delta += fd.code_delta;
+                if fd.status != FileChangeStatus::Unchanged {
+                    files_changed += 1;
+                }
+                match (fd.added_lines, fd.removed_lines) {
+                    (Some(a), Some(r)) => {
+                        added += a;
+                        removed += r;
+                    }
+                    _ => {
+                        added += fd.code_delta.max(0);
+                        removed += (-fd.code_delta).max(0);
+                    }
+                }
+            }
+            let base_sub = baseline
+                .submodule_summaries
+                .iter()
+                .find(|s| &s.name == name);
+            let curr_sub = current.submodule_summaries.iter().find(|s| &s.name == name);
+            let pick = curr_sub.or(base_sub);
+            let short = |s: Option<&sloc_core::SubmoduleSummary>| {
+                s.and_then(|x| x.git_commit_short.clone())
+                    .unwrap_or_default()
+            };
+            let base_commit_long = base_sub.and_then(|s| s.git_commit_long.clone());
+            let curr_commit_long = curr_sub.and_then(|s| s.git_commit_long.clone());
+            let commit_changed = match (&base_commit_long, &curr_commit_long) {
+                (Some(a), Some(b)) => a != b,
+                _ => false,
+            };
+            let code_changed = added != 0 || removed != 0 || files_changed != 0;
+            let active = active_sub.as_deref() == Some(name.as_str());
+            let scope_href = if active {
+                format!("/compare?a={base_id}&b={curr_id}")
+            } else {
+                format!("/compare?a={base_id}&b={curr_id}&sub={name}")
+            };
+            CompareSubmoduleRow {
+                name: name.clone(),
+                scope_href,
+                active,
+                changed: code_changed || commit_changed,
+                code_changed,
+                commit_changed,
+                lines_added: added,
+                lines_removed: removed,
+                code_delta_str: fmt_delta(delta),
+                code_delta_class: delta_class(delta).into(),
+                baseline_code_fmt: fmt_comma(base_code),
+                current_code_fmt: fmt_comma(curr_code),
+                files_changed,
+                baseline_commit_short: short(base_sub),
+                current_commit_short: short(curr_sub),
+                checksum: curr_commit_long.or(base_commit_long).unwrap_or_default(),
+                branch: pick.and_then(|s| s.git_branch.clone()).unwrap_or_default(),
+                last_changed: pick
+                    .and_then(|s| s.git_commit_date.as_deref().and_then(fmt_git_date))
+                    .unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
 /// Build one template row from a single [`sloc_core::FileDelta`]. Extracted from `compare_handler`
 /// so the per-file status/display/churn branching does not inflate that handler's complexity.
 fn compare_file_delta_row(d: &sloc_core::FileDelta) -> CompareFileDeltaRow {
@@ -11295,16 +11427,10 @@ fn compare_file_delta_row(d: &sloc_core::FileDelta) -> CompareFileDeltaRow {
         },
         baseline_code: d.baseline_code,
         current_code: d.current_code,
-        baseline_code_display: if d.status == FileChangeStatus::Added {
-            "—".into()
-        } else {
-            d.baseline_code.to_string()
-        },
-        current_code_display: if d.status == FileChangeStatus::Removed {
-            "—".into()
-        } else {
-            d.current_code.to_string()
-        },
+        // Added files have no baseline (shown as 0 → N) and removed files have no current
+        // (shown as N → 0); using the real zero reads clearer than a dash placeholder.
+        baseline_code_display: d.baseline_code.to_string(),
+        current_code_display: d.current_code.to_string(),
         code_delta_str: fmt_delta(d.code_delta),
         code_delta_class: delta_class(d.code_delta).into(),
         comment_delta_str: fmt_delta(d.comment_delta),
@@ -11681,6 +11807,21 @@ async fn compare_handler(
         .collect::<Vec<_>>();
     let has_any_submodule_data = !submodule_options.is_empty();
 
+    // Build the per-submodule comparison table from the FULL runs (before scope narrowing) so it
+    // always lists every submodule and can switch scope regardless of the active selection.
+    let submodule_rows = if has_any_submodule_data {
+        build_compare_submodule_rows(
+            &baseline_run,
+            &current_run,
+            &submodule_options,
+            &active_submodule,
+            &baseline_entry.run_id,
+            &current_entry.run_id,
+        )
+    } else {
+        Vec::new()
+    };
+
     // Narrow per_file_records when a scope is active, then recompute totals.
     let (effective_baseline, effective_current) = narrow_run_pair_by_scope(
         baseline_run,
@@ -11800,7 +11941,7 @@ async fn compare_handler(
             .find(|s| !s.is_empty())
             .unwrap_or(&project_path)
             .to_string(),
-        submodule_options,
+        submodule_rows,
         has_any_submodule_data,
         active_submodule,
         super_scope_active,
@@ -26866,7 +27007,9 @@ struct ScanSetupTemplate {
     .delta-chip { font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; }
     .delta-chip.pos { background:var(--pos-bg); color:var(--pos); }
     .delta-chip.neg { background:var(--neg-bg); color:var(--neg); }
-    .delta-cards-inline { display:grid; grid-template-columns:repeat(7,1fr); gap:8px; flex:1 1 auto; }
+    .delta-cards-inline { display:grid; grid-template-columns:repeat(8,1fr); gap:8px; flex:1 1 auto; }
+    @media (max-width:1100px) { .delta-cards-inline { grid-template-columns:repeat(4,1fr); } }
+    @media (max-width:560px) { .delta-cards-inline { grid-template-columns:repeat(2,1fr); } }
     .delta-card-inline { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:8px 16px; text-align:center; position:relative; cursor:default; transition:transform .27s cubic-bezier(.16,1,.3,1),box-shadow .27s cubic-bezier(.16,1,.3,1); }
     .delta-card-inline:hover { transform:translateY(-3px); box-shadow:0 8px 20px rgba(77,44,20,0.18); z-index:10; }
     .delta-card-val { font-size:16px; font-weight:800; }
@@ -27563,7 +27706,7 @@ struct ScanSetupTemplate {
             {% endmatch %}
             {% match pdf_download_url %}
               {% when Some with (url) %}
-                <a class="button secondary sx-884cbe59" href="{{ url }}" id="pdf-download-btn"{% if pdf_generating %} {% endif %}>Download PDF</a>
+                <a class="button secondary{% if pdf_generating %} sx-884cbe59{% endif %}" href="{{ url }}" id="pdf-download-btn">Download PDF</a>
               {% when None %}{% endmatch %}
             {% match pdf_url %}
               {% when Some with (_) %}
@@ -29054,7 +29197,7 @@ struct ScanSetupTemplate {
                   a.textContent = 'Open PDF';
                   openBtn.replaceWith(a);
                 }
-                if (dlBtn) { dlBtn.style.opacity = ''; dlBtn.style.pointerEvents = ''; }
+                if (dlBtn) { dlBtn.classList.remove('sx-884cbe59'); dlBtn.style.opacity = ''; dlBtn.style.pointerEvents = ''; }
               } else {
                 setTimeout(checkPdf, 3000);
               }
@@ -33061,7 +33204,25 @@ struct CompareSelectTemplate {
     .delta-val.pos{color:var(--pos);}
     .delta-val.neg{color:var(--neg);}
     .delta-val.zero{color:var(--muted);}
-    .churn-note{font-size:11px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;cursor:help;}
+    .churn-note{display:inline-block;font-size:11px;font-weight:700;color:#b35428;background:rgba(196,92,16,0.12);border-radius:6px;padding:1px 6px;margin-left:4px;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:help;}
+body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
+.submod-table-desc{font-size:13px;color:var(--muted);margin:0 0 14px;line-height:1.6;}
+.submod-flag,.submod-flag-inline{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:#b23030;color:#fff;font-weight:900;font-size:11px;line-height:1;flex:0 0 auto;}
+.submod-flag.pointer{background:var(--muted);}
+.submod-table{width:100%;border-collapse:collapse;font-size:13px;}
+.submod-table th{text-align:left;padding:8px 10px;border-bottom:2px solid var(--line-strong);font-weight:800;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);white-space:nowrap;}
+.submod-table td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle;}
+.submod-row{cursor:pointer;transition:background .15s ease;}
+.submod-row:hover{background:rgba(196,92,16,0.06);}
+.submod-row.changed{background:rgba(212,160,23,0.08);}
+.submod-row.changed:hover{background:rgba(212,160,23,0.14);}
+.submod-row.active{box-shadow:inset 3px 0 0 var(--oxide);background:rgba(196,92,16,0.12);}
+.submod-name-cell{display:inline-flex;align-items:center;gap:8px;}
+.submod-name-link{font-weight:800;color:var(--text);text-decoration:none;}
+.submod-row:hover .submod-name-link{color:var(--oxide);}
+.submod-churn .pos{color:#1e7e34;font-weight:700;}.submod-churn .neg{color:var(--neg);font-weight:700;}
+.submod-checksum{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);}
+.submod-scope-hint{font-size:12px;color:var(--muted);font-style:italic;margin-left:6px;}
     .from-to{display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:13px;}
     .from-to strong{color:var(--text);font-weight:700;}
     .from-to .ft-sep{color:var(--muted-2);font-size:11px;}
@@ -33243,11 +33404,7 @@ struct CompareSelectTemplate {
         <a class="submod-scope-btn{% if super_scope_active %} active{% endif %}"
            href="/compare?a={{ baseline_run_id }}&amp;b={{ current_run_id }}&amp;scope=super"
            title="Only files that are not part of any submodule">Super-repo only</a>
-        {% for sub in submodule_options %}
-        <a class="submod-scope-btn{% if active_submodule.as_deref() == Some(sub.as_str()) %} active{% endif %}"
-           href="/compare?a={{ baseline_run_id }}&amp;b={{ current_run_id }}&amp;sub={{ sub }}"
-           title="Only files belonging to submodule {{ sub }}">{{ sub }}</a>
-        {% endfor %}
+        <span class="submod-scope-hint">Pick a submodule in the table below &darr;</span>
       </div>
       {% endif %}
       <div class="hero-body">
@@ -33410,6 +33567,45 @@ struct CompareSelectTemplate {
       </div>
     </section>
 
+    {% if has_any_submodule_data %}
+    <section class="panel" id="submodule-compare-section">
+      <div class="panel-title">Submodules <span class="sx-8bdabd9b">{{ submodule_rows.len()|commas }}</span></div>
+      <p class="submod-table-desc">Side-by-side comparison of every submodule across the two scans. Click a row to scope the whole page to that submodule; click the active (highlighted) row again to return to the full scan. A <span class="submod-flag-inline">!</span> marks submodules whose <strong>code actually changed</strong> (not just a moved pointer); rows with any change are tinted.</p>
+      <div class="table-wrap">
+        <table class="submod-table">
+          <thead>
+            <tr>
+              <th>Submodule</th>
+              <th>Code before &rarr; after</th>
+              <th>Lines +/&minus;</th>
+              <th>Code &Delta;</th>
+              <th>Files changed</th>
+              <th>Branch</th>
+              <th>Commit (base &rarr; current)</th>
+              <th>Last modified</th>
+              <th>Checksum (commit SHA)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in submodule_rows %}
+            <tr class="submod-row{% if s.active %} active{% endif %}{% if s.changed %} changed{% endif %}" data-href="{{ s.scope_href }}" title="{% if s.active %}Scoped to {{ s.name }} — click to return to the full scan{% else %}Click to scope the comparison to {{ s.name }}{% endif %}">
+              <td><span class="submod-name-cell">{% if s.code_changed %}<span class="submod-flag" title="Submodule code changed between the two scans (real content change)">!</span>{% else if s.commit_changed %}<span class="submod-flag pointer" title="Submodule pinned commit changed (pointer move)">&bull;</span>{% endif %}<a href="{{ s.scope_href }}" class="submod-name-link">{{ s.name }}</a></span></td>
+              <td><strong>{{ s.baseline_code_fmt }}</strong><span class="ft-sep">&rarr;</span><strong>{{ s.current_code_fmt }}</strong></td>
+              <td class="submod-churn"><span class="pos">+{{ s.lines_added|commas }}</span> <span class="neg">&minus;{{ s.lines_removed|commas }}</span></td>
+              <td><span class="delta-val {{ s.code_delta_class }}">{{ s.code_delta_str }}</span></td>
+              <td>{{ s.files_changed|commas }}</td>
+              <td>{% if s.branch != "" %}<span class="git-chip">{{ s.branch }}</span>{% else %}<span class="muted">-</span>{% endif %}</td>
+              <td class="mono">{% if s.commit_changed %}{{ s.baseline_commit_short }}<span class="ft-sep">&rarr;</span>{{ s.current_commit_short }}{% else if s.current_commit_short != "" %}{{ s.current_commit_short }}{% else %}<span class="muted">-</span>{% endif %}</td>
+              <td>{% if s.last_changed != "" %}{{ s.last_changed }}{% else %}<span class="muted">-</span>{% endif %}</td>
+              <td class="mono submod-checksum" title="{{ s.checksum }}">{% if s.checksum != "" %}{{ s.checksum }}{% else %}<span class="muted">-</span>{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
+
     <section class="panel" id="inline-charts-section">
       <div class="panel-title">Scan Delta Charts</div>
       <div class="ic-grid">
@@ -33518,8 +33714,8 @@ struct CompareSelectTemplate {
             <td title="{{ row.relative_path }}"><span class="file-path">{{ row.relative_path }}</span></td>
             <td class="hide-sm">{{ row.language }}</td>
             <td><span class="status-badge {{ row.status }}">{{ row.status }}</span></td>
-            <td><span class="from-to" data-baseline="{{ row.baseline_code }}" data-current="{{ row.current_code }}">{% if row.baseline_code_display == "—" %}<span class="ft-absent">—</span>{% else %}<strong>{{ row.baseline_code_display }}</strong>{% endif %}<span class="ft-sep">→</span>{% if row.current_code_display == "—" %}<span class="ft-absent">—</span>{% else %}<strong>{{ row.current_code_display }}</strong>{% endif %}</span></td>
-            <td><span class="delta-val {{ row.code_delta_class }}">{{ row.code_delta_str }}</span>{% if row.churn_str != "" %} <span class="churn-note" title="Lines added / removed in place (net Code &Delta; hides this)">{{ row.churn_str }}</span>{% endif %}</td>
+            <td><span class="from-to" data-baseline="{{ row.baseline_code }}" data-current="{{ row.current_code }}"><strong>{{ row.baseline_code_display }}</strong><span class="ft-sep">→</span><strong>{{ row.current_code_display }}</strong></span></td>
+            <td><span class="delta-val {{ row.code_delta_class }}">{{ row.code_delta_str }}</span>{% if row.churn_str != "" %} <span class="churn-note" title="Lines changed in place — the file content changed even though the net Code &Delta; can be 0 (e.g. 4 lines swapped for 4 others)">{{ row.churn_str }}</span>{% endif %}</td>
             <td class="hide-sm"><span class="delta-val {{ row.comment_delta_class }}">{{ row.comment_delta_str }}</span></td>
             <td><span class="delta-val {{ row.total_delta_class }}">{{ row.total_delta_str }}</span></td>
           </tr>
@@ -33600,6 +33796,22 @@ struct CompareSelectTemplate {
 
     var activeStatusFilter = 'all';
     var deltaPerPage = 25, deltaCurrPage = 1;
+
+    // Whole-row click on the submodule table navigates to that submodule's scope (or back to the
+    // full scan for the active row). The name cell is also a plain link so middle-click / keyboard
+    // still work; the row handler ignores clicks that originate on that anchor.
+    (function(){
+      var rows = document.querySelectorAll('.submod-row[data-href]');
+      for (var i = 0; i < rows.length; i++) {
+        (function(row){
+          row.addEventListener('click', function(e){
+            if (e.target.closest('a')) return;
+            var href = row.getAttribute('data-href');
+            if (href) window.location.href = href;
+          });
+        })(rows[i]);
+      }
+    })();
 
     function openFolder(path) {
       fetch('/open-path?path=' + encodeURIComponent(path))
@@ -34756,8 +34968,8 @@ struct CompareTemplate {
     baseline_git_commit_date: Option<String>,
     current_git_commit_date: Option<String>,
     project_name: String,
-    /// Submodule names present in either run (empty when neither scan used submodule breakdown).
-    submodule_options: Vec<String>,
+    /// Per-submodule comparison rows for the interactive submodule table.
+    submodule_rows: Vec<CompareSubmoduleRow>,
     /// True when either run has submodule data — controls whether the scope bar is shown.
     has_any_submodule_data: bool,
     /// The submodule currently being compared, if the `sub` query param was provided.
