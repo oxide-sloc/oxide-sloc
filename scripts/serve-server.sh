@@ -58,6 +58,9 @@ NO_AUTH=false
 WITH_AUTH=false
 QUIET=false
 UNDERSTAND_NO_AUTH=false
+TLS=false            # --tls: serve HTTPS (drives the binary's SLOC_TLS_CERT/KEY support)
+TLS_GENERATE=false   # --tls-generate: create a self-signed cert on the fly
+MTLS_CA=""           # --mtls <ca.pem>: require client certs (SLOC_TLS_CLIENT_CA)
 # NO_AUTH is assigned by --no-auth below but inert; the gate is UNDERSTAND_NO_AUTH (see note above).
 # shellcheck disable=SC2034
 for arg in "$@"; do
@@ -67,6 +70,10 @@ for arg in "$@"; do
         --with-auth) WITH_AUTH=true ;;
         --i-understand-no-auth) UNDERSTAND_NO_AUTH=true ;;
         --quiet) QUIET=true ;;
+        --tls) TLS=true ;;
+        --tls-generate) TLS=true; TLS_GENERATE=true ;;
+        --mtls) TLS=true ;;   # next arg (CA path) consumed below
+        --mtls=*) MTLS_CA="${arg#--mtls=}"; TLS=true ;;
         --port) ;;            # next arg consumed below
         --port=*) SLOC_PORT="${arg#--port=}" ;;
         --help|-h)
@@ -74,6 +81,12 @@ for arg in "$@"; do
             printf 'Options:\n'
             printf '  --port <n>              Bind on port n (default: 4317)\n'
             printf '  --with-auth             Generate a session API key (all endpoints require it)\n'
+            printf '  --tls                   Serve HTTPS. Uses SLOC_TLS_CERT / SLOC_TLS_KEY if set;\n'
+            printf '                          otherwise add --tls-generate.\n'
+            printf '  --tls-generate          Create (and reuse) a self-signed cert with this host'\''s\n'
+            printf '                          LAN SANs under ~/.oxide-sloc/tls/. Implies --tls.\n'
+            printf '  --mtls <ca.pem>         Require clients to present a cert signed by <ca.pem>\n'
+            printf '                          (mutual TLS). Implies --tls.\n'
             printf '  --no-auth               Run without authentication (see --i-understand-no-auth)\n'
             printf '  --i-understand-no-auth  Required to actually run --no-auth on a network (non-\n'
             printf '                          loopback) bind. An open, unauthenticated server on a\n'
@@ -97,6 +110,7 @@ done
 _prev=""
 for arg in "$@"; do
     [[ "$_prev" == "--port" ]] && SLOC_PORT="$arg"
+    [[ "$_prev" == "--mtls" ]] && { MTLS_CA="$arg"; TLS=true; }
     _prev="$arg"
 done
 
@@ -153,6 +167,78 @@ else
         exit 1
     fi
 fi
+
+# ── TLS / HTTPS setup ────────────────────────────────────────────────────────
+# The binary already terminates TLS with rustls (TLS 1.2/1.3, modern AEAD suites
+# only) and does mutual TLS when SLOC_TLS_CLIENT_CA is set — all gated on the
+# SLOC_TLS_CERT / SLOC_TLS_KEY env vars. This launcher just resolves a cert and
+# exports those vars before launch. Default stays HTTP so trusted-LAN use is
+# unchanged; HTTPS is opt-in via --tls / --tls-generate / --mtls.
+SCHEME=http
+TLS_CA_PATH=""   # path to the CA clients should trust (self-signed path only)
+
+# Comma-separated routable IPs, fed to gen-tls-cert.sh as extra SANs so the
+# generated cert verifies when reached by LAN IP (not just hostname/localhost).
+get_lan_ips_csv() {
+    classify_ips | awk -F '\t' '$1=="lan" || $1=="vpn" {print $3}' \
+        | paste -sd, - 2>/dev/null || true
+}
+
+setup_tls() {
+    # Honor the binary's fail-closed TLS gate (SLOC_REQUIRE_TLS / SLOC_HARDENED
+    # refuse a cleartext non-loopback bind) up front with friendly guidance,
+    # rather than letting the Rust layer bail with a raw error.
+    if [[ "$TLS" != true && ( -n "${SLOC_REQUIRE_TLS:-}" || -n "${SLOC_HARDENED:-}" ) ]]; then
+        printf '\n' >&2
+        printf 'SLOC_REQUIRE_TLS / SLOC_HARDENED is set, but TLS is not enabled.\n' >&2
+        printf 'A network-facing cleartext bind is refused in this mode. Enable HTTPS:\n\n' >&2
+        printf '  bash scripts/serve-server.sh --with-auth --tls --tls-generate\n' >&2
+        printf '  # or bring your own certificate:\n' >&2
+        printf '  SLOC_TLS_CERT=/path/server.crt SLOC_TLS_KEY=/path/server.key \\\n' >&2
+        printf '    bash scripts/serve-server.sh --with-auth --tls\n\n' >&2
+        exit 1
+    fi
+    [[ "$TLS" != true ]] && return 0
+
+    # Mutual TLS: require clients to present a cert chaining to the given CA.
+    if [[ -n "$MTLS_CA" ]]; then
+        if [[ ! -f "$MTLS_CA" ]]; then
+            printf 'ERROR: --mtls CA file not found: %s\n' "$MTLS_CA" >&2
+            exit 1
+        fi
+        export SLOC_TLS_CLIENT_CA="$MTLS_CA"
+    fi
+
+    if [[ -n "${SLOC_TLS_CERT:-}" && -n "${SLOC_TLS_KEY:-}" ]]; then
+        # Bring-your-own certificate (e.g. from a corporate / public CA).
+        if [[ ! -f "$SLOC_TLS_CERT" || ! -f "$SLOC_TLS_KEY" ]]; then
+            printf 'ERROR: SLOC_TLS_CERT / SLOC_TLS_KEY is set but a file is missing:\n' >&2
+            printf '  cert: %s\n  key:  %s\n' "$SLOC_TLS_CERT" "$SLOC_TLS_KEY" >&2
+            exit 1
+        fi
+        export SLOC_TLS_CERT SLOC_TLS_KEY
+    elif [[ "$TLS_GENERATE" == true ]]; then
+        # Generate (or reuse a still-valid) self-signed cert with LAN SANs.
+        local sans cert
+        sans="$(get_lan_ips_csv)"
+        cert="$(SLOC_TLS_SAN="$sans" bash "$SCRIPT_DIR/internal/gen-tls-cert.sh" | tail -1)"
+        if [[ -z "$cert" || ! -f "$cert" ]]; then
+            printf 'ERROR: could not generate a TLS certificate.\n' >&2
+            printf '  Run it directly for details: bash scripts/internal/gen-tls-cert.sh\n' >&2
+            exit 1
+        fi
+        export SLOC_TLS_CERT="$cert"
+        export SLOC_TLS_KEY="${cert%/*}/server.key"
+        TLS_CA_PATH="${cert%/*}/ca.crt"
+    else
+        printf '\n--tls needs a certificate. Either:\n' >&2
+        printf '  - set SLOC_TLS_CERT and SLOC_TLS_KEY to your PEM files, or\n' >&2
+        printf '  - add --tls-generate to create a self-signed cert automatically.\n\n' >&2
+        exit 1
+    fi
+    SCHEME=https
+    # A cleartext SLOC_REQUIRE_TLS gate is now satisfied; nothing else to do.
+}
 
 # ── Detect & classify local IPv4 addresses ─────────────────────────────────────
 # Emits one TAB-separated record per address:
@@ -541,12 +627,12 @@ print_banner() {
 
     if [[ -n "$first_ip" ]]; then
         printf '  ➜ RECOMMENDED URL for other machines:\n'
-        printf '      http://%s:%s/' "$first_ip" "$SLOC_PORT"
+        printf '      %s://%s:%s/' "$SCHEME" "$first_ip" "$SLOC_PORT"
         [[ -n "$advertise" ]] && printf '   (pinned via SLOC_ADVERTISE_HOST)'
         printf '\n\n'
     fi
 
-    printf '  Local (this machine only) → http://127.0.0.1:%s\n' "$SLOC_PORT"
+    printf '  Local (this machine only) → %s://127.0.0.1:%s\n' "$SCHEME" "$SLOC_PORT"
 
     # Physical-LAN addresses, each annotated with subnet + gateway so you can match
     # one to the network your peer is actually on (different VLANs = different subnets).
@@ -558,11 +644,11 @@ print_banner() {
             [[ "$ip" == "$primary_ip" ]] && tag="  ← recommended"
             [[ "$plen" != "-" ]] && sub="/$plen"
             if [[ "$gw" != "-" ]]; then
-                printf '    http://%s:%s   [%s%s via %s → gw %s]%s\n' \
-                    "$ip" "$SLOC_PORT" "$alias" "$sub" "$ip" "$gw" "$tag"
+                printf '    %s://%s:%s   [%s%s via %s → gw %s]%s\n' \
+                    "$SCHEME" "$ip" "$SLOC_PORT" "$alias" "$sub" "$ip" "$gw" "$tag"
             else
-                printf '    http://%s:%s   [%s%s — no gateway: same-subnet peers only]%s\n' \
-                    "$ip" "$SLOC_PORT" "$alias" "$sub" "$tag"
+                printf '    %s://%s:%s   [%s%s — no gateway: same-subnet peers only]%s\n' \
+                    "$SCHEME" "$ip" "$SLOC_PORT" "$alias" "$sub" "$tag"
             fi
         done <<< "$lan_recs"
     else
@@ -574,7 +660,7 @@ print_banner() {
         printf '  VPN tunnels (reachable ONLY by other clients on the SAME VPN, not the office LAN):\n'
         while IFS=$'\t' read -r cat alias ip plen gw; do
             [[ -z "$ip" ]] && continue
-            printf '    http://%s:%s   [%s]\n' "$ip" "$SLOC_PORT" "$alias"
+            printf '    %s://%s:%s   [%s]\n' "$SCHEME" "$ip" "$SLOC_PORT" "$alias"
         done <<< "$vpn_recs"
     fi
     # Hyper-V / Docker / WSL switches: never reachable from another machine.
@@ -582,18 +668,18 @@ print_banner() {
         printf '  Virtual switches (Hyper-V/Docker/WSL — NOT reachable from any other machine, ignore):\n'
         while IFS=$'\t' read -r cat alias ip plen gw; do
             [[ -z "$ip" ]] && continue
-            printf '    http://%s:%s   [%s]\n' "$ip" "$SLOC_PORT" "$alias"
+            printf '    %s://%s:%s   [%s]\n' "$SCHEME" "$ip" "$SLOC_PORT" "$alias"
         done <<< "$virt_recs"
     fi
     printf '\n'
 
     if [[ -n "$first_ip" ]]; then
         printf '  Open in a browser from another machine:\n'
-        printf '    http://%s:%s/\n' "$first_ip" "$SLOC_PORT"
+        printf '    %s://%s:%s/\n' "$SCHEME" "$first_ip" "$SLOC_PORT"
         printf '\n'
         if [[ -n "${SLOC_API_KEY:-}" ]]; then
             printf '  API key is set — open the login page to sign in:\n'
-            printf '    http://%s:%s/auth/login\n' "$first_ip" "$SLOC_PORT"
+            printf '    %s://%s:%s/auth/login\n' "$SCHEME" "$first_ip" "$SLOC_PORT"
             printf '\n'
             printf '  Auth lockout: %d failed attempts from the same IP triggers a\n' "${SLOC_AUTH_LOCKOUT_FAILS:-10}"
             printf '  temporary lockout (SLOC_AUTH_LOCKOUT_SECS=%s). Restart the server\n' "${SLOC_AUTH_LOCKOUT_SECS:-3600}"
@@ -601,14 +687,33 @@ print_banner() {
             printf '\n'
         fi
         printf '  CLI test:\n'
+        local _curl_ca=""
+        [[ "$SCHEME" == https && -n "$TLS_CA_PATH" ]] && _curl_ca="--cacert $TLS_CA_PATH "
         if [[ -n "${SLOC_API_KEY:-}" ]]; then
-            printf '    curl -H "Authorization: Bearer %s" http://%s:%s/healthz\n' \
-                   "$SLOC_API_KEY" "$first_ip" "$SLOC_PORT"
+            printf '    curl %s-H "Authorization: Bearer %s" %s://%s:%s/healthz\n' \
+                   "$_curl_ca" "$SLOC_API_KEY" "$SCHEME" "$first_ip" "$SLOC_PORT"
         else
-            printf '    curl http://%s:%s/healthz\n' "$first_ip" "$SLOC_PORT"
+            printf '    curl %s%s://%s:%s/healthz\n' "$_curl_ca" "$SCHEME" "$first_ip" "$SLOC_PORT"
         fi
     fi
     printf '\n'
+
+    # TLS posture: when HTTPS is active, state the cert source and how clients trust it.
+    if [[ "$SCHEME" == https ]]; then
+        printf '  TLS: HTTPS enabled (rustls, TLS 1.2/1.3).\n'
+        if [[ -n "${SLOC_TLS_CLIENT_CA:-}" ]]; then
+            printf '    Mutual TLS: clients must present a cert signed by %s\n' "$SLOC_TLS_CLIENT_CA"
+        fi
+        if [[ -n "$TLS_CA_PATH" ]]; then
+            printf '    Self-signed cert. Clients must trust the CA to avoid warnings:\n'
+            printf '      %s\n' "$TLS_CA_PATH"
+            printf '    (import it, or pass "curl --cacert %s ..."). Browsers will warn\n' "$TLS_CA_PATH"
+            printf '    until the CA is imported into their trust store.\n'
+        else
+            printf '    Using the provided SLOC_TLS_CERT / SLOC_TLS_KEY.\n'
+        fi
+        printf '\n'
+    fi
 
     if [[ "$PLATFORM" == linux ]]; then
         printf '  Firewall: %s\n' "$FIREWALL_STATUS"
@@ -650,8 +755,8 @@ print_banner() {
         printf '      peer on the same wired subnet first.\n'
         printf '    - Full-tunnel VPN clients often block inbound on the physical NIC. Reach\n'
         printf '      the server via its VPN address, or split-tunnel the LAN subnet.\n'
-        printf '    - Quick reachability test from a peer: curl -v http://%s:%s/healthz\n' \
-            "${first_ip:-<lan-ip>}" "$SLOC_PORT"
+        printf '    - Quick reachability test from a peer: curl -v %s://%s:%s/healthz\n' \
+            "$SCHEME" "${first_ip:-<lan-ip>}" "$SLOC_PORT"
         printf '\n'
     fi
 
@@ -901,6 +1006,11 @@ do_launch_cargo() {
     # Force an all-interfaces bind (see do_launch_binary for the rationale).
     "$bin" serve --server --bind "0.0.0.0:${SLOC_PORT}"
 }
+
+# Resolve TLS (export SLOC_TLS_CERT/KEY, or fail fast on a cert/enforcement error)
+# before touching the port, firewall, or binary — so a misconfigured HTTPS request
+# fails cleanly and with no side effects regardless of which launch path runs.
+setup_tls
 
 if [[ -f "$EXE" ]]; then
     do_launch_binary "$EXE"

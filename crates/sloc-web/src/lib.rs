@@ -2778,6 +2778,20 @@ pub fn make_test_router() -> Router {
     build_router(test_app_state("sloc_test"))
 }
 
+/// Test-only: validate that a PEM certificate + key pair builds a usable rustls
+/// server config — the exact path [`serve`] takes when `SLOC_TLS_CERT` /
+/// `SLOC_TLS_KEY` are set (and `SLOC_TLS_CLIENT_CA` for mutual TLS). Returns
+/// `Ok(())` on success so callers don't need the rustls types in scope.
+pub fn validate_tls_pair_for_test(cert_path: &str, key_path: &str) -> anyhow::Result<()> {
+    build_tls_config(cert_path, key_path).map(|_| ())
+}
+
+/// Test-only: expose the `SLOC_REQUIRE_TLS` / `SLOC_HARDENED` gate that refuses a
+/// cleartext network-facing bind.
+pub fn require_tls_for_test() -> bool {
+    require_tls()
+}
+
 /// Test router with one API key pre-loaded. Used by auth integration tests.
 pub fn make_test_router_with_key(api_key: &str) -> Router {
     let mut state = test_app_state("sloc_test_key");
@@ -33351,31 +33365,31 @@ struct CompareSelectTemplate {
         <div class="insight-card">
           <div class="dc-tip up">Sum of code lines added or grown across all files between the two scans.<br>Only counts files where the current scan has more code than the baseline — shrunk files do not contribute here.</div>
           <div class="insight-label">Lines Added</div>
-          <div class="insight-val pos">+{{ code_lines_added }}</div>
+          <div class="insight-val pos">+{{ code_lines_added|commas }}</div>
           <div class="insight-sub">New or grown source lines</div>
         </div>
         <div class="insight-card">
           <div class="dc-tip up">Sum of code lines removed or shrunk across all files between the two scans.<br>Only counts files where the current scan has fewer code lines than the baseline — grown files do not contribute here.</div>
           <div class="insight-label">Lines Removed</div>
-          <div class="insight-val neg">&minus;{{ code_lines_removed }}</div>
+          <div class="insight-val neg">&minus;{{ code_lines_removed|commas }}</div>
           <div class="insight-sub">Deleted or shrunk source lines</div>
         </div>
         <div class="insight-card">
           <div class="dc-tip up">Total current-scan code lines living in files that changed between the two scans.<br>Counts every code line in a modified file, not just the changed lines.</div>
           <div class="insight-label">Lines Modified</div>
-          <div class="insight-val">{{ code_lines_modified }}</div>
+          <div class="insight-val">{{ code_lines_modified|commas }}</div>
           <div class="insight-sub">Code lines in modified files</div>
         </div>
         <div class="insight-card">
           <div class="dc-tip up">Code lines in files that are byte-for-byte identical (same code/comment/blank counts) in both scans.<br>These lines carried over unchanged.</div>
           <div class="insight-label">Lines Unmodified</div>
-          <div class="insight-val">{{ code_lines_unmodified }}</div>
+          <div class="insight-val">{{ code_lines_unmodified|commas }}</div>
           <div class="insight-sub">Code lines in unchanged files</div>
         </div>
         <div class="insight-card">
           <div class="dc-tip up">Sum of the added, removed, modified, and unmodified code-line metrics across the two scans.</div>
           <div class="insight-label">Lines Total</div>
-          <div class="insight-val">{{ code_lines_total }}</div>
+          <div class="insight-val">{{ code_lines_total|commas }}</div>
           <div class="insight-sub">Added + removed + modified + unmodified</div>
         </div>
         <div class="insight-card">

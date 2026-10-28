@@ -146,25 +146,160 @@ sudo journalctl -u oxide-sloc -f
 
 ---
 
-## Reverse proxy (Nginx example)
+## Option C — Windows service (Task Scheduler)
 
-Put Nginx in front for HTTPS or a custom domain.
-Use `bind_address = "127.0.0.1:4317"` in `server.toml` so the port is not directly internet-accessible.
+The Windows analogue of the systemd unit. `install-service.ps1` registers a
+scheduled task named **OxideSLOC** that runs `oxide-sloc serve --server` at system
+startup as the SYSTEM account, so the server survives reboots without an
+interactive login. It generates an API key on first install (fail-closed parity),
+stores runtime settings in an ACL-restricted directory (`%ProgramData%\oxide-sloc`,
+readable only by SYSTEM + Administrators), and opens the inbound firewall port for
+all profiles.
+
+```powershell
+# From an elevated PowerShell (the script self-elevates via UAC if needed):
+powershell -ExecutionPolicy Bypass -File scripts\internal\install-service.ps1
+
+# With HTTPS (provide a cert/key — see "HTTPS from the launcher" below to generate one):
+.\install-service.ps1 -TlsCert C:\oxide-sloc\tls\server.crt -TlsKey C:\oxide-sloc\tls\server.key
+
+# Restrict which paths may be scanned (server mode is fail-closed on this):
+.\install-service.ps1 -AllowedRoots 'C:\repos;D:\work'
+
+# Manage it:
+Get-ScheduledTask -TaskName OxideSLOC            # status
+Get-Content "$env:ProgramData\oxide-sloc\logs\service.log" -Tail 50 -Wait   # logs
+Stop-ScheduledTask  -TaskName OxideSLOC          # stop
+
+# Remove the task, firewall rule, and the stored secret:
+.\install-service.ps1 -Uninstall
+```
+
+Registering a SYSTEM task and opening the firewall triggers a one-time UAC
+elevation (the script self-elevates), mirroring the `sudo` step in the systemd
+installer.
+
+---
+
+## HTTPS from the launcher (`serve-server.sh`)
+
+`scripts/serve-server.sh` can terminate TLS directly, driving the binary's rustls
+support (TLS 1.2/1.3, modern AEAD suites only). HTTP remains the default; HTTPS is
+opt-in:
+
+```bash
+# Bring your own certificate (corporate or public CA):
+SLOC_TLS_CERT=/path/server.crt SLOC_TLS_KEY=/path/server.key \
+  bash scripts/serve-server.sh --with-auth --tls
+
+# Generate a self-signed cert on the fly (air-gapped / LAN hosting). It is created
+# under ~/.oxide-sloc/tls/ with SANs for localhost, this host's name, and every
+# routable LAN IP, and is reused on subsequent launches until it expires:
+bash scripts/serve-server.sh --with-auth --tls --tls-generate
+
+# Mutual TLS — also require clients to present a cert signed by your CA:
+bash scripts/serve-server.sh --with-auth --tls --mtls /path/client-ca.crt
+```
+
+Generate a cert without launching (e.g. to install it into a service):
+
+```bash
+bash scripts/internal/gen-tls-cert.sh --out /etc/oxide-sloc/tls --san sloc.corp.local
+# → writes server.crt, server.key (0600), and ca.crt (distribute ca.crt to clients)
+```
+
+**Clients must trust the self-signed CA** (`ca.crt`) or they will see a warning:
+
+- **Linux / macOS / curl built against OpenSSL:** `curl --cacert ca.crt https://host:4317/healthz`,
+  or copy `ca.crt` into the system trust store (`/etc/pki/ca-trust/source/anchors/`
+  on RHEL, then `update-ca-trust`).
+- **Windows:** the bundled `curl` uses schannel and ignores `--cacert` — import the
+  CA into the current-user store instead:
+  `certutil -user -addstore Root ca.crt`. Browsers then trust it too.
+- A CA-issued (public or internal-PKI) certificate needs none of this.
+
+For an internet-facing deployment, prefer a reverse proxy (below) or a CA-issued
+cert over the self-signed path.
+
+---
+
+## Reverse proxy (TLS termination)
+
+For production, terminate TLS at a reverse proxy and bind oxide-sloc to loopback
+(`bind_address = "127.0.0.1:4317"` in `server.toml`, or `SLOC_BIND=127.0.0.1:4317`)
+so the port is not directly reachable. Set `SLOC_TRUST_PROXY=1` (plus
+`SLOC_TRUSTED_PROXY_IPS=<proxy-ip>`) so rate limits and audit logs bucket by the
+real client IP, and `SLOC_SECURE_COOKIES=1` so session cookies get the `Secure`
+flag behind the proxy's HTTPS.
+
+### Nginx
 
 ```nginx
 server {
     listen 443 ssl;
     server_name sloc.example.com;
-
-    # ... ssl_certificate / ssl_certificate_key ...
-
+    # ssl_certificate / ssl_certificate_key ...
     location / {
         proxy_pass http://127.0.0.1:4317;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
+
+### Caddy
+
+Caddy issues and renews certificates automatically (public ACME, or its internal
+CA for a LAN — clients trust Caddy's root once):
+
+```caddy
+sloc.corp.local {
+    reverse_proxy 127.0.0.1:4317
+    # Caddy sets X-Forwarded-For / X-Forwarded-Proto automatically.
+}
+```
+
+### Apache (httpd) — `mod_proxy`
+
+```apache
+<VirtualHost *:443>
+    ServerName sloc.example.com
+    SSLEngine on
+    # SSLCertificateFile / SSLCertificateKeyFile ...
+    ProxyPreserveHost On
+    ProxyPass        / http://127.0.0.1:4317/
+    ProxyPassReverse / http://127.0.0.1:4317/
+    RequestHeader set X-Forwarded-Proto "https"
+</VirtualHost>
+```
+Enable `mod_proxy`, `mod_proxy_http`, `mod_headers`, and `mod_ssl`.
+
+### IIS — Application Request Routing (ARR) + URL Rewrite
+
+Install **ARR** and **URL Rewrite**, enable proxying (ARR → Server Proxy Settings →
+Enable proxy), then add a reverse-proxy rule in the site's `web.config`:
+
+```xml
+<configuration>
+  <system.webServer>
+    <rewrite>
+      <rules>
+        <rule name="oxide-sloc" stopProcessing="true">
+          <match url="(.*)" />
+          <action type="Rewrite" url="http://127.0.0.1:4317/{R:1}" />
+          <serverVariables>
+            <set name="HTTP_X_FORWARDED_PROTO" value="https" />
+          </serverVariables>
+        </rule>
+      </rules>
+    </rewrite>
+  </system.webServer>
+</configuration>
+```
+Bind the site to HTTPS with your certificate in IIS Manager; ARR forwards
+`X-Forwarded-For` automatically.
 
 ---
 

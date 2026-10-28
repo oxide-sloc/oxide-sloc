@@ -1,0 +1,93 @@
+name: Launcher & hosting tests
+
+# Tests the server-hosting surface that lives outside the Rust crates:
+#   shellcheck  — lint serve-server.sh + gen-tls-cert.sh
+#   bats        — serve-server.sh behavior (auth gate, TLS flags, cert generation)
+#   rust        — TLS config builder + server-mode route attack-surface regressions
+#   pester      — install-service.ps1 (Windows Task Scheduler) dry-run construction
+#
+# These are fast: the bats suite uses a stub binary, and the Pester suite drives
+# the Windows installer in -DryRun mode, so neither needs a full release build.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ── Lint the hosting shell scripts ───────────────────────────────────────────
+  shellcheck:
+    name: shellcheck (hosting scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Run shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck -S warning scripts/serve-server.sh scripts/internal/gen-tls-cert.sh
+
+  # ── serve-server.sh behavior (bats) ──────────────────────────────────────────
+  bats:
+    name: bats (serve-server.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install bats
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bats
+          # openssl is preinstalled on ubuntu-latest (used by gen-tls-cert.sh)
+          openssl version
+      - name: Run launcher tests
+        run: bats scripts/tests/serve-server.bats
+
+  # ── TLS config + server-mode route regressions (Rust) ────────────────────────
+  rust:
+    name: cargo test (tls_config + server_mode_routes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          key: launcher-tests
+      - name: Run TLS + route tests
+        run: cargo test -p sloc-web --test tls_config --test server_mode_routes
+
+  # ── install-service.ps1 dry-run construction (Pester, Windows) ───────────────
+  pester:
+    name: Pester (install-service.ps1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Provide a stub binary (dry-run never executes it)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target\debug | Out-Null
+          Set-Content -Path target\debug\oxide-sloc.exe -Value 'stub' -NoNewline
+      - name: Ensure Pester 5
+        shell: pwsh
+        run: |
+          $p = Get-Module -ListAvailable Pester | Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $p -or $p.Version.Major -lt 5) {
+            Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser -MinimumVersion 5.5.0
+          }
+          Import-Module Pester -MinimumVersion 5.0.0
+          (Get-Module Pester).Version.ToString()
+      - name: Run Pester
+        shell: pwsh
+        run: |
+          $r = Invoke-Pester -Path scripts/tests/serve-server.Tests.ps1 -PassThru -Output Detailed
+          if ($r.FailedCount -gt 0) { throw "Pester failed: $($r.FailedCount) test(s)" }
