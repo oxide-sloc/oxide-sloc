@@ -431,7 +431,8 @@ pub struct GitConfig {
 /// All sub-config sections are optional; any present section *replaces* the
 /// corresponding base config section in full. Commonly used to represent
 /// different scanning contexts in the same repo
-/// (e.g. `[profile.frontend]`, `[profile.backend]`).
+/// (e.g. `[profiles.frontend]`, `[profiles.backend]`). The singular
+/// `[profile.NAME]` spelling is also accepted as an alias.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileConfig {
     #[serde(default)]
@@ -456,7 +457,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub git: GitConfig,
     /// Named profiles that override base config sections when selected via `--profile`.
-    #[serde(default)]
+    ///
+    /// Canonically written as `[profiles.NAME]`; the singular `[profile.NAME]` is
+    /// accepted as an alias so existing configs written against older docs keep working.
+    #[serde(default, alias = "profile")]
     pub profiles: BTreeMap<String, ProfileConfig>,
 }
 
@@ -543,6 +547,65 @@ impl AppConfig {
 
         Ok(())
     }
+}
+
+/// Top-level TOML keys that oxide-sloc recognizes. `profile` is the accepted
+/// singular alias of `profiles` (see [`AppConfig::profiles`]).
+const KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
+    "discovery",
+    "analysis",
+    "reporting",
+    "web",
+    "git",
+    "profiles",
+    "profile",
+];
+
+/// Advisory lint of a raw TOML config document.
+///
+/// Returns human-readable warnings (empty = nothing suspicious) for mistakes that
+/// otherwise parse cleanly and are silently ignored:
+///
+/// * a top-level table/key oxide-sloc does not recognize (likely a typo), and
+/// * a `[profiles]` / `[profile]` section that is present but yields no usable
+///   profiles (e.g. a bare `[profile]` table, or the wrong key spelling).
+///
+/// This never fails — hard parse/validation errors are surfaced by
+/// [`AppConfig::load_from_file`]. It is a pure function over the document text so it
+/// is cheap to call after a successful load and easy to unit-test.
+#[must_use]
+pub fn lint_config_str(raw: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    let Ok(table) = raw.parse::<toml::Table>() else {
+        // Unparseable TOML is reported through the normal load path; nothing to add here.
+        return warnings;
+    };
+
+    for key in table.keys() {
+        if !KNOWN_TOP_LEVEL_KEYS.contains(&key.as_str()) {
+            warnings.push(format!(
+                "unrecognized top-level key `[{key}]` — oxide-sloc does not use it (check for a typo)"
+            ));
+        }
+    }
+
+    let has_profile_table = table.get("profiles").is_some_and(toml::Value::is_table)
+        || table.get("profile").is_some_and(toml::Value::is_table);
+    if has_profile_table {
+        let yields_no_profiles = toml::from_str::<AppConfig>(raw)
+            .map(|c| c.profiles.is_empty())
+            .unwrap_or(true);
+        if yields_no_profiles {
+            warnings.push(
+                "a [profiles] / [profile] table is present but defines no usable profiles — \
+                 did you mean `[profiles.NAME]`?"
+                    .to_owned(),
+            );
+        }
+    }
+
+    warnings
 }
 
 // ── run profile ─────────────────────────────────────────────────────────────
@@ -919,5 +982,69 @@ bind_address = "127.0.0.1:4317"
     fn apply_profile_unknown_name_errors() {
         let mut cfg = AppConfig::default();
         assert!(cfg.apply_profile("does-not-exist").is_err());
+    }
+
+    // ── profile / profiles key parsing ─────────────────────────────────────────
+
+    #[test]
+    fn profiles_plural_table_parses() {
+        let toml = r#"
+[profiles.ci]
+[profiles.ci.reporting]
+report_title = "x"
+"#;
+        let cfg: AppConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.profiles.contains_key("ci"));
+        assert_eq!(
+            cfg.profiles["ci"].reporting.as_ref().unwrap().report_title,
+            "x"
+        );
+    }
+
+    #[test]
+    fn profile_singular_table_parses_via_alias() {
+        // The docs/init/--help historically said `[profile.NAME]` (singular); the
+        // serde alias must map that table onto the `profiles` field so such configs
+        // are not silently ignored.
+        let toml = r#"
+[profile.ci]
+[profile.ci.reporting]
+report_title = "x"
+"#;
+        let cfg: AppConfig = toml::from_str(toml).unwrap();
+        assert!(
+            cfg.profiles.contains_key("ci"),
+            "singular [profile.NAME] should populate `profiles` via alias"
+        );
+        assert_eq!(
+            cfg.profiles["ci"].reporting.as_ref().unwrap().report_title,
+            "x"
+        );
+    }
+
+    #[test]
+    fn lint_clean_config_has_no_warnings() {
+        let toml = "[discovery]\n[profiles.ci]\n[profiles.ci.reporting]\nreport_title = \"x\"\n";
+        assert!(lint_config_str(toml).is_empty());
+    }
+
+    #[test]
+    fn lint_flags_bare_profile_table_with_no_profiles() {
+        // A `[profile]` table that defines no named profile is silently ignored on parse;
+        // validate must surface it rather than reporting the file as clean.
+        let warnings = lint_config_str("[profile]\n");
+        assert!(
+            warnings.iter().any(|w| w.contains("no usable profiles")),
+            "expected an empty-profile-table warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn lint_flags_unrecognized_top_level_key() {
+        let warnings = lint_config_str("[reportng]\nreport_title = \"typo\"\n");
+        assert!(
+            warnings.iter().any(|w| w.contains("reportng")),
+            "expected an unrecognized-key warning, got {warnings:?}"
+        );
     }
 }

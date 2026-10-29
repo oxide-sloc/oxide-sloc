@@ -11,9 +11,14 @@
     "reporting": { "$ref": "#/definitions/reporting" },
     "web": { "$ref": "#/definitions/web" },
     "git": { "$ref": "#/definitions/git" },
+    "profiles": {
+      "type": "object",
+      "description": "Named profiles (e.g. [profiles.frontend]); each section replaces the matching base section when selected via --profile.",
+      "additionalProperties": { "$ref": "#/definitions/profile" }
+    },
     "profile": {
       "type": "object",
-      "description": "Named profiles (e.g. [profile.frontend]); each section replaces the matching base section when selected via --profile.",
+      "description": "Alias of `profiles`; the singular [profile.NAME] spelling is accepted for backward compatibility.",
       "additionalProperties": { "$ref": "#/definitions/profile" }
     }
   },

@@ -672,13 +672,14 @@ typescript = 30000</pre>
   <tr><td><code>server_mode</code></td><td><code>false</code></td><td>Enable server mode (same as <code>--server</code>)</td></tr>
 </table>
 
-<h2>[profile.NAME]</h2>
-<p>Named profiles override their entire config section when selected with <code>--profile NAME</code>.</p>
-<pre>[profile.frontend]
-[profile.frontend.discovery]
+<h2>[profiles.NAME]</h2>
+<p>Named profiles override their entire config section when selected with <code>--profile NAME</code>.
+The singular <code>[profile.NAME]</code> spelling is also accepted as an alias.</p>
+<pre>[profiles.frontend]
+[profiles.frontend.discovery]
 root_paths = ["frontend"]
 exclude_globs = ["**/node_modules/**"]
-[profile.frontend.analysis]
+[profiles.frontend.analysis]
 enabled_languages = ["TypeScript", "JavaScript", "CSS"]</pre>
 
 <!-- ══════════════════════════════════ ENV VARS ══════════════════════════════════════════ -->

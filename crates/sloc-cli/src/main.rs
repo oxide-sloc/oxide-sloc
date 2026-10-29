@@ -305,7 +305,8 @@ struct AnalyzeArgs {
 
     /// Apply a named profile from the config file (e.g. --profile frontend).
     /// Profile sections override the base [discovery], [analysis], and [reporting]
-    /// sections in their entirety; define them as [profile.NAME] in the TOML.
+    /// sections in their entirety; define them as [profiles.NAME] in the TOML
+    /// (the singular [profile.NAME] spelling is also accepted).
     #[arg(long, value_name = "NAME")]
     profile: Option<String>,
 
@@ -1963,20 +1964,21 @@ fn run_init(args: &InitArgs) -> Result<()> {
 # ── Named profiles ───────────────────────────────────────────────────────────
 # Use `oxide-sloc analyze --profile frontend` to apply a profile.
 # Each profile overrides its entire config section when selected.
+# (The singular [profile.NAME] spelling is also accepted as an alias.)
 #
-# [profile.frontend]
-# [profile.frontend.discovery]
+# [profiles.frontend]
+# [profiles.frontend.discovery]
 # root_paths = ["frontend"]
 # exclude_globs = ["**/node_modules/**", "**/dist/**"]
-# [profile.frontend.analysis]
+# [profiles.frontend.analysis]
 # enabled_languages = ["TypeScript", "JavaScript", "CSS", "HTML"]
-# [profile.frontend.reporting]
+# [profiles.frontend.reporting]
 # report_title = "Frontend SLOC Report"
 #
-# [profile.backend]
-# [profile.backend.discovery]
+# [profiles.backend]
+# [profiles.backend.discovery]
 # root_paths = ["backend", "shared"]
-# [profile.backend.analysis]
+# [profiles.backend.analysis]
 # enabled_languages = ["Rust", "Python", "SQL"]
 "##;
 
@@ -2028,6 +2030,12 @@ fn run_validate(args: &ValidateArgs) -> Result<()> {
     let config = sloc_config::AppConfig::load_from_file(config_path)
         .with_context(|| format!("failed to load {}", config_path.display()))?;
 
+    // Advisory lint: surface silently-ignored mistakes (unrecognized top-level tables,
+    // a profile table that yields no usable profiles) that parse cleanly but do nothing.
+    let lint_warnings = std::fs::read_to_string(config_path)
+        .map(|raw| sloc_config::lint_config_str(&raw))
+        .unwrap_or_default();
+
     let mut errors: Vec<String> = Vec::new();
 
     errors.extend(validate_path_list(
@@ -2075,6 +2083,9 @@ fn run_validate(args: &ValidateArgs) -> Result<()> {
             eprintln!("error: {e}");
         }
         anyhow::bail!("{} validation error(s) found", errors.len())
+    }
+    for w in &lint_warnings {
+        eprintln!("WARNING: {w}");
     }
     println!("config valid: {}", config_path.display());
     let profile_count = config.profiles.len();

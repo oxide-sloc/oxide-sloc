@@ -10,7 +10,7 @@
 #   * This file holds the fleet-wide SCAN defaults (what counts as code, which
 #     dirs to skip, IEEE policies, style bucket, hotspot window, etc.).
 #   * A repo that needs to differ overrides only what it must — either with a
-#     repo-local `.oxide-sloc.toml` / `[profile.*]`, or with the per-job
+#     repo-local `.oxide-sloc.toml` / `[profiles.*]`, or with the per-job
 #     Jenkins parameters (MIXED_LINE_POLICY, ENABLED_LANGUAGES, EXCLUDE_GLOBS,
 #     STYLE_COL_THRESHOLD, ACTIVITY_WINDOW, ...), which layer on top of the preset.
 #   * The upload / notify TARGETS (Nexus, Confluence, Jira, Bitbucket, webhook,

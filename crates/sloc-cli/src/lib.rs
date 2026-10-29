@@ -197,14 +197,15 @@
 //!
 //! ### Named profiles
 //!
-//! Override any config section per invocation with `--profile <name>`:
+//! Override any config section per invocation with `--profile <name>`. Define
+//! profiles under `[profiles.NAME]` (the singular `[profile.NAME]` is also accepted):
 //!
 //! ```toml
-//! [profile.frontend]
-//! [profile.frontend.discovery]
+//! [profiles.frontend]
+//! [profiles.frontend.discovery]
 //! root_paths    = ["frontend"]
 //! exclude_globs = ["**/node_modules/**", "**/dist/**"]
-//! [profile.frontend.analysis]
+//! [profiles.frontend.analysis]
 //! enabled_languages = ["TypeScript", "JavaScript", "CSS"]
 //! ```
 //!

@@ -447,7 +447,7 @@ To give that one job a **fleet-wide default environment that projects inherit**,
 `CI_PRESET=master`. It loads [`ci/sloc-ci-master.toml`](../ci/sloc-ci-master.toml) — the single
 master scan configuration (what counts as code, which directories to skip, IEEE policies, style
 bucket, hotspot window). Change a rule there once and every repository picks it up on its next scan.
-A repo that must differ overrides only what it needs: a repo-local `.oxide-sloc.toml` / `[profile.*]`,
+A repo that must differ overrides only what it needs: a repo-local `.oxide-sloc.toml` / `[profiles.*]`,
 or the per-job parameters (`MIXED_LINE_POLICY`, `ENABLED_LANGUAGES`, `EXCLUDE_GLOBS`,
 `STYLE_COL_THRESHOLD`, `ACTIVITY_WINDOW`, …) which layer on top of the preset.
 
