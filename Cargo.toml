@@ -69,6 +69,23 @@ base64 = "0.23"
 #   syn        2 (older proc-macros) vs 3 (async-trait / clap_derive transition)
 multiple_crate_versions = "allow"
 
+# Dev/test debug info is capped at line tables only. Full debug info (the default `debug = true`)
+# emits ~360 MB .pdb files per binary; with dozens of test binaries and generations that cargo
+# never garbage-collects, target/debug balloons into the tens of GB. Line tables keep file:line
+# in panic/test backtraces (all we need here) while shrinking each build generation ~5-10x.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+# Dependencies never need debug info in a dev/test build (we don't step through vendored
+# crates), and they are the bulk of target/debug/deps. Stripping their debug info entirely
+# keeps our own crates' file:line backtraces intact while shedding the largest share of the
+# per-generation .pdb/.rlib weight.
+[profile.dev.package."*"]
+debug = false
+
 # Optimized release build. Benefits the CPU-bound analysis state machine (cross-crate
 # inlining) and shrinks the air-gapped dist binaries (symbols stripped). `panic` is left at
 # the default "unwind" on purpose: sloc-web is a long-running server and abort-on-panic would
