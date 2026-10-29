@@ -472,6 +472,12 @@ pub struct Author {
     pub aliases: Vec<RawIdentity>,
     /// Repo-wide roll-up across all files.
     pub counts: AuthorLineCounts,
+    /// Number of commits authored by this contributor across the whole repository history (all
+    /// identities folded into this author). Counted by a single metadata-only `git log` pass, so
+    /// it reflects authored commits independent of how many lines currently survive. `0` when
+    /// attribution did not run, the path is not a git repo, or the history read failed.
+    #[serde(default)]
+    pub commit_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -918,6 +924,37 @@ fn attribute_ownership(
     resolver.finish(records)
 }
 
+/// Attach each resolved author's total commit count from one metadata-only `git log` walk (author
+/// name + email per commit, no diffs). Commits are bucketed by the *same* normalized-email key the
+/// blame attribution uses, then summed over each author's folded aliases, so the counts line up
+/// exactly with the merged contributors already shown. Best-effort: a non-git path or any git
+/// failure leaves every `commit_count` at its `0` default. Cheap relative to the per-file blame
+/// pass that already ran — a single subprocess whose cost scales with commit count, not tree size.
+fn attach_commit_counts(root: &Path, authors: &mut [Author]) {
+    if authors.is_empty() {
+        return;
+    }
+    // `%an`/`%ae` are the raw (non-mailmap) author name/email — matching the raw identities blame
+    // produced — separated by a unit-separator byte that cannot appear in either field.
+    let Some(out) = run_git_cmd(root, &["log", "--pretty=format:%an%x1f%ae"]) else {
+        return;
+    };
+    let mut by_key: HashMap<String, u64> = HashMap::new();
+    for line in out.lines() {
+        let mut parts = line.splitn(2, '\u{1f}');
+        let name = parts.next().unwrap_or("").to_owned();
+        let email = parts.next().unwrap_or("").to_owned();
+        let key = normalize_email_key(&RawIdentity { name, email });
+        *by_key.entry(key).or_default() += 1;
+    }
+    for author in authors.iter_mut() {
+        // Sum the distinct keys of this author's aliases so two spellings that collapsed into one
+        // author contribute once each, never double-counting a shared key.
+        let keys: HashSet<String> = author.aliases.iter().map(normalize_email_key).collect();
+        author.commit_count = keys.iter().filter_map(|k| by_key.get(k)).sum();
+    }
+}
+
 /// Rebuild a scoped author roll-up from the per-file `ownership` already present on `records`,
 /// remapping each [`FileOwnership::author_id`] to a compact, local index.
 ///
@@ -956,6 +993,8 @@ pub fn scope_authors_to_records(
                 canonical_email: pa.canonical_email.clone(),
                 aliases: pa.aliases.clone(),
                 counts,
+                // Repo-wide authored-commit total (not re-scoped to this subset — best effort).
+                commit_count: pa.commit_count,
             }),
             None => scoped.push(Author {
                 id: new_id,
@@ -963,6 +1002,7 @@ pub fn scope_authors_to_records(
                 canonical_email: String::new(),
                 aliases: Vec::new(),
                 counts,
+                commit_count: 0,
             }),
         }
     }
@@ -1325,6 +1365,7 @@ impl AuthorResolver {
             canonical_email: ident.email.clone(),
             aliases: vec![ident.clone()],
             counts: AuthorLineCounts::default(),
+            commit_count: 0,
         });
         self.seen_aliases.push(HashSet::from([ident.clone()]));
         self.key_to_id.insert(key, id);
@@ -1612,6 +1653,7 @@ fn merge_authors(
                 canonical_email: email.clone(),
                 aliases: Vec::new(),
                 counts: AuthorLineCounts::default(),
+                commit_count: 0,
             });
             id
         });
@@ -1619,6 +1661,7 @@ fn merge_authors(
         let src = &authors[old_idx];
         let dst = &mut merged[new_id as usize];
         dst.counts.add(&src.counts);
+        dst.commit_count += src.commit_count;
         for alias in &src.aliases {
             if !dst.aliases.contains(alias) {
                 dst.aliases.push(alias.clone());
@@ -2238,7 +2281,12 @@ fn assemble_run(
     let authors = if config.analysis.attribution {
         first_root
             .as_deref()
-            .map(|root| attribute_ownership(root, &mut analyzed, progress, cancel))
+            .map(|root| {
+                let mut authors = attribute_ownership(root, &mut analyzed, progress, cancel);
+                // One extra metadata-only history walk to attach per-author commit counts.
+                attach_commit_counts(root, &mut authors);
+                authors
+            })
             .unwrap_or_default()
     } else {
         Vec::new()
@@ -4307,6 +4355,7 @@ author-mail <other@example.com>
                 blank_lines: 0,
                 total_lines: code,
             },
+            commit_count: 0,
         }
     }
 
@@ -4780,6 +4829,7 @@ author-mail <other@example.com>
             canonical_email: format!("{name}@example.com"),
             aliases: vec![],
             counts: AuthorLineCounts::default(),
+            commit_count: 0,
         }
     }
 

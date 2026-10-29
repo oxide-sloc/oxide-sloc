@@ -833,6 +833,8 @@ struct AuthorReportRow {
     comment: u64,
     blank: u64,
     total: u64,
+    /// Commits authored across the whole repo history (0 when attribution found no git history).
+    commits: u64,
     /// Share of total code lines owned, pre-formatted to one decimal (e.g. "42.7").
     code_pct_str: String,
     /// Leaderboard bar fill width, pre-formatted to one decimal. Normalised to the top
@@ -952,6 +954,7 @@ fn build_author_rows(run: &AnalysisRun) -> Vec<AuthorReportRow> {
                 comment: a.counts.comment_lines,
                 blank: a.counts.blank_lines,
                 total: a.counts.total_lines,
+                commits: a.commit_count,
                 code_pct_str: format!("{pct:.1}"),
                 bar_pct_str: "0".to_string(),
                 files_owned: files.len() as u64,
@@ -6797,10 +6800,11 @@ struct WarningOpportunityRow {
         <p class="table-hint hs-hint">Click a column header to sort; drag its right edge to resize.</p>
         <div class="table-shell">
           <table id="ownership-table" data-sort-table class="table-resizable">
-            <colgroup><col><col><col><col><col><col><col><col></colgroup>
+            <colgroup><col><col><col><col><col><col><col><col><col></colgroup>
             <thead><tr>
               <th data-sort-type="text">Author<div class="col-resize-handle"></div></th>
               <th data-sort-type="text">Email<div class="col-resize-handle"></div></th>
+              <th data-sort-type="number" class="num-col">Commits<div class="col-resize-handle"></div></th>
               <th data-sort-type="number" class="num-col">Code<div class="col-resize-handle"></div></th>
               <th data-sort-type="number" class="num-col">Comment<div class="col-resize-handle"></div></th>
               <th data-sort-type="number" class="num-col">Blank<div class="col-resize-handle"></div></th>
@@ -6813,6 +6817,7 @@ struct WarningOpportunityRow {
               <tr>
                 <td>{% match a.profile_url %}{% when Some with (url) %}<a class="author-link" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ a.name }}</a>{% when None %}{{ a.name }}{% endmatch %}</td>
                 <td class="mono" style="color:var(--muted);">{{ a.email }}</td>
+                <td class="num-col">{{ a.commits|commas }}</td>
                 <td class="num-col">{{ a.code|commas }}</td>
                 <td class="num-col">{{ a.comment|commas }}</td>
                 <td class="num-col">{{ a.blank|commas }}</td>
@@ -6834,7 +6839,7 @@ struct WarningOpportunityRow {
             <span class="lb-avatar" style="background:{{ a.color }};">{{ a.initials }}</span>
             <span class="lb-name">{% match a.profile_url %}{% when Some with (url) %}<a class="author-link" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ a.name }}</a>{% when None %}{{ a.name }}{% endmatch %}</span>
             <span class="lb-bar-wrap"><span class="lb-bar" style="width:{{ a.bar_pct_str }}%;background:{{ a.color }};"></span></span>
-            <span class="lb-stats"><strong>{{ a.code|commas }}</strong> code lines &middot; {{ a.files_owned }} file{% if a.files_owned != 1 %}s{% endif %} &middot; {{ a.comment|commas }} comment &middot; {{ a.total|commas }} total &middot; {{ a.code_pct_str }}%</span>
+            <span class="lb-stats"><strong>{{ a.code|commas }}</strong> code lines &middot; {{ a.files_owned }} file{% if a.files_owned != 1 %}s{% endif %}{% if a.commits > 0 %} &middot; {{ a.commits|commas }} commit{% if a.commits != 1 %}s{% endif %}{% endif %} &middot; {{ a.comment|commas }} comment &middot; {{ a.total|commas }} total &middot; {{ a.code_pct_str }}%</span>
           </summary>
           <div class="table-shell own-files-shell">
             <table class="table-resizable">

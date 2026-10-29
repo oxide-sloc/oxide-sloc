@@ -727,6 +727,8 @@ struct OwnershipRow {
     comment: u64,
     blank: u64,
     total: u64,
+    /// Commits authored across the whole repo history (0 when no git history was read).
+    commits: u64,
     code_pct: f64,
     files_owned: u64,
     aliases: usize,
@@ -1973,6 +1975,7 @@ fn build_ownership_rows(run: Option<&AnalysisRun>, total_code: u64) -> Vec<Owner
                 comment: a.counts.comment_lines,
                 blank: a.counts.blank_lines,
                 total: a.counts.total_lines,
+                commits: a.commit_count,
                 code_pct: if total_code > 0 {
                     a.counts.code_lines as f64 / total_code as f64 * 100.0
                 } else {
@@ -2231,10 +2234,11 @@ fn render_ownership_populated(
         let dev_code = r.code.saturating_sub(r.test_code);
         let _ = write!(
             author_table,
-            r#"<tr><td><span class="own-dot" data-sx-style="background:{color};"></span>{name}</td><td><button type="button" class="own-email-copy" data-email="{email}" title="Click to copy this email">{email}</button></td><td class="num">{code}</td><td class="num">{dev_code}</td><td class="num">{test_code}</td><td class="num">{comment}</td><td class="num">{blank}</td><td class="num">{total}</td><td class="num">{pct:.1}%</td><td class="num">{files}</td><td class="num">{aliases}</td></tr>"#,
+            r#"<tr><td><span class="own-dot" data-sx-style="background:{color};"></span>{name}</td><td><button type="button" class="own-email-copy" data-email="{email}" title="Click to copy this email">{email}</button></td><td class="num">{commits}</td><td class="num">{code}</td><td class="num">{dev_code}</td><td class="num">{test_code}</td><td class="num">{comment}</td><td class="num">{blank}</td><td class="num">{total}</td><td class="num">{pct:.1}%</td><td class="num">{files}</td><td class="num">{aliases}</td></tr>"#,
             color = r.color,
             name = name_link(r),
             email = own_esc(&r.email),
+            commits = fmt_num(r.commits as i64),
             code = fmt_num(r.code as i64),
             dev_code = fmt_num(dev_code as i64),
             test_code = fmt_num(r.test_code as i64),
@@ -2335,7 +2339,7 @@ fn render_ownership_populated(
 <div class="panel sx-e6a29e9c" >
   <div class="own-table-scroll">
   <table class="data-table own-contrib-table" id="own-contrib-table">
-    <thead><tr><th data-sort="text">Author</th><th data-sort="text">Email</th><th class="num" data-sort="num">Code</th><th class="num" data-sort="num">Dev Code</th><th class="num" data-sort="num">Test Code</th><th class="num" data-sort="num">Comment</th><th class="num" data-sort="num">Blank</th><th class="num" data-sort="num">Total</th><th class="num" data-sort="num">Code %</th><th class="num" data-sort="num">Files Owned</th><th class="num" data-sort="num">Aliases</th></tr></thead>
+    <thead><tr><th data-sort="text">Author</th><th data-sort="text">Email</th><th class="num" data-sort="num">Commits</th><th class="num" data-sort="num">Code</th><th class="num" data-sort="num">Dev Code</th><th class="num" data-sort="num">Test Code</th><th class="num" data-sort="num">Comment</th><th class="num" data-sort="num">Blank</th><th class="num" data-sort="num">Total</th><th class="num" data-sort="num">Code %</th><th class="num" data-sort="num">Files Owned</th><th class="num" data-sort="num">Aliases</th></tr></thead>
     <tbody>{author_table}</tbody>
   </table>
   </div>
@@ -4541,6 +4545,7 @@ async fn index(
     let template = IndexTemplate {
         version: env!("CARGO_PKG_VERSION"),
         prefill_json,
+        toast_assets: sloc_toast_assets(&csp_nonce),
         csp_nonce,
         git_repo,
         git_ref,
@@ -9128,10 +9133,6 @@ fn render_result_page(
             .pdf_path
             .as_ref()
             .map(|_| format!("/runs/pdf/{run_id}")),
-        json_url: artifacts
-            .json_path
-            .as_ref()
-            .map(|_| format!("/runs/json/{run_id}")),
         html_download_url: artifacts
             .html_path
             .as_ref()
@@ -9140,12 +9141,7 @@ fn render_result_page(
             .pdf_path
             .as_ref()
             .map(|_| format!("/runs/pdf/{run_id}?download=1")),
-        json_download_url: artifacts
-            .json_path
-            .as_ref()
-            .map(|_| format!("/runs/json/{run_id}?download=1")),
         html_path: artifacts.html_path.as_ref().map(|p| display_path(p)),
-        json_path: artifacts.json_path.as_ref().map(|p| display_path(p)),
         prev_run_id: prev_entry.as_ref().map(|e| e.run_id.clone()),
         prev_run_timestamp: prev_entry.as_ref().map(|e| fmt_la_time(e.timestamp_utc)),
         prev_run_code_lines: prev_entry.as_ref().map(|e| e.summary.code_lines),
@@ -19512,7 +19508,6 @@ fn persist_run_artifacts(
         file_stem,
         html_path.as_deref(),
         pdf_path.as_deref(),
-        json_path.as_deref(),
         scan_config_path.as_deref(),
         &result_context,
     );
@@ -19636,7 +19631,6 @@ fn generate_offline_index(
     file_stem: &str,
     html_path: Option<&Path>,
     pdf_path: Option<&Path>,
-    json_path: Option<&Path>,
     scan_config_path: Option<&Path>,
     result_context: &RunResultContext,
 ) {
@@ -19758,12 +19752,9 @@ fn generate_offline_index(
         imports: totals.imports,
         html_url: make_rel(html_path),
         pdf_url: make_rel(pdf_path),
-        json_url: make_rel(json_path),
         html_download_url: make_rel(html_path),
         pdf_download_url: make_rel(pdf_path),
-        json_download_url: make_rel(json_path),
         html_path: html_path.map(display_path),
-        json_path: json_path.map(display_path),
         prev_run_id: prev_entry.as_ref().map(|e| e.run_id.clone()),
         prev_run_timestamp: prev_entry.as_ref().map(|e| fmt_la_time(e.timestamp_utc)),
         prev_run_code_lines: prev_entry.as_ref().map(|e| e.summary.code_lines),
@@ -20793,6 +20784,7 @@ fn build_preview_html(
         parent_row_id: None,
         depth: 0,
         name: format!("{root_name}/"),
+        rel_path: String::new(),
         kind: PreviewKind::Dir,
         is_dir: true,
         language: None,
@@ -20825,7 +20817,7 @@ fn build_preview_html(
     out.push_str(r#"<div class="explorer-toolbar compact">"#);
     out.push_str(r#"<div class="explorer-title-group">"#);
     out.push_str(r#"<div class="explorer-title">Project scope preview</div>"#);
-    out.push_str(r#"<div class="explorer-subtitle wide">Pre-scan explorer view for the current built-in analyzers and default skip rules.</div>"#);
+    out.push_str(r#"<div class="explorer-subtitle wide">Pre-scan explorer view for the current built-in analyzers and default skip rules. Untick a folder or file to exclude it from the scan &mdash; your choices fill the Exclude globs field above.</div>"#);
     out.push_str(r"</div></div>");
 
     out.push_str(r#"<div class="scope-stats">"#);
@@ -20867,7 +20859,23 @@ fn build_preview_html(
         } else {
             r#"<span class="tree-bullet">•</span>"#.to_string()
         };
-        write!(out, r#"<div class="tree-row kind-{} status-{}" data-kind="{}" data-status="{}" data-language="{}" data-row-id="{}" data-parent-id="{}" data-dir="{}" data-expanded="true" data-name-lower="{}" data-sort-name="{}" data-sort-date="{}" data-sort-type="{}" data-sort-status="{}"><div class="tree-name-cell" data-sx-style="--depth:{}">{}<span class="tree-node {}">{}</span></div><div class="tree-date-cell">{}</div><div class="tree-type-cell">{}</div><div class="tree-status-cell"><span class="badge {}">{}</span></div></div>"#, if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), escape_html(lang_attr), row.row_id, row.parent_row_id.map(|id| id.to_string()).unwrap_or_default(), if row.is_dir { "true" } else { "false" }, escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.modified), escape_html(&row.type_label.to_ascii_lowercase()), escape_html(status_label), row.depth, toggle_html, if row.is_dir { "tree-node-dir" } else { row.kind.node_class() }, escape_html(&row.name), escape_html(&row.modified), escape_html(&row.type_label), row.kind.badge_class(), status_label).ok();
+        // Per-row include/exclude checkbox. Ticked = in scope (default). Unticking a
+        // row writes an exclude glob into the step-1 "Exclude globs" field (folders use
+        // "<path>/**", files use the literal path). The root row (row_id 0) carries no
+        // checkbox — it always represents the whole selected project.
+        let check_html = if row.row_id == 0 {
+            String::new()
+        } else {
+            let check_title = if row.is_dir {
+                "Untick to exclude this folder from the scan"
+            } else {
+                "Untick to exclude this file from the scan"
+            };
+            format!(
+                r#"<input type="checkbox" class="tree-check" checked aria-label="Include in scan" title="{check_title}" />"#
+            )
+        };
+        write!(out, r#"<div class="tree-row kind-{} status-{}" data-kind="{}" data-status="{}" data-language="{}" data-row-id="{}" data-parent-id="{}" data-dir="{}" data-relpath="{}" data-expanded="true" data-name-lower="{}" data-sort-name="{}" data-sort-date="{}" data-sort-type="{}" data-sort-status="{}"><div class="tree-name-cell" data-sx-style="--depth:{}">{}{}<span class="tree-node {}">{}</span></div><div class="tree-date-cell">{}</div><div class="tree-type-cell">{}</div><div class="tree-status-cell"><span class="badge {}">{}</span></div></div>"#, if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), escape_html(lang_attr), row.row_id, row.parent_row_id.map(|id| id.to_string()).unwrap_or_default(), if row.is_dir { "true" } else { "false" }, escape_html(&row.rel_path), escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.modified), escape_html(&row.type_label.to_ascii_lowercase()), escape_html(status_label), row.depth, check_html, toggle_html, if row.is_dir { "tree-node-dir" } else { row.kind.node_class() }, escape_html(&row.name), escape_html(&row.modified), escape_html(&row.type_label), row.kind.badge_class(), status_label).ok();
     }
     if budget.shown >= budget.max_entries {
         out.push_str(r#"<div class="tree-row more-row" data-kind="file" data-status="more" data-row-id="999999" data-parent-id="" data-dir="false" data-expanded="true" data-name-lower="preview truncated"><div class="tree-name-cell sx-a008a1ed" ><span class="tree-bullet">•</span><span class="tree-node tree-node-more">... preview truncated for readability ...</span></div><div class="tree-date-cell">-</div><div class="tree-type-cell">Preview note</div><div class="tree-status-cell"></div></div>"#);
@@ -20891,6 +20899,9 @@ struct PreviewRow {
     parent_row_id: Option<usize>,
     depth: usize,
     name: String,
+    /// Path relative to the scan root, used to build the include/exclude glob a
+    /// checkbox toggle writes into the step-1 glob fields. Empty for the root row.
+    rel_path: String,
     kind: PreviewKind,
     is_dir: bool,
     language: Option<&'static str>,
@@ -20979,6 +20990,7 @@ fn handle_preview_dir_entry(
         parent_row_id,
         depth: depth + 1,
         name: format!("{name}/"),
+        rel_path: relative.clone(),
         kind: PreviewKind::Dir,
         is_dir: true,
         language: None,
@@ -21044,6 +21056,7 @@ fn handle_preview_file_entry(
         parent_row_id,
         depth: depth + 1,
         name: name.to_owned(),
+        rel_path: relative.clone(),
         kind,
         is_dir: false,
         language,
@@ -21694,6 +21707,16 @@ struct SubmoduleRow {
     .mini-button:hover, button.primary:hover, button.secondary:hover, .artifact-toggle:hover { transform: translateY(-1px); box-shadow: 0 10px 18px rgba(0,0,0,0.08); }
     .mini-button.oxide { color: var(--oxide-2); background: rgba(184,93,51,0.08); border-color: rgba(184,93,51,0.22); }
     .mini-button.primary-lite { background: rgba(37,99,235,0.08); color: var(--accent-2); border-color: rgba(37,99,235,0.20); }
+    .mini-button.profiles-danger { color: #b23030; border-color: rgba(178,48,48,0.28); }
+    body.dark-theme .mini-button.profiles-danger { color: #e07070; border-color: rgba(224,112,112,0.32); }
+    .mini-button.profiles-danger:hover { background: rgba(178,48,48,0.08); }
+    .profiles-bar { display:flex; align-items:center; justify-content:space-between; gap: 12px; flex-wrap: wrap; padding: 12px 14px; margin-bottom: 18px; border:1px solid var(--line); border-radius: 12px; background: linear-gradient(180deg, var(--surface-2), transparent); }
+    .profiles-bar-group { display:flex; align-items:center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+    .profiles-bar-label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+    .profiles-bar-sep { width:1px; align-self: stretch; min-height: 24px; background: var(--line); }
+    .profile-select { min-height: 38px; min-width: 190px; border-radius: 10px; border:1px solid var(--line-strong); background: var(--surface); color: var(--text); padding: 0 10px; font-size: 13px; font-weight: 700; }
+    .profiles-bar .mini-button { min-height: 38px; font-size: 13px; }
+    .mini-button.profiles-rerun[disabled], .mini-button.profiles-rerun.is-empty { opacity: 0.5; cursor: not-allowed; }
     #browse-path { min-height: 38px; font-size: 13px; padding: 0 18px; }
     #use-sample-path { min-height: 38px; font-size: 13px; padding: 0 13px; }
     .scope-legend-badges { display:flex; flex:1; align-items:center; justify-content:space-evenly; gap:6px; min-width:0; flex-wrap:nowrap; }
@@ -21888,6 +21911,11 @@ struct SubmoduleRow {
     .tree-name-cell { display:flex; align-items:center; gap: 10px; padding-left: calc(var(--depth) * 22px + 8px); position: relative; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; min-width:0; }
     .tree-toggle { width: 22px; height: 22px; display:inline-flex; align-items:center; justify-content:center; border:none; background: var(--surface-2); color: var(--muted-2); cursor:pointer; font-size: 14px; line-height: 1; flex:0 0 22px; border-radius: 6px; border: 1px solid var(--line); font-weight: 900; }
     .tree-toggle:hover { color: var(--text); background: var(--surface-3); }
+    .tree-check { width: 15px; height: 15px; flex: 0 0 15px; margin: 0; cursor: pointer; accent-color: var(--oxide); }
+    .tree-check:disabled { cursor: not-allowed; opacity: 0.5; }
+    .tree-row.excluded-by-check > .tree-name-cell > .tree-node { opacity: 0.45; text-decoration: line-through; }
+    .tree-row.excluded-by-check { background: rgba(178,48,48,0.06); }
+    body.dark-theme .tree-row.excluded-by-check { background: rgba(224,112,112,0.08); }
     .tree-bullet { color: var(--muted-2); width: 22px; text-align:center; flex: 0 0 22px; font-size: 7px; opacity: 0.5; }
     .tree-node { display:inline-flex; align-items:center; min-width:0; }
     .tree-node-dir { color: var(--text); font-weight: 800; }
@@ -22388,6 +22416,21 @@ struct SubmoduleRow {
         </div>
         <div class="card-body">
           <form method="post" action="/analyze" id="analyze-form">
+            <div class="profiles-bar" id="profiles-bar">
+              <div class="profiles-bar-group">
+                <button type="button" class="mini-button oxide profiles-rerun" id="rerun-last-btn" title="Reload the configuration from your most recent scan in this browser">&#8635; Re-run last scan</button>
+                <span class="profiles-bar-sep" aria-hidden="true"></span>
+                <label class="profiles-bar-label" for="profile-select">Saved profiles</label>
+                <select id="profile-select" class="profile-select" aria-label="Saved scan profiles">
+                  <option value="">&mdash; No saved profiles &mdash;</option>
+                </select>
+                <button type="button" class="mini-button" id="profile-load-btn" title="Load the selected profile into the form">Load</button>
+                <button type="button" class="mini-button profiles-danger" id="profile-delete-btn" title="Delete the selected profile">Delete</button>
+              </div>
+              <div class="profiles-bar-group">
+                <button type="button" class="mini-button" id="profile-save-btn" title="Save the current form settings as a reusable profile">&#43; Save current as profile</button>
+              </div>
+            </div>
             <div class="wizard-step active" data-step="1">
               <div class="section">
                 <div class="section-kicker">Step 1</div>
@@ -24256,6 +24299,89 @@ int main() { … }   ← code
           });
         }
 
+        // ── Include/exclude checkboxes ───────────────────────────────────────────
+        // Every row carries a checkbox (ticked = in scope). Unticking a row writes an
+        // exclude glob into the step-1 "Exclude globs" field (folders use "<path>/**",
+        // files use the literal path) and cascades to descendants. Re-ticking removes
+        // it. When the preview reloads we reconcile the boxes against the current
+        // exclude patterns so manual edits and the quick-add chips stay in sync.
+        function excludeList() {
+          if (!excludeGlobsInput) return [];
+          return excludeGlobsInput.value.split(/[\n,]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+        }
+        function writeExcludeList(list) {
+          if (!excludeGlobsInput) return;
+          var seen = {}, out = [];
+          list.forEach(function (p) { if (p && !seen[p]) { seen[p] = true; out.push(p); } });
+          excludeGlobsInput.value = out.join("\n");
+          excludeGlobsInput.dispatchEvent(new Event("input"));
+          if (typeof updateReview === "function") updateReview();
+        }
+        function patternForRow(row) {
+          var rel = row.getAttribute("data-relpath") || "";
+          if (!rel) return "";
+          return row.getAttribute("data-dir") === "true" ? (rel + "/**") : rel;
+        }
+        function descendantRows(row) {
+          var out = [], stack = [row.getAttribute("data-row-id")];
+          while (stack.length) {
+            var kids = childRows[stack.pop()] || [];
+            kids.forEach(function (kid) {
+              var kr = rowById(kid);
+              if (kr) { out.push(kr); stack.push(kid); }
+            });
+          }
+          return out;
+        }
+        function onCheckChange(row, checkbox) {
+          var pattern = patternForRow(row);
+          var list = excludeList();
+          var kids = descendantRows(row);
+          if (!checkbox.checked) {
+            if (pattern && list.indexOf(pattern) === -1) list.push(pattern);
+            kids.forEach(function (kr) {
+              var idx = list.indexOf(patternForRow(kr));
+              if (idx !== -1) list.splice(idx, 1);
+              var cb = kr.querySelector(".tree-check");
+              if (cb) { cb.checked = false; cb.disabled = true; }
+              kr.classList.add("excluded-by-check");
+            });
+            row.classList.add("excluded-by-check");
+          } else {
+            var at = list.indexOf(pattern);
+            if (pattern && at !== -1) list.splice(at, 1);
+            kids.forEach(function (kr) {
+              var cb = kr.querySelector(".tree-check");
+              if (cb) { cb.disabled = false; cb.checked = true; }
+              kr.classList.remove("excluded-by-check");
+            });
+            row.classList.remove("excluded-by-check");
+          }
+          writeExcludeList(list);
+        }
+        (function () {
+          var existing = excludeList();
+          if (existing.length) {
+            rows.forEach(function (row) {
+              var pattern = patternForRow(row);
+              if (pattern && existing.indexOf(pattern) !== -1) {
+                var cb = row.querySelector(".tree-check");
+                if (cb) cb.checked = false;
+                row.classList.add("excluded-by-check");
+                descendantRows(row).forEach(function (kr) {
+                  var kcb = kr.querySelector(".tree-check");
+                  if (kcb) { kcb.checked = false; kcb.disabled = true; }
+                  kr.classList.add("excluded-by-check");
+                });
+              }
+            });
+          }
+        }());
+        previewPanel.querySelectorAll(".tree-check").forEach(function (checkbox) {
+          var row = checkbox.closest(".tree-row");
+          if (row) checkbox.addEventListener("change", function () { onCheckChange(row, checkbox); });
+        });
+
         updateLanguageButtons();
         sortSiblingRows();
         applyVisibility();
@@ -25459,46 +25585,200 @@ int main() { … }   ← code
   </script>
   <script nonce="{{ csp_nonce }}">
     (function () {
-      var raw = {{ prefill_json|safe }};
-      if (!raw || typeof raw !== 'object' || !raw.path) return;
-      function setVal(id, val) { var el = document.getElementById(id); if (el) { el.value = val; if (id === 'output_dir') scrollInputToEnd(el); } }
+      function setVal(id, val) { var el = document.getElementById(id); if (el) { el.value = val; if (id === 'output_dir' && typeof scrollInputToEnd === 'function') scrollInputToEnd(el); } }
       function setChecked(id, v) { var el = document.getElementById(id); if (el) el.checked = v; }
       function setSelect(id, val) { var el = document.getElementById(id); if (el) el.value = val; }
-      setVal('path', raw.path || '');
-      setVal('include_globs', raw.include_globs || '');
-      setVal('exclude_globs', raw.exclude_globs || '');
-      setVal('output_dir', raw.output_dir || '');
-      setVal('report_title', raw.report_title || '');
-      if (raw.submodule_breakdown) setChecked('submodule_breakdown', true);
-      setSelect('mixed_line_policy', raw.mixed_line_policy || 'code_only');
-      setChecked('python_docstrings_as_comments', !!raw.python_docstrings_as_comments);
-      setSelect('generated_file_detection', raw.generated_file_detection ? 'enabled' : 'disabled');
-      setSelect('minified_file_detection', raw.minified_file_detection ? 'enabled' : 'disabled');
-      setSelect('vendor_directory_detection', raw.vendor_directory_detection ? 'enabled' : 'disabled');
-      if (raw.include_lockfiles) setSelect('include_lockfiles', 'enabled');
-      setSelect('binary_file_behavior', raw.binary_file_behavior || 'skip');
-      setChecked('generate_html', raw.generate_html !== false);
-      setChecked('generate_pdf', !!raw.generate_pdf);
-      if (raw.continuation_line_policy) setSelect('continuation_line_policy', raw.continuation_line_policy);
-      if (raw.blank_in_block_comment_policy) setSelect('blank_in_block_comment_policy', raw.blank_in_block_comment_policy);
-      setSelect('count_compiler_directives', raw.count_compiler_directives === false ? 'disabled' : 'enabled');
-      setSelect('style_analysis_enabled', raw.style_analysis_enabled === false ? 'disabled' : 'enabled');
-      if (raw.style_col_threshold) setSelect('style_col_threshold', String(raw.style_col_threshold));
-      if (raw.style_score_threshold) setSelect('style_score_threshold', String(raw.style_score_threshold));
-      if (raw.style_lang_scope) setSelect('style_lang_scope', raw.style_lang_scope);
-      if (raw.coverage_file) setVal('coverage_file', raw.coverage_file);
-      if (raw.cocomo_mode) setSelect('cocomo_mode', raw.cocomo_mode);
-      if (raw.complexity_alert) setVal('complexity_alert', String(raw.complexity_alert));
-      if (raw.activity_window !== undefined && raw.activity_window !== null) setVal('activity_window', String(raw.activity_window));
-      setSelect('exclude_duplicates', raw.exclude_duplicates ? 'enabled' : 'disabled');
-      setSelect('attribution', raw.attribution ? 'enabled' : 'disabled');
-      // Trigger dynamic UI updates after pre-fill.
-      setTimeout(function () {
-        var pathEl = document.getElementById('path');
-        if (pathEl) pathEl.dispatchEvent(new Event('input', { bubbles: true }));
-        var policyEl = document.getElementById('mixed_line_policy');
-        if (policyEl) policyEl.dispatchEvent(new Event('change', { bubbles: true }));
-      }, 80);
+      function gv(id) { var el = document.getElementById(id); return el ? el.value : ''; }
+      function gc(id) { var el = document.getElementById(id); return !!(el && el.checked); }
+      function gEnabled(id) { var el = document.getElementById(id); return !!(el && el.value === 'enabled'); }
+
+      // Apply a saved parameter object (previous run, "re-run last scan", or a named
+      // profile) to the scan form. Shape matches collectScanParams() below and the
+      // server-side prefill JSON.
+      window.applyScanParams = function (raw) {
+        if (!raw || typeof raw !== 'object') return;
+        if (raw.path) setVal('path', raw.path);
+        setVal('include_globs', raw.include_globs || '');
+        setVal('exclude_globs', raw.exclude_globs || '');
+        setVal('output_dir', raw.output_dir || '');
+        setVal('report_title', raw.report_title || '');
+        setChecked('submodule_breakdown', !!raw.submodule_breakdown);
+        setSelect('mixed_line_policy', raw.mixed_line_policy || 'code_only');
+        setChecked('python_docstrings_as_comments', !!raw.python_docstrings_as_comments);
+        setSelect('generated_file_detection', raw.generated_file_detection ? 'enabled' : 'disabled');
+        setSelect('minified_file_detection', raw.minified_file_detection ? 'enabled' : 'disabled');
+        setSelect('vendor_directory_detection', raw.vendor_directory_detection ? 'enabled' : 'disabled');
+        setSelect('include_lockfiles', raw.include_lockfiles ? 'enabled' : 'disabled');
+        setSelect('binary_file_behavior', raw.binary_file_behavior || 'skip');
+        setChecked('generate_html', raw.generate_html !== false);
+        setChecked('generate_pdf', !!raw.generate_pdf);
+        if (raw.continuation_line_policy) setSelect('continuation_line_policy', raw.continuation_line_policy);
+        if (raw.blank_in_block_comment_policy) setSelect('blank_in_block_comment_policy', raw.blank_in_block_comment_policy);
+        setSelect('count_compiler_directives', raw.count_compiler_directives === false ? 'disabled' : 'enabled');
+        setSelect('style_analysis_enabled', raw.style_analysis_enabled === false ? 'disabled' : 'enabled');
+        if (raw.style_col_threshold) setSelect('style_col_threshold', String(raw.style_col_threshold));
+        if (raw.style_score_threshold) setSelect('style_score_threshold', String(raw.style_score_threshold));
+        if (raw.style_lang_scope) setSelect('style_lang_scope', raw.style_lang_scope);
+        if (raw.coverage_file) setVal('coverage_file', raw.coverage_file);
+        if (raw.cocomo_mode) setSelect('cocomo_mode', raw.cocomo_mode);
+        if (raw.complexity_alert) setVal('complexity_alert', String(raw.complexity_alert));
+        if (raw.activity_window !== undefined && raw.activity_window !== null) setVal('activity_window', String(raw.activity_window));
+        setSelect('exclude_duplicates', raw.exclude_duplicates ? 'enabled' : 'disabled');
+        setSelect('attribution', raw.attribution ? 'enabled' : 'disabled');
+        // Trigger dynamic UI updates (scope preview, policy-dependent fields) after apply.
+        setTimeout(function () {
+          var pathEl = document.getElementById('path');
+          if (pathEl) pathEl.dispatchEvent(new Event('input', { bubbles: true }));
+          var policyEl = document.getElementById('mixed_line_policy');
+          if (policyEl) policyEl.dispatchEvent(new Event('change', { bubbles: true }));
+        }, 80);
+      };
+
+      // Snapshot the current form into a parameter object (inverse of applyScanParams).
+      window.collectScanParams = function () {
+        return {
+          path: gv('path'),
+          include_globs: gv('include_globs'),
+          exclude_globs: gv('exclude_globs'),
+          output_dir: gv('output_dir'),
+          report_title: gv('report_title'),
+          submodule_breakdown: gc('submodule_breakdown'),
+          mixed_line_policy: gv('mixed_line_policy'),
+          python_docstrings_as_comments: gc('python_docstrings_as_comments'),
+          generated_file_detection: gEnabled('generated_file_detection'),
+          minified_file_detection: gEnabled('minified_file_detection'),
+          vendor_directory_detection: gEnabled('vendor_directory_detection'),
+          include_lockfiles: gEnabled('include_lockfiles'),
+          binary_file_behavior: gv('binary_file_behavior'),
+          generate_html: gc('generate_html'),
+          generate_pdf: gc('generate_pdf'),
+          continuation_line_policy: gv('continuation_line_policy'),
+          blank_in_block_comment_policy: gv('blank_in_block_comment_policy'),
+          count_compiler_directives: gEnabled('count_compiler_directives'),
+          style_analysis_enabled: gEnabled('style_analysis_enabled'),
+          style_col_threshold: gv('style_col_threshold'),
+          style_score_threshold: gv('style_score_threshold'),
+          style_lang_scope: gv('style_lang_scope'),
+          coverage_file: gv('coverage_file'),
+          cocomo_mode: gv('cocomo_mode'),
+          complexity_alert: gv('complexity_alert'),
+          activity_window: gv('activity_window'),
+          exclude_duplicates: gEnabled('exclude_duplicates'),
+          attribution: gEnabled('attribution')
+        };
+      };
+
+      // Auto-apply the server-provided prefill (arriving from a previous run's
+      // "Run another scan" / scan-config replay).
+      var raw = {{ prefill_json|safe }};
+      if (raw && typeof raw === 'object' && raw.path) window.applyScanParams(raw);
+    })();
+  </script>
+  <script nonce="{{ csp_nonce }}">
+    // Re-run last scan + named saved profiles. "Last scan" persists this browser's most
+    // recent submission in localStorage; named profiles are stored server-side via
+    // /api/scan-profiles so they survive across browsers and sessions.
+    (function () {
+      var LAST_KEY = 'oxide-sloc-last-scan';
+      var form = document.getElementById('analyze-form');
+      var rerunBtn = document.getElementById('rerun-last-btn');
+      var select = document.getElementById('profile-select');
+      var loadBtn = document.getElementById('profile-load-btn');
+      var deleteBtn = document.getElementById('profile-delete-btn');
+      var saveBtn = document.getElementById('profile-save-btn');
+      var profileParams = {};
+
+      function toast(msg, kind) {
+        if (window.slocToast) window.slocToast(msg, { type: kind || 'info' });
+        else if (kind === 'error') window.alert(msg);
+      }
+
+      // ── Re-run last scan ─────────────────────────────────────────────────────
+      function readLast() {
+        try { var s = window.localStorage.getItem(LAST_KEY); return s ? JSON.parse(s) : null; }
+        catch (e) { return null; }
+      }
+      function refreshRerun() {
+        if (!rerunBtn) return;
+        rerunBtn.style.display = readLast() ? '' : 'none';
+      }
+      if (rerunBtn) {
+        rerunBtn.addEventListener('click', function () {
+          var last = readLast();
+          if (!last) { toast('No previous scan found in this browser yet.', 'error'); return; }
+          window.applyScanParams(last);
+          toast('Loaded your last scan configuration.');
+        });
+      }
+      if (form) {
+        form.addEventListener('submit', function () {
+          try { window.localStorage.setItem(LAST_KEY, JSON.stringify(window.collectScanParams())); }
+          catch (e) {}
+        });
+      }
+      refreshRerun();
+
+      // ── Named saved profiles ─────────────────────────────────────────────────
+      function renderProfiles(list) {
+        if (!select) return;
+        profileParams = {};
+        while (select.options.length) select.remove(0);
+        var ph = document.createElement('option');
+        ph.value = '';
+        ph.textContent = list.length ? '— Select a saved profile —' : '— No saved profiles —';
+        select.appendChild(ph);
+        list.forEach(function (p) {
+          profileParams[p.id] = p.params;
+          var opt = document.createElement('option');
+          opt.value = p.id;
+          opt.textContent = p.name;
+          select.appendChild(opt);
+        });
+      }
+      function loadProfiles() {
+        fetch('/api/scan-profiles', { headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.ok ? r.json() : { profiles: [] }; })
+          .then(function (data) { renderProfiles((data && data.profiles) || []); })
+          .catch(function () {});
+      }
+      if (loadBtn) {
+        loadBtn.addEventListener('click', function () {
+          var id = select ? select.value : '';
+          if (!id || !profileParams[id]) { toast('Select a saved profile first.', 'error'); return; }
+          window.applyScanParams(profileParams[id]);
+          toast('Profile loaded into the form.');
+        });
+      }
+      if (saveBtn) {
+        saveBtn.addEventListener('click', function () {
+          var suggested = (document.getElementById('report_title') || {}).value || '';
+          var name = window.prompt('Name this scan profile:', suggested);
+          if (name === null) return;
+          name = name.trim();
+          if (!name) { toast('Profile name cannot be empty.', 'error'); return; }
+          fetch('/api/scan-profiles', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, params: window.collectScanParams() })
+          })
+            .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(function () { toast('Profile "' + name + '" saved.'); loadProfiles(); })
+            .catch(function (e) { toast('Could not save profile: ' + e.message, 'error'); });
+        });
+      }
+      if (deleteBtn) {
+        deleteBtn.addEventListener('click', function () {
+          var id = select ? select.value : '';
+          if (!id) { toast('Select a saved profile to delete.', 'error'); return; }
+          var label = select.options[select.selectedIndex] ? select.options[select.selectedIndex].textContent : 'this profile';
+          if (!window.confirm('Delete the profile "' + label + '"? This cannot be undone.')) return;
+          fetch('/api/scan-profiles/' + encodeURIComponent(id), { method: 'DELETE' })
+            .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(function () { toast('Profile deleted.'); loadProfiles(); })
+            .catch(function (e) { toast('Could not delete profile: ' + e.message, 'error'); });
+        });
+      }
+      loadProfiles();
     })();
   </script>
   <script nonce="{{ csp_nonce }}">
@@ -25582,6 +25862,7 @@ int main() { … }   ← code
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
     &nbsp;·&nbsp; <a href="/report-bug" rel="noopener">Report a Bug</a> &nbsp;&middot;&nbsp; <a href="/api-docs" rel="noopener">REST API</a>
   </footer>
+  {{ toast_assets|safe }}
 </body>
 </html>
 "##,
@@ -25590,6 +25871,7 @@ int main() { … }   ← code
 struct IndexTemplate {
     version: &'static str,
     prefill_json: String,
+    toast_assets: String,
     csp_nonce: String,
     git_repo: String,
     git_ref: String,
@@ -27715,30 +27997,11 @@ struct ScanSetupTemplate {
           </div>
         </div>
         <div class="action-card">
-          <h3>JSON result</h3>
-          <div class="action-buttons">
-            {% match json_url %}
-              {% when Some with (url) %}
-                <a class="button" href="{{ url }}" target="_blank" rel="noopener">Open JSON</a>
-              {% when None %}{% endmatch %}
-            {% match json_download_url %}
-              {% when Some with (url) %}
-                <a class="button secondary" href="{{ url }}">Download JSON</a>
-              {% when None %}{% endmatch %}
-            {% match json_path %}
-              {% when Some with (_path) %}
-                <p class="action-empty-note sx-1d436efc" >Machine-readable scan result for CI pipelines, scripting, or re-rendering reports.</p>
-              {% when None %}
-                <p class="action-empty-note">JSON not enabled for this run — re-run with JSON artifact enabled to get a machine-readable result.</p>
-              {% endmatch %}
-          </div>
-        </div>
-        <div class="action-card">
           <h3>Scan config</h3>
           <div class="action-buttons">
             <a class="button secondary" href="{{ scan_config_url }}">Download config</a>
             <a class="button sx-08dc943d" href="/scan-setup" >Run another scan</a>
-            <p class="action-empty-note sx-1d436efc" >Download scan-config.json to replay this exact setup via the Scan Setup page.</p>
+            <p class="action-empty-note sx-1d436efc" >Download scan-config.json to replay this exact setup via the Scan Setup page. The machine-readable result.json is also saved alongside the report in the output folder above.</p>
           </div>
         </div>
         {% if confluence_configured %}
@@ -29449,12 +29712,9 @@ struct ResultTemplate {
     imports: u64,
     html_url: Option<String>,
     pdf_url: Option<String>,
-    json_url: Option<String>,
     html_download_url: Option<String>,
     pdf_download_url: Option<String>,
-    json_download_url: Option<String>,
     html_path: Option<String>,
-    json_path: Option<String>,
     prev_run_id: Option<String>,
     prev_run_timestamp: Option<String>,
     prev_run_code_lines: Option<u64>,

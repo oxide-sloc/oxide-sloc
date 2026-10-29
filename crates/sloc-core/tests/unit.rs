@@ -1889,6 +1889,70 @@ fn analyze_real_git_repo_populates_metadata() {
 }
 
 #[test]
+fn analyze_attributes_commit_counts_per_author() {
+    use std::process::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let run_git = |args: &[&str], name: &str, email: &str| {
+        Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", name)
+            .env("GIT_AUTHOR_EMAIL", email)
+            .env("GIT_COMMITTER_NAME", name)
+            .env("GIT_COMMITTER_EMAIL", email)
+            .output()
+    };
+    if run_git(&["init", "-q"], "Alice", "alice@example.com").is_err() {
+        return; // git not available — skip silently
+    }
+    // Alice makes three commits; Bob makes one. Each commit changes a blameable file so the
+    // committing author also owns surviving lines and therefore appears in run.authors.
+    let commit = |msg: &str, name: &str, email: &str| {
+        let _ = run_git(&["add", "."], name, email);
+        run_git(
+            &["-c", "commit.gpgsign=false", "commit", "-q", "-m", msg],
+            name,
+            email,
+        )
+    };
+    std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+    if commit("c1", "Alice", "alice@example.com").map_or(true, |o| !o.status.success()) {
+        return; // commit failed (e.g. no identity) — skip
+    }
+    std::fs::write(root.join("a.rs"), "fn a() {}\nfn a2() {}\n").unwrap();
+    let _ = commit("c2", "Alice", "alice@example.com");
+    std::fs::write(root.join("a.rs"), "fn a() {}\nfn a2() {}\nfn a3() {}\n").unwrap();
+    let _ = commit("c3", "Alice", "alice@example.com");
+    std::fs::write(root.join("b.rs"), "fn b() {}\n").unwrap();
+    let _ = commit("c4", "Bob", "bob@example.com");
+
+    let cfg = analysis_config_for(root);
+    let run = analyze(&cfg, "test", None, None).unwrap();
+    if run.authors.is_empty() {
+        return; // blame unavailable in this environment — nothing to assert
+    }
+    let alice = run
+        .authors
+        .iter()
+        .find(|a| a.canonical_email == "alice@example.com");
+    let bob = run
+        .authors
+        .iter()
+        .find(|a| a.canonical_email == "bob@example.com");
+    assert_eq!(
+        alice.map(|a| a.commit_count),
+        Some(3),
+        "Alice authored three commits"
+    );
+    assert_eq!(
+        bob.map(|a| a.commit_count),
+        Some(1),
+        "Bob authored one commit"
+    );
+}
+
+#[test]
 fn analyze_handles_diverse_file_contents() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

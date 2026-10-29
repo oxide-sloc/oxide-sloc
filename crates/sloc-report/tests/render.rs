@@ -169,6 +169,7 @@ fn make_run_with_ownership() -> AnalysisRun {
                 blank_lines: 10,
                 total_lines: 150,
             },
+            commit_count: 42,
         },
         Author {
             id: 1,
@@ -181,6 +182,7 @@ fn make_run_with_ownership() -> AnalysisRun {
                 blank_lines: 3,
                 total_lines: 38,
             },
+            commit_count: 7,
         },
     ];
     run.per_file_records[0].ownership = Some(vec![
