@@ -64,7 +64,9 @@ jobs:
         with:
           key: launcher-tests
       - name: Run TLS + route tests
-        run: cargo test -p sloc-web --test tls_config --test server_mode_routes
+        # server_mode_routes was consolidated into the `it` binary (commit 03bf330);
+        # tls_config stays its own binary (it mutates process env).
+        run: cargo test -p sloc-web --test tls_config --test it
 
   # ── install-service.ps1 dry-run construction (Pester, Windows) ───────────────
   pester:

@@ -3,7 +3,7 @@
 A repeatable checklist for confirming the server hosts correctly across platforms
 and network topologies. Automated coverage (`scripts/tests/serve-server.bats`,
 `scripts/tests/serve-server.Tests.ps1`, `crates/sloc-web/tests/tls_config.rs`,
-`crates/sloc-web/tests/server_mode_routes.rs`) runs in the **Launcher & hosting
+`crates/sloc-web/tests/it/server_mode_routes.rs`) runs in the **Launcher & hosting
 tests** CI workflow; this doc covers the end-to-end cases that need a real host or
 a real network and can't run in CI.
 
