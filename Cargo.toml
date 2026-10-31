@@ -73,11 +73,18 @@ multiple_crate_versions = "allow"
 # emits ~360 MB .pdb files per binary; with dozens of test binaries and generations that cargo
 # never garbage-collects, target/debug balloons into the tens of GB. Line tables keep file:line
 # in panic/test backtraces (all we need here) while shrinking each build generation ~5-10x.
+#
+# Incremental compilation is disabled on purpose: it produces a multi-GB target/debug/incremental
+# cache that buys little here (the 35k-line single-file sloc-web crate recompiles wholesale on any
+# edit) and is pure waste in CI (fresh runners can't reuse it). Off everywhere keeps the tree lean;
+# the release profile already defaults incremental off, so dist/install builds are unaffected.
 [profile.dev]
 debug = "line-tables-only"
+incremental = false
 
 [profile.test]
 debug = "line-tables-only"
+incremental = false
 
 # Dependencies never need debug info in a dev/test build (we don't step through vendored
 # crates), and they are the bulk of target/debug/deps. Stripping their debug info entirely

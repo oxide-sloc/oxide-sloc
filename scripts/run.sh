@@ -6,7 +6,8 @@
 #   bash scripts/run.sh --host       # LAN server mode (http://0.0.0.0:4317)
 #   bash scripts/run.sh --lan        # alias for --host
 #   bash scripts/run.sh --build      # compile from bundled toolchain + vendor sources
-#   bash scripts/run.sh --rebuild    # force recompile from source (implies --build)
+#   bash scripts/run.sh --rebuild    # fast debug rebuild from source (dev GUI loop)
+#   bash scripts/run.sh --rebuild --release  # production-identical release rebuild
 #   SLOC_HOST=1 bash scripts/run.sh  # env-var form of --host
 #
 # Run a one-shot CLI command instead of the web UI by passing a subcommand:
@@ -27,6 +28,7 @@ SLOC_PORT=4317
 HOST_MODE="${SLOC_HOST:-0}"
 REBUILD_MODE=false
 BUILD_MODE=false
+RELEASE_REBUILD=false
 
 # Detect Windows (Git Bash / MSYS2 / Cygwin)
 if [[ -n "${WINDIR+x}" ]] || [[ "${OSTYPE:-}" == msys* ]] || [[ "${OSTYPE:-}" == cygwin* ]]; then
@@ -425,6 +427,7 @@ PASSTHROUGH_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --rebuild|--force|-f) REBUILD_MODE=true; BUILD_MODE=true ;;
+        --release) RELEASE_REBUILD=true ;;
         --host|--lan) HOST_MODE=1 ;;
         --build) BUILD_MODE=true ;;
         -h|--help|-V|--version)
@@ -443,12 +446,29 @@ done
 [[ -z "$CLI_SUBCOMMAND" ]] && check_server_auth
 
 # ── Auto-install or rebuild if requested ─────────────────────────────────────
+# `--rebuild` (without `--release`) is the fast developer loop: a plain debug
+# `cargo build` that picks up source changes in seconds. The web GUI is compiled-in
+# HTML/CSS/JS, so it is byte-identical to a release build — only runtime analysis
+# speed differs, which does not matter for previewing UI changes. We point $EXE at
+# the freshly built target/debug binary so the launch/CLI paths below run it (never a
+# stale release $EXE at the repo root).
+if [[ "$REBUILD_MODE" == true && "$RELEASE_REBUILD" != true ]]; then
+    echo " [--rebuild] Fast debug build (pass --rebuild --release for the production build)..."
+    echo ""
+    cd "$REPO_ROOT"
+    cargo build -p oxide-sloc \
+        || { printf '\n [ERROR] Build failed. See above for details.\n' >&2; exit 1; }
+    EXE="$REPO_ROOT/target/debug/oxide-sloc"
+    [[ "$PLATFORM" == windows ]] && EXE="${EXE}.exe"
+    echo ""
+# Otherwise auto-install / release-rebuild via install.sh.
 # On Windows this extracts the committed pre-built binary from dist/ (the .tar.gz
 # or .zip, whichever an offline host can unpack) — no build, no network.
 # On Linux this extracts dist/ if present, else builds from vendor + toolchain.
-if [[ ! -f "$EXE" ]] || [[ "$REBUILD_MODE" == true ]]; then
+# `--rebuild --release` forces a from-source release build (install.sh --rebuild).
+elif [[ ! -f "$EXE" ]] || [[ "$REBUILD_MODE" == true ]]; then
     if [[ "$REBUILD_MODE" == true ]]; then
-        echo " [--rebuild] Forcing fresh install..."
+        echo " [--rebuild --release] Forcing fresh release install..."
     else
         echo " Binary not found — running install first..."
     fi

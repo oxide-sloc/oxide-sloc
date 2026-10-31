@@ -21710,13 +21710,19 @@ struct SubmoduleRow {
     .mini-button.profiles-danger { color: #b23030; border-color: rgba(178,48,48,0.28); }
     body.dark-theme .mini-button.profiles-danger { color: #e07070; border-color: rgba(224,112,112,0.32); }
     .mini-button.profiles-danger:hover { background: rgba(178,48,48,0.08); }
-    .profiles-bar { display:flex; align-items:center; justify-content:space-between; gap: 12px; flex-wrap: wrap; padding: 12px 14px; margin-bottom: 18px; border:1px solid var(--line); border-radius: 12px; background: linear-gradient(180deg, var(--surface-2), transparent); }
-    .profiles-bar-group { display:flex; align-items:center; gap: 10px; flex-wrap: wrap; min-width: 0; }
-    .profiles-bar-label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
-    .profiles-bar-sep { width:1px; align-self: stretch; min-height: 24px; background: var(--line); }
-    .profile-select { min-height: 38px; min-width: 190px; border-radius: 10px; border:1px solid var(--line-strong); background: var(--surface); color: var(--text); padding: 0 10px; font-size: 13px; font-weight: 700; }
+    .profiles-bar { display:grid; grid-template-columns: 1fr 1fr; align-items:stretch; margin-bottom: 18px; border:1px solid var(--line); border-radius: 12px; background: linear-gradient(180deg, var(--surface-2), transparent); overflow:hidden; }
+    .profiles-panel { display:flex; flex-direction:column; gap:10px; padding: 14px 16px; min-width: 0; }
+    .profiles-panel + .profiles-panel { border-left:1px solid var(--line); }
+    .profiles-panel-label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+    .profiles-panel-row { display:flex; align-items:center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+    .profiles-panel-actions .mini-button { flex: 1 1 auto; text-align: center; }
+    .profile-select { flex: 1 1 190px; min-height: 38px; min-width: 190px; border-radius: 10px; border:1px solid var(--line-strong); background: var(--surface); color: var(--text); padding: 0 10px; font-size: 13px; font-weight: 700; }
     .profiles-bar .mini-button { min-height: 38px; font-size: 13px; }
     .mini-button.profiles-rerun[disabled], .mini-button.profiles-rerun.is-empty { opacity: 0.5; cursor: not-allowed; }
+    @media (max-width: 720px) {
+      .profiles-bar { grid-template-columns: 1fr; }
+      .profiles-panel + .profiles-panel { border-left:0; border-top:1px solid var(--line); }
+    }
     #browse-path { min-height: 38px; font-size: 13px; padding: 0 18px; }
     #use-sample-path { min-height: 38px; font-size: 13px; padding: 0 13px; }
     .scope-legend-badges { display:flex; flex:1; align-items:center; justify-content:space-evenly; gap:6px; min-width:0; flex-wrap:nowrap; }
@@ -22417,18 +22423,22 @@ struct SubmoduleRow {
         <div class="card-body">
           <form method="post" action="/analyze" id="analyze-form">
             <div class="profiles-bar" id="profiles-bar">
-              <div class="profiles-bar-group">
-                <button type="button" class="mini-button oxide profiles-rerun" id="rerun-last-btn" title="Reload the configuration from your most recent scan in this browser">&#8635; Re-run last scan</button>
-                <span class="profiles-bar-sep" aria-hidden="true"></span>
-                <label class="profiles-bar-label" for="profile-select">Saved profiles</label>
-                <select id="profile-select" class="profile-select" aria-label="Saved scan profiles">
-                  <option value="">&mdash; No saved profiles &mdash;</option>
-                </select>
-                <button type="button" class="mini-button" id="profile-load-btn" title="Load the selected profile into the form">Load</button>
-                <button type="button" class="mini-button profiles-danger" id="profile-delete-btn" title="Delete the selected profile">Delete</button>
+              <div class="profiles-panel">
+                <div class="profiles-panel-label" id="profiles-load-label">Load a profile</div>
+                <div class="profiles-panel-row">
+                  <select id="profile-select" class="profile-select" aria-label="Saved scan profiles" aria-labelledby="profiles-load-label">
+                    <option value="">&mdash; No saved profiles &mdash;</option>
+                  </select>
+                  <button type="button" class="mini-button" id="profile-load-btn" title="Load the selected profile into the form">Load</button>
+                  <button type="button" class="mini-button profiles-danger" id="profile-delete-btn" title="Delete the selected profile">Delete</button>
+                </div>
               </div>
-              <div class="profiles-bar-group">
-                <button type="button" class="mini-button" id="profile-save-btn" title="Save the current form settings as a reusable profile">&#43; Save current as profile</button>
+              <div class="profiles-panel">
+                <div class="profiles-panel-label">Save &amp; reuse</div>
+                <div class="profiles-panel-row profiles-panel-actions">
+                  <button type="button" class="mini-button" id="profile-save-btn" title="Save the current form settings as a reusable profile">&#43; Save current as profile</button>
+                  <button type="button" class="mini-button oxide profiles-rerun" id="rerun-last-btn" title="Reload the configuration from your most recent scan in this browser">&#8635; Re-run last scan</button>
+                </div>
               </div>
             </div>
             <div class="wizard-step active" data-step="1">
@@ -25706,7 +25716,12 @@ int main() { … }   ← code
       }
       function refreshRerun() {
         if (!rerunBtn) return;
-        rerunBtn.style.display = readLast() ? '' : 'none';
+        var has = !!readLast();
+        rerunBtn.disabled = !has;
+        rerunBtn.classList.toggle('is-empty', !has);
+        rerunBtn.title = has
+          ? 'Reload the configuration from your most recent scan in this browser'
+          : 'No previous scan in this browser yet. Run a scan to enable this.';
       }
       if (rerunBtn) {
         rerunBtn.addEventListener('click', function () {
@@ -25988,18 +26003,28 @@ struct IndexTemplate {
     .hero-cursor{display:inline-block;width:2px;height:0.9em;background:var(--oxide);vertical-align:text-bottom;margin-left:1px;border-radius:1px;animation:cursorBlink 0.72s step-end infinite;}
     @keyframes cursorBlink{0%,100%{opacity:1;}50%{opacity:0;}}
     .card-sections{display:flex;flex-direction:column;gap:25px;margin:0 0 16px;}
-    .card-section-label{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:5px;padding-left:2px;}
+    .card-section-label{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin-bottom:9px;padding-left:2px;}
+    .card-section-label::before{content:"";width:3px;height:12px;border-radius:2px;background:linear-gradient(180deg,var(--oxide),var(--oxide-2));flex:0 0 auto;}
     .card-section-grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;}
     .card-section-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;}
     .card-section-grid-4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;}
     @media(max-width:1150px){.card-section-grid-4{grid-template-columns:1fr 1fr;}}
     @media(max-width:900px){.card-section-grid-2,.card-section-grid-3,.card-section-grid-4{grid-template-columns:1fr 1fr;}}
     @media(max-width:480px){.card-section-grid-2,.card-section-grid-3,.card-section-grid-4{grid-template-columns:1fr;}}
-    .action-card{display:flex;flex-direction:column;align-items:flex-start;padding:12px 15px 10px;border-radius:var(--radius);border:1px solid var(--line-strong);background:var(--surface);box-shadow:var(--shadow);text-decoration:none;color:var(--text);transition:transform 0.22s cubic-bezier(.34,1.56,.64,1),box-shadow 0.18s ease,border-color 0.18s ease;animation:cardRise 0.7s ease both;}
+    .action-card{position:relative;display:flex;flex-direction:column;align-items:flex-start;padding:14px 16px 13px;border-radius:var(--radius);border:1px solid var(--line-strong);background:var(--surface);box-shadow:var(--shadow);text-decoration:none;color:var(--text);overflow:hidden;transition:transform 0.2s ease,box-shadow 0.2s ease,border-color 0.2s ease;animation:cardRise 0.7s ease both;}
+    .action-card::before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:linear-gradient(90deg,var(--oxide),var(--oxide-2));opacity:0;transition:opacity 0.2s ease;}
+    .action-card:hover::before{opacity:0.9;}
+    .action-card.view::before{background:linear-gradient(90deg,#3b82f6,#1d4ed8);}
+    .action-card.compare::before{background:linear-gradient(90deg,#8b5cf6,#6d28d9);}
+    .action-card.trend::before{background:linear-gradient(90deg,#0891b2,#0e7490);}
+    .action-card.ownership::before{background:linear-gradient(90deg,#6366f1,#4338ca);}
+    .action-card.git-tools::before{background:linear-gradient(90deg,#16a34a,#15803d);}
+    .action-card.automation::before{background:linear-gradient(90deg,#d97706,#b45309);}
+    .action-card.test-metrics::before{background:linear-gradient(90deg,#ec4899,#be185d);}
     .action-card:nth-child(1){animation-delay:0.1s;} .action-card:nth-child(2){animation-delay:0.2s;} .action-card:nth-child(3){animation-delay:0.3s;} .action-card:nth-child(4){animation-delay:0.4s;} .action-card:nth-child(5){animation-delay:0.5s;} .action-card:nth-child(6){animation-delay:0.6s;} .action-card:nth-child(7){animation-delay:0.7s;}
     @keyframes cardRise{from{opacity:0;}to{opacity:1;}}
     @media(prefers-reduced-motion:reduce){.action-card,.lan-card{animation:none;}}
-    .action-card:hover{transform:translateY(-5px) scale(1.04);box-shadow:var(--shadow-strong);border-color:var(--oxide-2);}
+    .action-card:hover{transform:translateY(-4px);box-shadow:var(--shadow-strong);border-color:var(--oxide-2);}
     .action-card-icon{width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:8px;flex:0 0 auto;transition:transform 0.22s cubic-bezier(.34,1.56,.64,1);}
     .action-card:hover .action-card-icon{transform:rotate(-8deg) scale(1.12);}
     .action-card-icon svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:2;}
@@ -26010,7 +26035,7 @@ struct IndexTemplate {
     .action-card-desc{font-size:12px;color:var(--muted);line-height:1.55;margin:0 0 10px;flex:1;}
     /* Hard-cap the three ANALYSIS card blurbs to exactly two lines on every browser, width, and font. */
     .action-card-desc.clamp2{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;}
-    .action-card-cta{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:800;color:var(--oxide-2);transition:gap 0.15s ease;}
+    .action-card-cta{margin-top:auto;display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:800;color:var(--oxide-2);transition:gap 0.15s ease;}
     body.dark-theme .action-card-cta{color:var(--oxide);}
     .action-card.view .action-card-cta{color:var(--accent-2);}
     body.dark-theme .action-card.view .action-card-cta{color:var(--accent);}
@@ -26032,22 +26057,23 @@ struct IndexTemplate {
     .action-card.ownership .action-card-cta{color:#4338ca;}
     body.dark-theme .action-card.ownership .action-card-cta{color:#a5b4fc;}
     .action-card:hover .action-card-cta{gap:12px;}
-    .action-card.card-split{flex-direction:row;align-items:stretch;}
-    .action-card-left{flex:1;display:flex;flex-direction:column;align-items:flex-start;}
-    .action-card-sep{width:1px;background:var(--line);margin:0 12px;opacity:0.22;align-self:stretch;flex-shrink:0;}
-    .action-card-right{width:170px;display:flex;flex-direction:column;justify-content:center;gap:10px;flex-shrink:0;}
-    .ac-right-row{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--muted);}
+    .action-card.card-split{display:grid;grid-template-columns:minmax(0,1fr) auto 170px;align-items:stretch;}
+    .action-card-left{display:flex;flex-direction:column;align-items:flex-start;}
+    .action-card-sep{width:1px;background:var(--line);margin:0 12px;opacity:0.22;align-self:stretch;}
+    .action-card-right{display:flex;flex-direction:column;}
+    .ac-right-row{flex:1;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--muted);}
     .ac-right-row svg{width:14px;height:14px;stroke:var(--oxide);stroke-width:2;fill:none;flex-shrink:0;}
     .ac-right-stat{font-size:11px;color:var(--oxide);font-weight:700;margin-top:4px;min-height:14px;}
-    .ac-badge{display:inline-block;padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700;letter-spacing:.04em;border:1px solid transparent;transition:opacity .3s;opacity:0.45;}
+    .ac-badge{flex:1;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;letter-spacing:.01em;color:var(--muted);opacity:0.5;transition:opacity .25s;}
+    .ac-badge::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor;flex:0 0 auto;box-shadow:0 0 0 3px transparent;transition:box-shadow .25s;}
     .ac-badge.active{opacity:1;}
-    .ac-badge.github{border-color:#555;color:#555;}
-    .ac-badge.gitlab{border-color:#e24329;color:#e24329;}
-    .ac-badge.bitbucket{border-color:#2684ff;color:#2684ff;}
-    .ac-badge.confluence{border-color:#0052cc;color:#0052cc;}
-    .ac-badges-grid{display:flex;flex-wrap:wrap;gap:5px;}
+    .ac-badge.active::before{box-shadow:0 0 0 3px color-mix(in srgb,currentColor 18%,transparent);}
+    .ac-badge.github{color:#6a6a6a;}
+    .ac-badge.gitlab{color:#e24329;}
+    .ac-badge.bitbucket{color:#2684ff;}
+    .ac-badge.confluence{color:#0052cc;}
     body.dark-theme .ac-right-row{color:var(--muted);}
-    body.dark-theme .ac-badge.github{border-color:#aaa;color:#aaa;}
+    body.dark-theme .ac-badge.github{color:#b0b0b0;}
     @media(max-width:600px){.action-card-sep,.action-card-right{display:none;}}
     .divider{height:1px;background:var(--line);margin:32px 0;}
     .info-strip{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin-bottom:23px;}
@@ -26232,6 +26258,7 @@ struct IndexTemplate {
               <div class="ac-right-row"><svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg><span>List of projects</span></div>
               <div class="ac-right-row"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg><span>Per-project profile</span></div>
               <div class="ac-right-row"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg><span>Combined index</span></div>
+              <div class="ac-right-stat" id="acp-batch-stat"></div>
             </div>
           </a>
           <a class="action-card test-metrics card-split" href="/test-metrics">
@@ -26322,12 +26349,10 @@ struct IndexTemplate {
             </div>
             <div class="action-card-sep"></div>
             <div class="action-card-right">
-              <div class="ac-badges-grid">
-                <span class="ac-badge github"     id="acp-gh">GitHub</span>
-                <span class="ac-badge gitlab"     id="acp-gl">GitLab</span>
-                <span class="ac-badge bitbucket"  id="acp-bb">Bitbucket</span>
-                <span class="ac-badge confluence" id="acp-cf">Confluence</span>
-              </div>
+              <span class="ac-badge github"     id="acp-gh">GitHub</span>
+              <span class="ac-badge gitlab"     id="acp-gl">GitLab</span>
+              <span class="ac-badge bitbucket"  id="acp-bb">Bitbucket</span>
+              <span class="ac-badge confluence" id="acp-cf">Confluence</span>
               <div class="ac-right-stat" id="acp-int-stat"></div>
             </div>
           </a>
