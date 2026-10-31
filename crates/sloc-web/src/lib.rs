@@ -1187,7 +1187,7 @@ fn ownership_page_scripts() -> &'static str {
   var el=document.getElementById('own-data');if(!el)return;
   var data;try{data=JSON.parse(el.textContent);}catch(e){return;}
   var comp=document.getElementById('own-canvas-composition'),share=document.getElementById('own-canvas-share');
-  var FONT='Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+  var FONT='ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
   // Canonical report palette + helpers (mirrors sloc-report result charts).
   var OX='#C45C10',GN='#2A6846',GY='#BBBBBB';
   var PALETTE=['#C45C10','#2A6846','#4472C4','#805099','#D4A017','#B23030','#2E75B6','#70AD47','#FF9900','#9E480E','#636363','#156082','#D0743C','#5BA8A0'];
@@ -1913,7 +1913,7 @@ fn language_badge(name: &str) -> String {
         "8.5"
     };
     format!(
-        r#"<span class="lang-badge"><svg viewBox="0 0 20 20" width="22" height="22" aria-hidden="true"><rect x="0" y="0" width="20" height="20" rx="5" fill="{color}"></rect><text x="10" y="11" text-anchor="middle" font-family="Inter,ui-sans-serif,sans-serif" font-size="{fs}" font-weight="800" fill="{txt}">{abbr}</text></svg></span>"#,
+        r#"<span class="lang-badge"><svg viewBox="0 0 20 20" width="22" height="22" aria-hidden="true"><rect x="0" y="0" width="20" height="20" rx="5" fill="{color}"></rect><text x="10" y="11" text-anchor="middle" font-family="ui-sans-serif,sans-serif" font-size="{fs}" font-weight="800" fill="{txt}">{abbr}</text></svg></span>"#,
         color = color,
         fs = fs,
         txt = txt,
@@ -14532,7 +14532,7 @@ fn multi_compare_page(
         el.addEventListener('mousemove',function(e){{mvTT(e);}});
       }}
       function mvTT(e){{if(!_tt)return;var x=e.clientX+16,y=e.clientY-10,r=_tt.getBoundingClientRect();if(x+r.width>window.innerWidth-8)x=e.clientX-r.width-8;if(y+r.height>window.innerHeight-8)y=e.clientY-r.height-8;_tt.style.left=x+'px';_tt.style.top=y+'px';}}
-      var FONT='Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      var FONT='ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
       function buildCharts(){{
         if(N<2)return;
         var cs=getComputedStyle(document.body);
@@ -15513,7 +15513,7 @@ async fn trend_report_handler(
     }})();
 
     var ROOTS = {roots_json};
-    var FONT = 'Inter,ui-sans-serif,system-ui,-apple-system,sans-serif';
+    var FONT = 'ui-sans-serif,system-ui,-apple-system,sans-serif';
     var COLS = ['#C45C10','#2A6846','#4472C4','#805099','#D4A017','#B23030','#2E75B6','#70AD47','#FF9900','#9E480E'];
     var allData = [];
 
@@ -16318,7 +16318,7 @@ async fn trend_report_handler(
         // Masthead/footer flow in document order — a position:fixed header repeats
         // on every printed page in Chromium and hides the rows beneath it on pages
         // 2+. The trend table's <thead> repeats per page natively instead.
-        +'body{{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#241813;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}'
+        +'body{{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#241813;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}'
         +'.rep-masthead{{background:#191c26;color:#fff;display:flex;justify-content:space-between;align-items:center;padding:15px 34px;}}'
         +'.rep-mast-left{{display:flex;align-items:baseline;gap:14px;}}'
         +'.rep-mast-brand{{font-size:19px;font-weight:900;letter-spacing:-.01em;}}'
@@ -17827,7 +17827,7 @@ async fn test_metrics_handler(
               var label = fmtFn(ds.data[idx], di, idx);
               if (label == null || label === '') return;
               ctx.save();
-              ctx.font = '600 11px Inter,ui-sans-serif,sans-serif';
+              ctx.font = '600 11px ui-sans-serif,sans-serif';
               ctx.fillStyle = tc;
               if (anchor === 'top') {{
                 ctx.textAlign = 'center';
@@ -17916,7 +17916,7 @@ async fn test_metrics_handler(
             ctx.save();
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.font = 'bold 13px Inter,ui-sans-serif,sans-serif';
+            ctx.font = 'bold 13px ui-sans-serif,sans-serif';
             ctx.shadowColor = 'rgba(0,0,0,0.45)';
             ctx.shadowBlur = 3;
             ctx.fillStyle = '#fff';
@@ -18804,7 +18804,7 @@ async fn test_metrics_handler(
     }});
 
     // ── Export helpers (Excel / PNG / PDF) ───────────────────────────────────
-    var TM_FONT = 'Inter,ui-sans-serif,system-ui,-apple-system,sans-serif';
+    var TM_FONT = 'ui-sans-serif,system-ui,-apple-system,sans-serif';
     function tmExportMeta() {{
       var sel = document.getElementById('scope-sel');
       var proj = sel && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : 'All projects';
@@ -19127,7 +19127,7 @@ async fn test_metrics_handler(
       var tableHtml='<table><thead><tr><th>Language</th><th class="n">Test Fns</th><th class="n">Assertions</th><th class="n">Suites</th><th class="n">Code Lines</th><th class="n">Files</th><th class="n">Density/1K</th></tr></thead><tbody>'+rows+totRow+'</tbody></table>';
       var css='<style>*{{box-sizing:border-box;margin:0;padding:0;}}'
         +'html,body{{height:100%;margin:0;}}'
-        +'body{{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#241813;background:#fff;display:flex;flex-direction:column;min-height:100vh;}}'
+        +'body{{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#241813;background:#fff;display:flex;flex-direction:column;min-height:100vh;}}'
         +'.rep-header{{background:#C45C10;color:#fff;padding:18px 32px 16px;display:flex;justify-content:space-between;align-items:flex-start;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}'
         +'.rep-header h1{{font-size:22px;font-weight:900;margin:0;color:#fff;}}'
         +'.rep-header .sub{{font-size:12px;margin:5px 0 0;color:rgba(255,255,255,0.85);}}'
@@ -21481,7 +21481,7 @@ struct SubmoduleRow {
     }
 
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    html, body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
     html { overflow-y: scroll; }
     body { overflow-x: clip; transition: background 0.18s ease, color 0.18s ease; display: flex; flex-direction: column; }
     .top-nav, .page, .loading { position: relative; z-index: 2; }
@@ -27261,7 +27261,7 @@ struct ScanSetupTemplate {
     }
 
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    html, body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
     body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; display: flex; flex-direction: column; }
     .background-watermarks { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
     .background-watermarks img { position: absolute; opacity: 0.16; filter: blur(0.3px); user-select: none; max-width: none; }
@@ -28684,7 +28684,7 @@ struct ScanSetupTemplate {
         if(!el)return;
         var OX='#C45C10',GN='#2A6846',GY='#BBBBBB';
         var COLS=['#C45C10','#2A6846','#4472C4','#805099','#D4A017','#B23030','#2E75B6','#70AD47','#FF9900','#9E480E','#636363','#156082'];
-        var FONT='Inter,ui-sans-serif,system-ui,-apple-system,sans-serif';
+        var FONT='ui-sans-serif,system-ui,-apple-system,sans-serif';
         function fmt(n){var v=Number(n),a=Math.abs(v);if(a>=1e6)return(v/1e6).toFixed(1).replace(/\.0$/,'')+'M';if(a>=1e4)return(v/1e3).toFixed(1).replace(/\.0$/,'')+'K';return v.toLocaleString();}
         function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
         function px(n){return Math.round(n);}
@@ -28905,7 +28905,7 @@ struct ScanSetupTemplate {
         var SEM_D={{ semantic_chart_json|safe }};
         var SUB_D={{ submodule_chart_json|safe }};
         var COLS=['#C45C10','#2A6846','#4472C4','#805099','#D4A017','#B23030','#2E75B6','#70AD47','#FF9900','#9E480E','#636363','#156082','#1F6E6E','#8B4513','#4169E1','#228B22','#8B008B','#FF6347','#708090','#DAA520'];
-        var FONT='Inter,ui-sans-serif,system-ui,-apple-system,sans-serif';
+        var FONT='ui-sans-serif,system-ui,-apple-system,sans-serif';
         function fmt(n){var v=Number(n),a=Math.abs(v);if(a>=1e6)return(v/1e6).toFixed(1).replace(/\.0$/,'')+'M';if(a>=1e4)return(v/1e3).toFixed(1).replace(/\.0$/,'')+'K';return v.toLocaleString();}
         function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
         function px(n){return Math.round(n);}
@@ -34676,7 +34676,7 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
       // ── Chart 1: Baseline vs Current grouped bars (height fills the card to
       //    match the Language Code Delta column height) ────────────
       var c1mets=[{l:'Code Lines',b:sd.bc,c:sd.cc,bc:'#E3A876',cc:'#C45C10'},{l:'Files Analyzed',b:sd.bf,c:sd.cf,bc:'#9FC3AE',cc:'#2A6846'},{l:'Comments',b:sd.bcm,c:sd.ccm,bc:'#E0C58A',cc:'#BE8A2E'}];
-      var FONT_C="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif";
+      var FONT_C="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif";
       var C1W=600,c1mt=36,c1mb=30,c1ml=14,c1mr=14,c1bw=56,c1gap=10,C1H=380;
       var c1ph=C1H-c1mt-c1mb,c1gW=(C1W-c1ml-c1mr)/c1mets.length;
       var c1='<svg viewBox="0 0 '+C1W+' '+C1H+'" width="100%" xmlns="http://www.w3.org/2000/svg">';
@@ -34709,13 +34709,13 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
         var y=16+i*rH,bw=Math.max(Math.abs(m.v)/maxD*maxBW,2);
         var col=m.v>=0?GN:RD,bx=m.v>=0?cx2:cx2-bw;
         var sign=m.v>=0?'+':'',vStr=sign+fmt(m.v);
-        c2+='<text x="'+(c2LW-8)+'" y="'+(y+20)+'" text-anchor="end" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="600" fill="'+m.mc+'">'+esc(m.l)+'</text>';
+        c2+='<text x="'+(c2LW-8)+'" y="'+(y+20)+'" text-anchor="end" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="600" fill="'+m.mc+'">'+esc(m.l)+'</text>';
         c2+='<rect class="cb" x="'+px(bx)+'" y="'+(y+5)+'" width="'+px(bw)+'" height="32" fill="'+col+'" rx="3"'+barTT(m.l,'Delta: '+vStr)+'/>';
         if(bw>=52){
-          c2+='<text x="'+px(bx+bw/2)+'" y="'+(y+26)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="700" fill="white">'+esc(vStr)+'</text>';
+          c2+='<text x="'+px(bx+bw/2)+'" y="'+(y+26)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="700" fill="white">'+esc(vStr)+'</text>';
         }else{
           var vx2=m.v>=0?px(bx+bw)+5:px(bx)-5,anc2=m.v>=0?'start':'end';
-          c2+='<text x="'+vx2+'" y="'+(y+26)+'" text-anchor="'+anc2+'" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="700" fill="'+col+'">'+esc(vStr)+'</text>';
+          c2+='<text x="'+vx2+'" y="'+(y+26)+'" text-anchor="'+anc2+'" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="700" fill="'+col+'">'+esc(vStr)+'</text>';
         }
       });
       c2+='</svg>';
@@ -34733,15 +34733,15 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
           var e=lm[l],y=8+i*L3rH,bw=Math.max(Math.abs(e.d)/maxLD*maxLBW,2);
           var col=e.d>=0?GN:RD,bx=e.d>=0?cx3:cx3-bw;
           var sign=e.d>=0?'+':'',vStr=sign+fmt(e.d);
-          c3+='<text x="'+(c3LW-7)+'" y="'+(y+18)+'" text-anchor="end" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="11" fill="#444">'+esc(l)+'</text>';
+          c3+='<text x="'+(c3LW-7)+'" y="'+(y+18)+'" text-anchor="end" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="11" fill="#444">'+esc(l)+'</text>';
           c3+='<rect class="cb" x="'+px(bx)+'" y="'+(y+5)+'" width="'+px(bw)+'" height="20" fill="'+col+'" rx="3"'+barTT(l,'Delta: '+vStr+' code lines \u2022 '+e.f+' file'+(e.f!==1?'s':''))+'/>';
           if(bw>=48){
-            c3+='<text x="'+px(bx+bw/2)+'" y="'+(y+19)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10" font-weight="700" fill="white">'+esc(vStr)+'</text>';
+            c3+='<text x="'+px(bx+bw/2)+'" y="'+(y+19)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10" font-weight="700" fill="white">'+esc(vStr)+'</text>';
           }else{
             var vx3=e.d>=0?px(bx+bw)+4:px(bx)-4,anc3=e.d>=0?'start':'end';
-            c3+='<text x="'+vx3+'" y="'+(y+19)+'" text-anchor="'+anc3+'" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10" font-weight="700" fill="'+col+'">'+esc(vStr)+'</text>';
+            c3+='<text x="'+vx3+'" y="'+(y+19)+'" text-anchor="'+anc3+'" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10" font-weight="700" fill="'+col+'">'+esc(vStr)+'</text>';
           }
-          c3+='<text x="'+(C3W-5)+'" y="'+(y+19)+'" text-anchor="end" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="#AAA">'+e.f+' file'+(e.f!==1?'s':'')+'</text>';
+          c3+='<text x="'+(C3W-5)+'" y="'+(y+19)+'" text-anchor="end" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="#AAA">'+e.f+' file'+(e.f!==1?'s':'')+'</text>';
         });
         c3+='</svg>';
       }
@@ -34761,12 +34761,12 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
         c4+='<path class="cb" d="M'+px(x1)+','+px(y1)+' A'+Ro+','+Ro+' 0 '+(sw>Math.PI?1:0)+',1 '+px(x2)+','+px(y2)+' L'+px(xi1)+','+px(yi1)+' A'+Ri+','+Ri+' 0 '+(sw>Math.PI?1:0)+',0 '+px(xi2)+','+px(yi2)+' Z" fill="'+s.c+'" stroke="white" stroke-width="2.5"'+barTT(s.l,fmt(s.v)+' files \u2022 '+px(s.v/tot*100)+'%')+'/>';
         ang+=sw;
       });
-      c4+='<text x="'+cx4+'" y="'+(cy4-4)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="22" font-weight="bold" fill="#333">'+fmt(tot)+'</text>';
-      c4+='<text x="'+cx4+'" y="'+(cy4+15)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10" fill="#888">total files</text>';
+      c4+='<text x="'+cx4+'" y="'+(cy4-4)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="22" font-weight="bold" fill="#333">'+fmt(tot)+'</text>';
+      c4+='<text x="'+cx4+'" y="'+(cy4+15)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10" fill="#888">total files</text>';
       segs.forEach(function(s,i){
         var col=i%2===0?14:C4W/2+6,row=Math.floor(i/2);
         c4+='<rect x="'+col+'" y="'+(legY+row*legRowH)+'" width="12" height="12" fill="'+s.c+'" rx="2"/>';
-        c4+='<text x="'+(col+16)+'" y="'+(legY+row*legRowH+10)+'" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="11" fill="#555">'+esc(s.l)+': '+fmt(s.v)+'</text>';
+        c4+='<text x="'+(col+16)+'" y="'+(legY+row*legRowH+10)+'" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="11" fill="#555">'+esc(s.l)+': '+fmt(s.v)+'</text>';
       });
       c4+='</svg>';
 
@@ -34782,7 +34782,7 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
       // body max-width keeps charts from inflating beyond design dimensions on
       // wide (≥1920 px) monitors — without it SVGs scale to ~950 px wide and
       // each chart's height blows up proportionally, breaking the one-page layout.
-      var css='*{box-sizing:border-box;}body{font-family:Inter,Calibri,Arial,sans-serif;margin:0 auto;padding:20px 30px 24px;max-width:1460px;background:#F7F3EE;color:#333;}'+
+      var css='*{box-sizing:border-box;}body{font-family:ui-sans-serif,Calibri,Arial,sans-serif;margin:0 auto;padding:20px 30px 24px;max-width:1460px;background:#F7F3EE;color:#333;}'+
         'h1{color:#C45C10;font-size:21px;margin:0 0 3px;font-weight:800;}p.sub{color:#888;font-size:12px;margin:0 0 18px;}'+
         '.card{background:#fff;border-radius:12px;padding:16px 20px;margin-bottom:0;box-shadow:0 1px 5px rgba(0,0,0,.08);}'+
         'h2{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#AAA;margin:0 0 10px;}'+
@@ -34825,7 +34825,7 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
       var c3h=document.getElementById('ic-c3')?document.getElementById('ic-c3').innerHTML:'';
       var c4h=document.getElementById('ic-c4')?document.getElementById('ic-c4').innerHTML:'';
       var ttJs='var tt=document.getElementById("ox-tt");function oxTT(e,t,v){tt.innerHTML="<strong>"+t+"<\/strong><br>"+v;tt.style.display="block";oxMT(e);}function oxMT(e){var x=e.clientX+16,y=e.clientY-10,r=tt.getBoundingClientRect();if(x+r.width>window.innerWidth-8)x=e.clientX-r.width-8;if(y+r.height>window.innerHeight-8)y=e.clientY-r.height-8;tt.style.left=x+"px";tt.style.top=y+"px";}function oxHT(){tt.style.display="none";}';
-      var css='*{box-sizing:border-box;}body{font-family:Inter,Calibri,Arial,sans-serif;margin:0 auto;padding:20px 30px 24px;max-width:1460px;background:#F7F3EE;color:#333;}h1{color:#C45C10;font-size:21px;margin:0 0 3px;font-weight:800;}p.sub{color:#888;font-size:12px;margin:0 0 18px;}.card{background:#fff;border-radius:12px;padding:16px 20px;margin-bottom:0;box-shadow:0 1px 5px rgba(0,0,0,.08);}h2{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#AAA;margin:0 0 10px;}.leg{display:flex;gap:14px;margin-bottom:10px;font-size:11px;align-items:center;}.dot{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:4px;}svg{display:block;}.two-col{display:flex;gap:18px;margin-bottom:16px;}.two-col>.card{flex:1;min-width:0;}#ox-tt{display:none;position:fixed;background:rgba(15,10,6,.95);color:#fff;border-radius:8px;padding:7px 11px;font-size:12px;line-height:1.5;pointer-events:none;z-index:9999;max-width:240px;white-space:nowrap;}.cb{cursor:pointer;transition:opacity .15s,filter .15s;}.cb:hover{opacity:.72;filter:brightness(1.1);}';
+      var css='*{box-sizing:border-box;}body{font-family:ui-sans-serif,Calibri,Arial,sans-serif;margin:0 auto;padding:20px 30px 24px;max-width:1460px;background:#F7F3EE;color:#333;}h1{color:#C45C10;font-size:21px;margin:0 0 3px;font-weight:800;}p.sub{color:#888;font-size:12px;margin:0 0 18px;}.card{background:#fff;border-radius:12px;padding:16px 20px;margin-bottom:0;box-shadow:0 1px 5px rgba(0,0,0,.08);}h2{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#AAA;margin:0 0 10px;}.leg{display:flex;gap:14px;margin-bottom:10px;font-size:11px;align-items:center;}.dot{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:4px;}svg{display:block;}.two-col{display:flex;gap:18px;margin-bottom:16px;}.two-col>.card{flex:1;min-width:0;}#ox-tt{display:none;position:fixed;background:rgba(15,10,6,.95);color:#fff;border-radius:8px;padding:7px 11px;font-size:12px;line-height:1.5;pointer-events:none;z-index:9999;max-width:240px;white-space:nowrap;}.cb{cursor:pointer;transition:opacity .15s,filter .15s;}.cb:hover{opacity:.72;filter:brightness(1.1);}';
       return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>OxideSLOC \u2014 Scan Delta Charts<\/title><style>'+css+'<\/style><\/head><body>'+
         '<div id="ox-tt"><\/div>'+
         '<h1>OxideSLOC \u2014 Scan Delta Charts<\/h1>'+
@@ -34895,15 +34895,15 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
           // code lines vs 28K files) are all readable — a shared scale buries the small ones.
           var gMax=Math.max(m.b,m.c)*1.15||1;
           var bh0=Math.max(c1ph*m.b/gMax,2),bh1=Math.max(c1ph*m.c/gMax,2);
-          c1+='<text x="'+cx+'" y="16" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="600" fill="'+textCol+'">'+esc(m.l)+'</text>';
+          c1+='<text x="'+cx+'" y="16" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="600" fill="'+textCol+'">'+esc(m.l)+'</text>';
           c1+='<rect'+btt(m.l,'Baseline: '+fmt(m.b))+' x="'+c1x0+'" y="'+px(c1mt+c1ph-bh0)+'" width="'+c1bw+'" height="'+px(bh0)+'" fill="'+m.bc+'" rx="3"/>';
-          c1+='<text x="'+px(c1x0+c1bw/2)+'" y="'+px(c1mt+c1ph-bh0-4)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="'+mutedCol+'">'+fmt(m.b)+'</text>';
+          c1+='<text x="'+px(c1x0+c1bw/2)+'" y="'+px(c1mt+c1ph-bh0-4)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="'+mutedCol+'">'+fmt(m.b)+'</text>';
           c1+='<rect'+btt(m.l,'Current: '+fmt(m.c))+' x="'+c1x1+'" y="'+px(c1mt+c1ph-bh1)+'" width="'+c1bw+'" height="'+px(bh1)+'" fill="'+m.cc+'" rx="3"/>';
-          c1+='<text x="'+px(c1x1+c1bw/2)+'" y="'+px(c1mt+c1ph-bh1-4)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="'+m.cc+'">'+fmt(m.c)+'</text>';
-          c1+='<text x="'+px(c1x0+c1bw/2)+'" y="'+px(c1mt+c1ph+16)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="'+mutedCol+'">Before</text>';
-          c1+='<text x="'+px(c1x1+c1bw/2)+'" y="'+px(c1mt+c1ph+16)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="'+m.cc+'">After</text>';
+          c1+='<text x="'+px(c1x1+c1bw/2)+'" y="'+px(c1mt+c1ph-bh1-4)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="'+m.cc+'">'+fmt(m.c)+'</text>';
+          c1+='<text x="'+px(c1x0+c1bw/2)+'" y="'+px(c1mt+c1ph+16)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="'+mutedCol+'">Before</text>';
+          c1+='<text x="'+px(c1x1+c1bw/2)+'" y="'+px(c1mt+c1ph+16)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="'+m.cc+'">After</text>';
         });
-        c1+='<text x="'+px(C1W/2)+'" y="'+px(C1H-6)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="8.5" fill="'+mutedCol+'">Each metric uses its own scale — compare Before vs After within a metric</text>';
+        c1+='<text x="'+px(C1W/2)+'" y="'+px(C1H-6)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="8.5" fill="'+mutedCol+'">Each metric uses its own scale — compare Before vs After within a metric</text>';
         c1+='</svg>';
         return c1;
       }
@@ -34916,10 +34916,10 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
       c2+='<line x1="'+cx2+'" y1="6" x2="'+cx2+'" y2="'+(C2H-6)+'" stroke="'+LGY+'" stroke-width="1.5"/>';
       mets.forEach(function(m,i){
         var y=16+i*rH,bw=(m.v===0?0:Math.max(Math.abs(m.v)/maxD*maxBW,2)),col=m.v>=0?GN:RD,bx=m.v>=0?cx2:cx2-bw,sign=m.v>=0?'+':'',vStr=sign+fmt(m.v);
-        c2+='<text x="'+(c2LW-8)+'" y="'+(y+20)+'" text-anchor="end" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="600" fill="'+textCol+'">'+esc(m.l)+'</text>';
+        c2+='<text x="'+(c2LW-8)+'" y="'+(y+20)+'" text-anchor="end" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="600" fill="'+textCol+'">'+esc(m.l)+'</text>';
         c2+='<rect'+btt(m.l,'Delta: '+vStr)+' x="'+px(bx)+'" y="'+(y+5)+'" width="'+px(bw)+'" height="32" fill="'+col+'" rx="3"/>';
-        if(bw>=52){c2+='<text x="'+px(bx+bw/2)+'" y="'+(y+26)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="700" fill="white">'+esc(vStr)+'</text>';}
-        else{var vx2=m.v>=0?px(bx+bw)+5:px(bx)-5,anc2=m.v>=0?'start':'end';c2+='<text x="'+vx2+'" y="'+(y+26)+'" text-anchor="'+anc2+'" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="700" fill="'+textCol+'">'+esc(vStr)+'</text>';}
+        if(bw>=52){c2+='<text x="'+px(bx+bw/2)+'" y="'+(y+26)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="700" fill="white">'+esc(vStr)+'</text>';}
+        else{var vx2=m.v>=0?px(bx+bw)+5:px(bx)-5,anc2=m.v>=0?'start':'end';c2+='<text x="'+vx2+'" y="'+(y+26)+'" text-anchor="'+anc2+'" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" font-weight="700" fill="'+textCol+'">'+esc(vStr)+'</text>';}
       });
       c2+='</svg>';
       // Chart 3: Language Code Delta
@@ -34931,16 +34931,16 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
         c3+='<line x1="'+cx3+'" y1="0" x2="'+cx3+'" y2="'+C3H+'" stroke="'+LGY+'" stroke-width="1.5"/>';
         langs.forEach(function(l,i){
           var e=lm[l],y=8+i*L3rH,bw=(e.d===0?0:Math.max(Math.abs(e.d)/maxLD*maxLBW,2)),col=e.d>=0?GN:RD,vcol=(e.d===0?textCol:col),bx=e.d>=0?cx3:cx3-bw,sign=e.d>=0?'+':'',vStr=sign+fmt(e.d);
-          c3+='<text x="'+(c3LW-7)+'" y="'+(y+18)+'" text-anchor="end" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="11" fill="'+textCol+'">'+esc(l)+'</text>';
+          c3+='<text x="'+(c3LW-7)+'" y="'+(y+18)+'" text-anchor="end" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="11" fill="'+textCol+'">'+esc(l)+'</text>';
           c3+='<rect'+btt(l,'Delta: '+vStr+' code lines \u2022 '+e.f+' file'+(e.f!==1?'s':''))+' x="'+px(bx)+'" y="'+(y+5)+'" width="'+px(bw)+'" height="20" fill="'+col+'" rx="3"/>';
-          if(bw>=48){c3+='<text x="'+px(bx+bw/2)+'" y="'+(y+19)+'" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10" font-weight="700" fill="white">'+esc(vStr)+'</text>';}
-          else{var vx3=e.d>=0?px(bx+bw)+4:px(bx)-4,anc3=e.d>=0?'start':'end';c3+='<text x="'+vx3+'" y="'+(y+19)+'" text-anchor="'+anc3+'" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10" font-weight="700" fill="'+vcol+'">'+esc(vStr)+'</text>';}
-          c3+='<text x="'+(C3W-5)+'" y="'+(y+19)+'" text-anchor="end" font-family="Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="'+mutedCol+'">'+e.f+' file'+(e.f!==1?'s':'')+'</text>';
+          if(bw>=48){c3+='<text x="'+px(bx+bw/2)+'" y="'+(y+19)+'" text-anchor="middle" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10" font-weight="700" fill="white">'+esc(vStr)+'</text>';}
+          else{var vx3=e.d>=0?px(bx+bw)+4:px(bx)-4,anc3=e.d>=0?'start':'end';c3+='<text x="'+vx3+'" y="'+(y+19)+'" text-anchor="'+anc3+'" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="10" font-weight="700" fill="'+vcol+'">'+esc(vStr)+'</text>';}
+          c3+='<text x="'+(C3W-5)+'" y="'+(y+19)+'" text-anchor="end" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="9" fill="'+mutedCol+'">'+e.f+' file'+(e.f!==1?'s':'')+'</text>';
         });
         c3+='</svg>';
       }
       // Chart 4: File Change Donut — pie left, legend to the right (vertically centered)
-      var FONT4='Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      var FONT4='ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
       var segs=[{l:'Modified',v:sd.fm,c:OX},{l:'Added',v:sd.fa,c:GN},{l:'Removed',v:sd.fr,c:RD},{l:'Unchanged',v:sd.fu,c:FADE}].filter(function(s){return s.v>0;});
       var tot=segs.reduce(function(a,s){return a+s.v;},0)||1;
       var DW=395,DH=Math.max(200,segs.length*30+44),cx4=104,cy4=Math.round(DH/2),Ro=88,Ri=48;

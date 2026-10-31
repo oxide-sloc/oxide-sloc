@@ -5155,7 +5155,7 @@ struct WarningOpportunityRow {
       --info-text: #e6a879;
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    html, body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
     body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; }
     .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
     .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 4px 24px; min-height: 56px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; }
@@ -8130,7 +8130,7 @@ struct WarningOpportunityRow {
                 if (label == null || label === '') return;
                 ctx.save();
                 ctx.globalAlpha = hiAlpha(chart, di);
-                ctx.font = '600 11px Inter,ui-sans-serif,sans-serif';
+                ctx.font = '600 11px ui-sans-serif,sans-serif';
                 ctx.fillStyle = tc;
                 if (anchor === 'top') {
                   ctx.textAlign = 'center';
@@ -8169,9 +8169,9 @@ struct WarningOpportunityRow {
               ctx.save();
               ctx.globalAlpha = a; ctx.fillStyle = tc;
               ctx.textBaseline = 'bottom'; ctx.textAlign = 'center';
-              ctx.font = '800 11px Inter,ui-sans-serif,sans-serif';
+              ctx.font = '800 11px ui-sans-serif,sans-serif';
               ctx.fillText(d.lang, el.x, ty1);
-              ctx.font = '700 10px Inter,ui-sans-serif,sans-serif';
+              ctx.font = '700 10px ui-sans-serif,sans-serif';
               ctx.fillText(fmt(d.code), el.x, ty2);
               ctx.restore();
             });
@@ -8194,7 +8194,7 @@ struct WarningOpportunityRow {
               var label = fmtFn(total, idx);
               if (label == null || label === '') return;
               ctx.save();
-              ctx.font = '600 11px Inter,ui-sans-serif,sans-serif';
+              ctx.font = '600 11px ui-sans-serif,sans-serif';
               ctx.fillStyle = tc;
               ctx.textAlign = 'left';
               ctx.textBaseline = 'middle';
@@ -8255,7 +8255,7 @@ struct WarningOpportunityRow {
       (function() {
         var el = document.getElementById('report-lang-overview');
         if (!el || !D || !D.length) return;
-        var FONT = 'Inter,ui-sans-serif,system-ui,-apple-system,sans-serif';
+        var FONT = 'ui-sans-serif,system-ui,-apple-system,sans-serif';
         function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
         function px(n){return Math.round(n);}
         function tt(label,val){return ' class="rchit" data-ttl="'+String(label).replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'" data-ttv="'+String(val).replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'"';}
@@ -8602,7 +8602,7 @@ struct WarningOpportunityRow {
         var cData = D.slice(0, 15);
         var cMode = 'absolute';
         var CX = OX, CG = GN, CB = '#BBBBBB';
-        var CFONT = 'Inter,ui-sans-serif,system-ui,-apple-system,sans-serif';
+        var CFONT = 'ui-sans-serif,system-ui,-apple-system,sans-serif';
         function cEsc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
         function cPx(n){return Math.round(n);}
         function cTT(l,v){return ' class="rchit" data-ttl="'+String(l).replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'" data-ttv="'+String(v).replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'"';}
@@ -8934,7 +8934,7 @@ struct WarningOpportunityRow {
               var w = Math.abs(el.x - el.base);
               if (w < 28) return; // too narrow to show label
               ctx.save();
-              ctx.font = '600 10px Inter,ui-sans-serif,sans-serif';
+              ctx.font = '600 10px ui-sans-serif,sans-serif';
               ctx.fillStyle = di === 0 ? '#fff' : (di === 1 ? '#fff' : '#555');
               ctx.textAlign = 'center';
               ctx.textBaseline = 'middle';
@@ -11745,7 +11745,7 @@ pub fn render_batch_index_html(index: &sloc_core::BatchIndex) -> String {
 :root{{--oxide:#c45c10;--green:#2a6846;--bg:#faf6f1;--surface:#fff;--line:#e6d6c6;--text:#43342d;--muted:#7b675b;}}\
 *{{box-sizing:border-box;}}\
 body{{margin:0;padding:32px;background:var(--bg);color:var(--text);\
-font-family:Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;}}\
+font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;}}\
 h1{{margin:0 0 4px;font-size:22px;color:var(--oxide);}}\
 .sub{{color:var(--muted);font-size:13px;margin-bottom:20px;}}\
 .strip{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px;}}\
