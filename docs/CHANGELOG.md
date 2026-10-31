@@ -10,6 +10,32 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.27] — 2026-10-30
+
+### Added
+
+- **Canonical `[profiles.NAME]` config tables** with a `[profile.NAME]` alias and a `validate`
+  lint, so scan profiles have one documented, validated shape.
+- **Per-author commit counts in Code Ownership**, attached from a single `git log` pass.
+
+### Changed
+
+- **Refreshed scan-form profiles bar and action cards** in the web UI, with a faster
+  `--rebuild` path and incremental compilation disabled for leaner build output.
+- **Hosting hardening for `serve`**: TLS, a Windows service installer, and cross-platform
+  launcher improvements.
+- Added an optimized release build profile and trimmed `tokio` to the features actually used.
+
+### Fixed
+
+- Dropped the unbundled Inter font, preserved the preview tree state across interactions, and
+  clamped card blurbs in the web UI.
+- Corrected the submodule compare table, leaderboard, and PDF-export button in the compare and
+  report pages.
+- Bumped `rustls` to 0.23.46 to clear outstanding RUSTSEC advisories.
+
+---
+
 ## [1.6.26] — 2026-10-25
 
 ### Added

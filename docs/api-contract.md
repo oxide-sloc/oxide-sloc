@@ -141,11 +141,11 @@ copy into any project:
 
 ```bash
 # POSIX hosts (Linux, macOS, Git Bash)
-bash scripts/preflight.sh --mode run --server-url "$OXIDE_SLOC_URL" --require-version 1.6.26
+bash scripts/preflight.sh --mode run --server-url "$OXIDE_SLOC_URL" --require-version 1.6.27
 ```
 ```powershell
 # Windows hosts without bash
-pwsh scripts/preflight.ps1 -Mode run -ServerUrl $env:OXIDE_SLOC_URL -RequireVersion 1.6.26
+pwsh scripts/preflight.ps1 -Mode run -ServerUrl $env:OXIDE_SLOC_URL -RequireVersion 1.6.27
 ```
 
 It checks platform/arch, git & curl, mode prerequisites (extraction tooling or a

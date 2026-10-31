@@ -5,7 +5,7 @@
 #
 #   repos:
 #     - repo: https://github.com/oxide-sloc/oxide-sloc
-#       rev: v1.6.26          # pin to a released tag
+#       rev: v1.6.27          # pin to a released tag
 #       hooks:
 #         - id: oxide-sloc-budget
 #

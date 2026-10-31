@@ -14,8 +14,8 @@ authors:
 repository-code: "https://github.com/oxide-sloc/oxide-sloc"
 url: "https://github.com/oxide-sloc/oxide-sloc"
 license: AGPL-3.0-or-later
-version: 1.6.26
-date-released: "2026-10-16"
+version: 1.6.27
+date-released: "2026-10-30"
 keywords:
   - sloc
   - code-metrics
