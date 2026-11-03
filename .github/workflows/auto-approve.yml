@@ -69,7 +69,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           # Sensitive paths require manual review even from a trusted author.
-          PATTERN='^(\.github/workflows/|crates/sloc-web/src/auth\.rs|crates/sloc-web/src/git_webhook\.rs|crates/sloc-git/src/(ops|webhook)\.rs|Dockerfile|docker-compose\.yml|deny\.toml|_signing/|action\.yml|scripts/)'
+          PATTERN='^(\.github/workflows/|crates/sloc-web/src/auth\.rs|crates/sloc-web/src/git_webhook\.rs|crates/sloc-git/src/(ops|webhook)\.rs|Dockerfile|docker-compose\.yml|config/|_signing/|action\.yml|scripts/)'
           FILES=$(gh pr diff "$PR_NUMBER" --repo "$REPO" --name-only)
           if echo "$FILES" | grep -qE "$PATTERN"; then
             echo "Security-sensitive files changed — skipping auto-approval:"

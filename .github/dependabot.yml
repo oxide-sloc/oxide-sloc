@@ -10,6 +10,14 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    groups:
+      # Batch all minor crate updates into one weekly PR → one Cargo.lock change →
+      # one vendor re-commit, instead of up to 5 separate ~112 MB vendor regenerations
+      # that accelerate .git growth between history purges. Majors stay individual so
+      # breaking-change bumps still get their own review.
+      cargo-minor:
+        update-types:
+          - "minor"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-patch"]
