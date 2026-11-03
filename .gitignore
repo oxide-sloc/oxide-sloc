@@ -5,6 +5,9 @@
 __pycache__/
 *.py[cod]
 
+# Ruff linter cache (regenerated on every ruff run)
+.ruff_cache/
+
 # Uncompressed vendor sources — always extract from the vendor.tar.gz.* parts; never commit the directory
 /vendor/
 # CI marker recording which vendor set the extracted vendor/ came from (ci/jenkins/setup-vendor.sh)

@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions — oxide-sloc
 
-oxide-sloc is a 7-crate Rust workspace: IEEE 1045-1992 SLOC analysis, unit test detection,
+oxide-sloc is an 8-crate Rust workspace: IEEE 1045-1992 SLOC analysis, unit test detection,
 HTML/PDF reports, REST API, and an MCP server for AI agent integration.
 
 ## Workspace crates
@@ -28,7 +28,7 @@ HTML/PDF reports, REST API, and an MCP server for AI agent integration.
 ## Coding conventions
 
 - No `.unwrap()` or `.expect()` in library code — propagate with `anyhow::Result` / `?`
-- `rustfmt.toml`: `edition = "2021"`, `max_width = 100`. Run `cargo fmt --all` before committing.
+- `rustfmt.toml`: `edition = "2024"`, `max_width = 100`. Run `cargo fmt --all` before committing.
 - No `#[allow(...)]` without a comment explaining why.
 - No comments that explain *what* the code does — only *why* (non-obvious constraints or workarounds).
 - Do not use `.unwrap()` or `.expect()` in library code — propagate errors.
