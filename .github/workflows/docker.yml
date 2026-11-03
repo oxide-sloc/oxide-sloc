@@ -129,6 +129,9 @@ jobs:
           # UNKNOWN/LOW OS-package noise (e.g. a tzdata timezone-DB bump) opens
           # alerts that contradict the HIGH,CRITICAL policy. Limit the SARIF too.
           limit-severities-for-sarif: true
+          # Suppressions live under config/ now; trivy no longer auto-discovers
+          # them at the checkout root, so pass the path explicitly.
+          trivyignores: config/.trivyignore.yaml
         continue-on-error: true
 
       - name: Upload Trivy image SARIF to code scanning

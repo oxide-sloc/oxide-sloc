@@ -3,7 +3,7 @@
 # The advisory below enters the tree solely via `printpdf 0.9.1` (the latest
 # published release), which pins `lopdf = "0.39.0"`. There is no newer printpdf and
 # no compatible lopdf upgrade, so it is not fixable upstream today. It is already
-# ignored in cargo-audit (ci.yml) and cargo-deny (deny.toml) with the same
+# ignored in cargo-audit (ci.yml) and cargo-deny (config/deny.toml) with the same
 # rationale; this file mirrors that for OSV-based scanners.
 
 [[IgnoredVulns]]

@@ -57,7 +57,7 @@ base64 = "0.23"
 
 [workspace.lints.clippy]
 # Transitive dependency version splits that are unavoidable given the current
-# Rust ecosystem state.  Each duplicate pair is already documented in deny.toml
+# Rust ecosystem state.  Each duplicate pair is already documented in config/deny.toml
 # under [bans] skip = [...] which is the authoritative allowlist for cargo-deny.
 #
 # Active duplicates (as of Cargo.lock):

@@ -53,6 +53,11 @@ jobs:
 
       - name: Dependency licenses & bans
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25  # v2.1.1 (cargo-deny 0.20.2)
+        with:
+          # deny.toml lives under config/. --config is a top-level cargo-deny option,
+          # so it must precede the `check` subcommand → it goes in `arguments` (placed
+          # before the subcommand), alongside the action's default --all-features.
+          arguments: "--all-features --config config/deny.toml"
 
       - name: Build
         run: bash ci/build.sh
@@ -89,8 +94,8 @@ jobs:
           # noise would open alerts that contradict the HIGH,CRITICAL policy.
           limit-severities-for-sarif: true
           # Path-scoped misconfig suppressions for the build-only (FROM scratch)
-          # image and the SLOC test fixture — see .trivyignore.yaml for why.
-          trivyignores: .trivyignore.yaml
+          # image and the SLOC test fixture — see config/.trivyignore.yaml for why.
+          trivyignores: config/.trivyignore.yaml
         # A transient Trivy DB fetch (GHCR) must not fail the whole CI run.
         continue-on-error: true
 

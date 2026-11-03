@@ -73,7 +73,7 @@ grype sbom:oxide-sloc.cdx.json
 Scan the extracted source tree directly (needs `trivy`):
 
 ```bash
-trivy fs --scanners vuln,secret,misconfig .
+trivy fs --scanners vuln,secret,misconfig --ignorefile config/.trivyignore.yaml .
 ```
 
 The air-gap kit's `security/README.txt` repeats these commands next to the shipped reports.

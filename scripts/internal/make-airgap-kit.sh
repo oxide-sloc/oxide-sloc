@@ -144,6 +144,7 @@ fi
 
 if command -v trivy >/dev/null 2>&1; then
     trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
+        --ignorefile "$REPO_ROOT/config/.trivyignore.yaml" \
         --ignore-unfixed --no-progress -f table -o "$SEC_DIR/trivy-report.txt" . \
         && echo "    ✓ Trivy filesystem report" \
         || echo "    ! Trivy run failed — report skipped"
