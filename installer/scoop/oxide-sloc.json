@@ -1,10 +1,10 @@
 {
-    "version": "1.6.27",
+    "version": "1.6.28",
     "description": "SLOC analysis and code metrics workbench — IEEE 1045-1992 source line counting, test detection, HTML/PDF reports, and CI/CD integration",
     "homepage": "https://github.com/oxide-sloc/oxide-sloc",
     "license": "AGPL-3.0-or-later",
-    "url": "https://github.com/oxide-sloc/oxide-sloc/releases/download/v1.6.27/oxide-sloc-windows-x64.zip",
-    "hash": "sha256:37cf38fe376dbf964cca8f9f505c9653459eeee0b5dbbd0bd2e848c04c8d7fa8",
+    "url": "https://github.com/oxide-sloc/oxide-sloc/releases/download/v1.6.28/oxide-sloc-windows-x64.zip",
+    "hash": "sha256:6e2ff479d522108d910042923f5fddcbc91e8a588094c6080fe7ec605cd769fa",
     "bin": "oxide-sloc.exe",
     "checkver": {
         "github": "https://github.com/oxide-sloc/oxide-sloc"

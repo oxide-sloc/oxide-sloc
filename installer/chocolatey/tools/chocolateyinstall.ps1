@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 
-$version  = '1.6.27'
+$version  = '1.6.28'
 $url      = "https://github.com/oxide-sloc/oxide-sloc/releases/download/v$version/oxide-sloc-windows-x64.zip"
-$checksum = '37cf38fe376dbf964cca8f9f505c9653459eeee0b5dbbd0bd2e848c04c8d7fa8'
+$checksum = '6e2ff479d522108d910042923f5fddcbc91e8a588094c6080fe7ec605cd769fa'
 
 $packageArgs = @{
     packageName    = $env:ChocolateyPackageName
