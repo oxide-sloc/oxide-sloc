@@ -21686,7 +21686,7 @@ struct SubmoduleRow {
     input[type="text"]:focus, textarea:focus, select:focus { outline:none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.13); transform: translateY(-1px); }
     textarea { min-height: 128px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     textarea.glob-textarea { font-size: 13px; padding: 10px 12px; }
-    .glob-label-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; min-height:28px; }
+    .glob-label-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; min-height:34px; }
     .hint { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.55; }
     .path-history-badge { margin-top: 6px; padding: 4px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; display: inline-flex; align-items: center; gap: 4px; }
     .path-history-badge.found { background: var(--info-bg, #eef3ff); color: var(--info-text, #4467d8); border: 1px solid rgba(100,130,220,0.25); }
@@ -21783,7 +21783,7 @@ struct SubmoduleRow {
     .glob-guidance-card strong { display:block; margin-bottom: 8px; color: var(--text); }
     .glob-guidance-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.58; }
     .lbl-opt { font-weight:400; font-size:12px; color:var(--muted); margin-left:4px; }
-    .include-scope-badge { display:flex; align-items:center; gap:7px; padding:7px 12px; border-radius:8px; font-size:12px; font-weight:700; margin-bottom:7px; transition:background .2s,color .2s,border-color .2s; }
+    .include-scope-badge { display:flex; align-items:center; gap:7px; padding:7px 12px; border-radius:8px; font-size:12px; font-weight:700; transition:background .2s,color .2s,border-color .2s; }
     .include-scope-badge.scope-all { background:rgba(42,104,70,0.1); border:1px solid rgba(42,104,70,0.25); color:#2a6846; }
     .include-scope-badge.scope-narrow { background:rgba(184,93,51,0.08); border:1px solid rgba(184,93,51,0.22); color:var(--nav,#b85d33); }
     body.dark-theme .include-scope-badge.scope-all { background:rgba(90,186,138,0.12); border-color:rgba(90,186,138,0.3); color:#5aba8a; }
@@ -27339,7 +27339,7 @@ struct ScanSetupTemplate {
     .compare-ts { font-size:13px; color:var(--muted); }
     .compare-banner-stats { display:flex; align-items:center; gap:10px; font-size:14px; flex-wrap:wrap; }
     .compare-arrow { color: var(--muted); }
-    .action-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; margin-top: 18px; }
+    .action-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; margin-top: 18px; }
     .action-card { padding: 12px 14px 14px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface-2); display:flex; flex-direction:column; align-items:center; justify-content:center; }
     .action-card h3 { margin:0 0 10px; font-size: 16px; text-align:center; }
     .action-buttons { display:flex; flex-wrap:wrap; gap: 10px; justify-content:center; }
@@ -27980,7 +27980,7 @@ struct ScanSetupTemplate {
 
       <div class="action-grid">
         <div class="action-card">
-          <h3>HTML report</h3>
+          <h3>HTML Report</h3>
           <div class="action-buttons">
             {% match html_url %}
               {% when Some with (url) %}
@@ -27996,7 +27996,7 @@ struct ScanSetupTemplate {
           </div>
         </div>
         <div class="action-card">
-          <h3>PDF report</h3>
+          <h3>PDF Report</h3>
           <div class="action-buttons">
             {% match pdf_url %}
               {% when Some with (url) %}
@@ -28030,7 +28030,7 @@ struct ScanSetupTemplate {
           </div>
         </div>
         <div class="action-card">
-          <h3>Scan config</h3>
+          <h3>Scan Config</h3>
           <div class="action-buttons">
             <a class="button secondary" href="{{ scan_config_url }}">Download config</a>
             <a class="button sx-08dc943d" href="/scan-setup" >Run another scan</a>

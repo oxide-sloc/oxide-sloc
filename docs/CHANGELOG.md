@@ -10,6 +10,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.28] — 2026-11-02
+
+### Changed
+
+- Unified the report and web UI on the system font stack, dropping the bundled Inter font.
+- Made the scan-setup action grid responsive (`auto-fit`) and title-cased the HTML/PDF/Config
+  action-card headings for consistent capitalization.
+- Grouped scanner configs under `config/` and minor cargo dependabot updates to slow `.git`
+  regrowth; regenerated the offline vendor archive against the latest crate versions.
+
+### CI/CD
+
+- Automated the scoop / homebrew / chocolatey installer-manifest refresh at release.
+- Documented `install-vendor-cache.sh` agent pre-staging for Jenkins.
+
+---
+
 ## [1.6.27] — 2026-10-30
 
 ### Added
