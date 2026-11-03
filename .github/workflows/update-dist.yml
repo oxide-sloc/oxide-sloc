@@ -864,3 +864,115 @@ jobs:
           PR: ${{ steps.cpr.outputs.pull-request-number }}
           REPO: ${{ github.repository }}
         run: gh pr merge --auto --squash "$PR" --repo "$REPO"
+
+  # ── Open a PR to refresh the scoop/homebrew/chocolatey installer manifests ─
+  # These committed manifests pin both the version AND an asset content hash, so
+  # no templating can keep them current — they must be rewritten post-build from
+  # the released asset digests. Mirrors commit-dist-* (app-token PR so CI runs +
+  # auto-merge), serialized after commit-dist-linux. winget and the nfpm deb/rpm
+  # are already drift-proof (winget auto-submitted per tag; nfpm.yaml templated)
+  # and are deliberately not touched here.
+  commit-installer-manifests:
+    name: Refresh installer manifests (scoop/homebrew/choco)
+    needs: commit-dist-linux
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: main
+
+      - name: Resolve release tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          WORKFLOW_RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          TAG="${INPUT_TAG:-${WORKFLOW_RUN_TAG:-$REF_NAME}}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # Same latest-release guard as commit-dist-*: never regress the manifests
+      # to an older tag when backfilling / re-running. Pre-releases are never
+      # "latest", so they correctly skip.
+      - name: Check latest release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          LATEST_TAG="$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || echo "")"
+          IS_LATEST="false"; [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" = "$TAG" ] && IS_LATEST="true"
+          echo "is_latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$IS_LATEST" = "true" ]; then
+            echo "Tag $TAG is the latest release — refreshing installer manifests."
+          else
+            echo "Tag $TAG is NOT the latest release — skipping installer manifest refresh."
+          fi
+
+      - name: Compute asset digests and rewrite manifests
+        if: steps.latest.outputs.is_latest == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          # Windows zip digest (scoop + chocolatey) from the release's aggregate
+          # checksum file produced by upload-release-assets.
+          gh release download "$TAG" --repo "$REPO" \
+            --pattern SHA256SUMS-dist.txt --output /tmp/sums.txt --clobber
+          ZIP_SHA="$(awk '/oxide-sloc-windows-x64\.zip$/{print $1}' /tmp/sums.txt)"
+          # Source-tarball digest (homebrew) — deterministic per tag.
+          SRC_SHA="$(curl -fsSL "https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz" \
+                     | sha256sum | cut -d' ' -f1)"
+          echo "windows-zip sha256: $ZIP_SHA"
+          echo "source-tgz  sha256: $SRC_SHA"
+          bash scripts/internal/update-installer-manifests.sh "$VERSION" "$ZIP_SHA" "$SRC_SHA"
+
+      - name: Generate app token
+        id: app-token
+        if: steps.latest.outputs.is_latest == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          app-id: ${{ secrets.TOOLCHAIN_APP_ID }}
+          private-key: ${{ secrets.TOOLCHAIN_APP_PRIVATE_KEY }}
+
+      - name: Open PR with refreshed installer manifests
+        id: cpr
+        if: steps.latest.outputs.is_latest == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: dist/update-installers-${{ github.run_id }}
+          base: main
+          add-paths: |
+            installer/scoop/oxide-sloc.json
+            installer/homebrew/oxide-sloc.rb
+            installer/chocolatey/oxide-sloc.nuspec
+            installer/chocolatey/tools/chocolateyinstall.ps1
+          commit-message: "chore: refresh installer manifests (${{ steps.tag.outputs.tag }})"
+          title: "chore: refresh installer manifests (${{ steps.tag.outputs.tag }})"
+          body: |
+            Automated installer-manifest refresh from workflow run ${{ github.run_id }}.
+
+            Rewrites the scoop / homebrew / chocolatey manifests to
+            ${{ steps.tag.outputs.tag }} with the released asset digests
+            (winget and the nfpm deb/rpm are already drift-proof and untouched).
+            This PR was opened automatically because main is a protected branch.
+            Auto-merge is enabled — it lands on main as soon as Quality gates passes.
+          labels: "automated,dist"
+          delete-branch: true
+
+      - name: Enable auto-merge
+        if: steps.latest.outputs.is_latest == 'true' && steps.cpr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ steps.cpr.outputs.pull-request-number }}
+          REPO: ${{ github.repository }}
+        run: gh pr merge --auto --squash "$PR" --repo "$REPO"
