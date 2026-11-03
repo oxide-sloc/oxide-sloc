@@ -8,7 +8,7 @@
 
 1. `cp ci/jenkins/.env.example ci/jenkins/.env` — fill in `JENKINS_TOKEN`
 2. _(One-time, controller setup)_ Deploy `ci/jenkins/init.groovy.d/relax-csp.groovy` to `$JENKINS_HOME/init.groovy.d/` and restart Jenkins — required for interactive features (charts, sorting, expand modals) in the published HTML report. See [§ "Setting the artifact-viewer CSP"](#setting-the-artifact-viewer-csp) below.
-3. _(Recommended)_ Pre-populate the agent rust-cache: run `bash ci/jenkins/install-rust-cache.sh` or build the Docker agent image from `ci/jenkins/Dockerfile.agent`. On air-gapped agents this step is required; on network-connected agents Rust downloads at runtime.
+3. _(Recommended)_ Pre-populate the agent rust-cache: run `bash ci/jenkins/install-rust-cache.sh` or build the Docker agent image from `ci/jenkins/Dockerfile.agent`. On air-gapped agents this step is required; on network-connected agents Rust downloads at runtime. To pre-stage the committed Rust crate parts onto the agent's persistent cache as well, run `bash ci/jenkins/install-vendor-cache.sh` (add `--download vX.Y.Z` to fetch the `vendor.tar.gz.*` parts from a GitHub release — or an internal mirror via `VENDOR_RELEASE_BASE` — first); the Jenkinsfile Setup stage checks that cache path before falling back to the committed parts in the repo root.
 4. `set -a; source ci/jenkins/.env; set +a && bash ci/jenkins/preflight.sh` — all checks must pass
 5. Run the `createItem` curl (Step 1 below)
 6. Run the seed-build curl (Step 2 below)
