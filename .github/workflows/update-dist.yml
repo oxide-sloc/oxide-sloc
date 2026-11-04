@@ -161,7 +161,7 @@ jobs:
           # archive on locked-down hosts where `unzip` is absent and PowerShell is
           # restricted (Constrained Language Mode / AllSigned) but GNU tar — bundled
           # with Git Bash — is available. Both archives MUST contain the identical
-          # binary; commit-dist-windows hard-asserts byte-equality before committing.
+          # binary; the commit-dist job hard-asserts byte-equality before committing.
           tar -czf oxide-sloc-windows-x64.tar.gz oxide-sloc.exe
 
       - name: Upload zip bundle
@@ -595,20 +595,26 @@ jobs:
             gh release upload "$TAG" dist/SHA256SUMS.txt --clobber --repo "$REPO"
           fi
 
-  # ── Open a PR to commit the Windows binary to dist/ ─────────────────────
-  # Main is a protected branch (PRs + "Quality gates" check required), so a
-  # direct push is rejected.  peter-evans/create-pull-request pushes to a new
-  # unprotected branch and opens the PR in one atomic step.
+
+  # ── Commit ALL dist artifacts + installer manifests in ONE PR ─────────────
+  # Previously three separate PRs were opened per release (Windows binaries,
+  # Linux binary, installer manifests), serialized by `needs`. Because main
+  # requires an up-to-date branch ("Quality gates" is a strict required check),
+  # each time one sibling PR merged it left the others BEHIND — and a base-move
+  # fires no `pull_request` event, so neither auto-merge nor the push-to-main
+  # heal sweep reliably re-triggered on the siblings (the heal query can race
+  # GitHub's async mergeability recompute and see UNKNOWN, not BEHIND), leaving
+  # them stalled for hours until an --admin merge. Collapsing everything into a
+  # SINGLE PR removes the sibling-merge cascade at the source: one PR, one
+  # Quality-gates run, one clean auto-merge, nothing left BEHIND.
   #
-  # The PR is opened with a GitHub App token rather than the default
-  # GITHUB_TOKEN on purpose: GitHub suppresses workflow triggers for any push
-  # or PR created by GITHUB_TOKEN (anti-recursion), so the required "Quality
-  # gates" CI check never ran on the dist PR.  That left it merging without a
-  # CI test, which OpenSSF Scorecard's CI-Tests check flagged (score capped at
-  # 8).  An app token is a distinct actor, so push/pull_request workflows (CI
-  # and auto-approve) run normally; auto-merge then lands it once CI is green.
-  commit-dist-windows:
-    name: Commit Windows binary to dist/
+  # The PR is opened with a GitHub App token, not the default GITHUB_TOKEN:
+  # GitHub suppresses workflow triggers for pushes/PRs created by GITHUB_TOKEN
+  # (anti-recursion), so the required "Quality gates" check would never run on
+  # the dist PR. An app token is a distinct actor, so CI + auto-approve run
+  # normally and auto-merge lands the PR once CI is green.
+  commit-dist:
+    name: Commit dist binaries + installer manifests
     needs: upload-release-assets
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -620,7 +626,7 @@ jobs:
         with:
           ref: main
 
-      - name: Download Windows bundle
+      - name: Download Windows zip bundle
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: oxide-sloc-windows-x64.zip
@@ -630,6 +636,12 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: oxide-sloc-windows-x64.tar.gz
+          path: dist/
+
+      - name: Download Linux bundle
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: oxide-sloc-linux-x86_64.tar.gz
           path: dist/
 
       - name: Resolve release tag
@@ -643,14 +655,11 @@ jobs:
           TAG="${INPUT_TAG:-${WORKFLOW_RUN_TAG:-$REF_NAME}}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      # Latest-release guard: only commit this binary to main's dist/ when the tag
-      # being processed is the repository's LATEST release. Backfilling or re-running
-      # an OLD tag (e.g. re-running v1.5.78 while main is on v1.6.0) must never open a
-      # PR that regresses dist/ back to the older binary. Pre-releases are never
-      # "latest" on GitHub, so they correctly skip too. `gh release view` needs only
-      # `contents: read`, satisfied by GITHUB_TOKEN. When not latest, all PR-related
-      # steps below are skipped (clean no-op) — the release-asset upload job is
-      # unaffected and still uploads to any tag.
+      # Latest-release guard: only commit to main's dist/ when the tag being
+      # processed is the repository's LATEST release. Backfilling / re-running an
+      # OLD tag must never regress dist/ or the manifests. Pre-releases are never
+      # "latest", so they correctly skip. When not latest, all steps below no-op
+      # cleanly — the release-asset upload job is unaffected.
       - name: Check latest release
         id: latest
         env:
@@ -662,19 +671,17 @@ jobs:
           IS_LATEST="false"; [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" = "$TAG" ] && IS_LATEST="true"
           echo "is_latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
           if [ "$IS_LATEST" = "true" ]; then
-            echo "Tag $TAG is the latest release — will commit Windows binaries to main's dist/."
+            echo "Tag $TAG is the latest release — will commit dist binaries + installer manifests to main."
           else
             echo "Tag $TAG is NOT the latest release — skipping the dist/ commit PR to avoid regressing main."
           fi
 
-      # Final safety net before committing to main. Two invariants:
-      #  1. The .zip and .tar.gz MUST carry a byte-identical exe. install.sh prefers
-      #     the .tar.gz on locked-down hosts, so any drift would silently serve a
-      #     different (or stale) binary than the .zip. This runs on the ubuntu runner
-      #     and IS authoritative — cmp does not need to execute the Windows exe.
-      #  2. Best-effort version check (the Windows exe cannot run on ubuntu, so it is
-      #     only enforced if a version somehow parses; the build-job assertion is the
-      #     authoritative version gate).
+      # Gate 1 — the Windows .zip and .tar.gz MUST carry a byte-identical exe.
+      # install.sh prefers the .tar.gz on locked-down hosts, so any drift would
+      # silently serve a different (or stale) binary than the .zip. This cmp runs
+      # on the ubuntu runner and IS authoritative. The version check is
+      # best-effort (the Windows exe cannot run here); the build job is the
+      # authoritative version gate for Windows.
       - name: Assert Windows zip + tar.gz carry the same versioned binary
         if: steps.latest.outputs.is_latest == 'true'
         env:
@@ -699,121 +706,17 @@ jobs:
             exit 1
           fi
 
-      - name: Generate app token
-        id: app-token
-        if: steps.latest.outputs.is_latest == 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
-        with:
-          app-id: ${{ secrets.TOOLCHAIN_APP_ID }}
-          private-key: ${{ secrets.TOOLCHAIN_APP_PRIVATE_KEY }}
-
-      - name: Open PR with updated Windows binary
-        id: cpr
-        if: steps.latest.outputs.is_latest == 'true'
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          branch: dist/update-windows-${{ github.run_id }}
-          base: main
-          add-paths: |
-            dist/oxide-sloc-windows-x64.zip
-            dist/oxide-sloc-windows-x64.tar.gz
-          commit-message: "chore: update dist Windows binaries (${{ steps.tag.outputs.tag }})"
-          title: "chore: update dist Windows binaries (${{ steps.tag.outputs.tag }})"
-          body: |
-            Automated dist update from workflow run ${{ github.run_id }}.
-
-            Updates both `dist/oxide-sloc-windows-x64.zip` and
-            `dist/oxide-sloc-windows-x64.tar.gz` for release ${{ steps.tag.outputs.tag }}
-            (packaged from the same signed exe; byte-equality asserted in CI).
-            install.sh prefers the `.tar.gz` on locked-down hosts where `unzip` /
-            PowerShell are unavailable, so both must ship in lock-step.
-            This PR was opened automatically because main is a protected branch.
-            Auto-merge is enabled — it lands on main as soon as Quality gates passes.
-          labels: "automated,dist"
-          delete-branch: true
-
-      # Land on main automatically once Quality gates passes. Opened with the app
-      # token, so CI runs on the PR (unlike a GITHUB_TOKEN PR); auto-merge waits
-      # for that check to go green. Requires "Allow auto-merge" in repo settings.
-      - name: Enable auto-merge
-        if: steps.latest.outputs.is_latest == 'true' && steps.cpr.outputs.pull-request-number
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR: ${{ steps.cpr.outputs.pull-request-number }}
-          REPO: ${{ github.repository }}
-        run: gh pr merge --auto --squash "$PR" --repo "$REPO"
-
-  # ── Open a PR to commit the Linux binary to dist/ ────────────────────────
-  # Mirrors commit-dist-windows (app-token PR so CI runs — see that job's
-  # comment).  With dist/oxide-sloc-linux-x86_64.tar.gz present, install.sh
-  # step 2b skips the bundled Rust toolchain entirely.  Serialized after
-  # commit-dist-windows to avoid any merge-ordering issues.
-  commit-dist-linux:
-    name: Commit Linux binary to dist/
-    needs: commit-dist-windows
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: main
-
-      - name: Download Linux bundle
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: oxide-sloc-linux-x86_64.tar.gz
-          path: dist/
-
-      - name: Resolve release tag
-        id: tag
-        env:
-          GH_EVENT_NAME: ${{ github.event_name }}
-          INPUT_TAG: ${{ github.event.inputs.tag }}
-          REF_NAME: ${{ github.ref_name }}
-          WORKFLOW_RUN_TAG: ${{ github.event.workflow_run.head_branch }}
-        run: |
-          TAG="${INPUT_TAG:-${WORKFLOW_RUN_TAG:-$REF_NAME}}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-      # Latest-release guard: only commit this binary to main's dist/ when the tag
-      # being processed is the repository's LATEST release. Backfilling or re-running
-      # an OLD tag (e.g. re-running v1.5.78 while main is on v1.6.0) must never open a
-      # PR that regresses dist/ back to the older binary. Pre-releases are never
-      # "latest" on GitHub, so they correctly skip too. `gh release view` needs only
-      # `contents: read`, satisfied by GITHUB_TOKEN. When not latest, all PR-related
-      # steps below are skipped (clean no-op) — the release-asset upload job is
-      # unaffected and still uploads to any tag.
-      - name: Check latest release
-        id: latest
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          REPO: ${{ github.repository }}
-        run: |
-          LATEST_TAG="$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || echo "")"
-          IS_LATEST="false"; [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" = "$TAG" ] && IS_LATEST="true"
-          echo "is_latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
-          if [ "$IS_LATEST" = "true" ]; then
-            echo "Tag $TAG is the latest release — will commit Linux binary to main's dist/."
-          else
-            echo "Tag $TAG is NOT the latest release — skipping the dist/ commit PR to avoid regressing main."
-          fi
-
-      # Authoritative final gate: the Linux binary DOES run on the ubuntu runner,
-      # so extract the tarball and hard-assert its --version equals the release
-      # tag before committing it to main's dist/. This is the exact defense
-      # against the "dist artifact lags the release by one version" bug.
-      - name: Assert dist tarball binary version matches release tag
+      # Gate 2 — the Linux binary DOES run on the ubuntu runner, so hard-assert
+      # its --version equals the release tag before committing. This is the exact
+      # defense against the "dist artifact lags the release by one version" bug.
+      - name: Assert dist Linux tarball binary version matches release tag
         if: steps.latest.outputs.is_latest == 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
+          set -euo pipefail
           EXPECTED="${TAG#v}"
-          mkdir -p /tmp/distcheck
+          rm -rf /tmp/distcheck && mkdir -p /tmp/distcheck
           tar xzf dist/oxide-sloc-linux-x86_64.tar.gz -C /tmp/distcheck
           chmod +x /tmp/distcheck/oxide-sloc
           ACTUAL="$(/tmp/distcheck/oxide-sloc --version \
@@ -826,95 +729,11 @@ jobs:
           fi
           echo "OK: dist Linux tarball version matches release tag ($EXPECTED)"
 
-      - name: Generate app token
-        id: app-token
-        if: steps.latest.outputs.is_latest == 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
-        with:
-          app-id: ${{ secrets.TOOLCHAIN_APP_ID }}
-          private-key: ${{ secrets.TOOLCHAIN_APP_PRIVATE_KEY }}
-
-      - name: Open PR with updated Linux binary
-        id: cpr
-        if: steps.latest.outputs.is_latest == 'true'
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          branch: dist/update-linux-${{ github.run_id }}
-          base: main
-          add-paths: dist/oxide-sloc-linux-x86_64.tar.gz
-          commit-message: "chore: update dist Linux binary (${{ steps.tag.outputs.tag }})"
-          title: "chore: update dist Linux binary (${{ steps.tag.outputs.tag }})"
-          body: |
-            Automated dist update from workflow run ${{ github.run_id }}.
-
-            Updates `dist/oxide-sloc-linux-x86_64.tar.gz` for release ${{ steps.tag.outputs.tag }}.
-            This PR was opened automatically because main is a protected branch.
-            Auto-merge is enabled — it lands on main as soon as Quality gates passes.
-          labels: "automated,dist"
-          delete-branch: true
-
-      # Land on main automatically once Quality gates passes. Opened with the app
-      # token, so CI runs on the PR (unlike a GITHUB_TOKEN PR); auto-merge waits
-      # for that check to go green. Requires "Allow auto-merge" in repo settings.
-      - name: Enable auto-merge
-        if: steps.latest.outputs.is_latest == 'true' && steps.cpr.outputs.pull-request-number
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR: ${{ steps.cpr.outputs.pull-request-number }}
-          REPO: ${{ github.repository }}
-        run: gh pr merge --auto --squash "$PR" --repo "$REPO"
-
-  # ── Open a PR to refresh the scoop/homebrew/chocolatey installer manifests ─
-  # These committed manifests pin both the version AND an asset content hash, so
-  # no templating can keep them current — they must be rewritten post-build from
-  # the released asset digests. Mirrors commit-dist-* (app-token PR so CI runs +
-  # auto-merge), serialized after commit-dist-linux. winget and the nfpm deb/rpm
-  # are already drift-proof (winget auto-submitted per tag; nfpm.yaml templated)
-  # and are deliberately not touched here.
-  commit-installer-manifests:
-    name: Refresh installer manifests (scoop/homebrew/choco)
-    needs: commit-dist-linux
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: main
-
-      - name: Resolve release tag
-        id: tag
-        env:
-          INPUT_TAG: ${{ github.event.inputs.tag }}
-          REF_NAME: ${{ github.ref_name }}
-          WORKFLOW_RUN_TAG: ${{ github.event.workflow_run.head_branch }}
-        run: |
-          TAG="${INPUT_TAG:-${WORKFLOW_RUN_TAG:-$REF_NAME}}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-      # Same latest-release guard as commit-dist-*: never regress the manifests
-      # to an older tag when backfilling / re-running. Pre-releases are never
-      # "latest", so they correctly skip.
-      - name: Check latest release
-        id: latest
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          REPO: ${{ github.repository }}
-        run: |
-          LATEST_TAG="$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || echo "")"
-          IS_LATEST="false"; [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" = "$TAG" ] && IS_LATEST="true"
-          echo "is_latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
-          if [ "$IS_LATEST" = "true" ]; then
-            echo "Tag $TAG is the latest release — refreshing installer manifests."
-          else
-            echo "Tag $TAG is NOT the latest release — skipping installer manifest refresh."
-          fi
-
-      - name: Compute asset digests and rewrite manifests
+      # Rewrite the scoop/homebrew/chocolatey manifests from the released asset
+      # digests (they pin both version AND content hash, so no templating can
+      # keep them current). winget and the nfpm deb/rpm are already drift-proof
+      # and deliberately untouched.
+      - name: Compute asset digests and rewrite installer manifests
         if: steps.latest.outputs.is_latest == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -923,12 +742,9 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${TAG#v}"
-          # Windows zip digest (scoop + chocolatey) from the release's aggregate
-          # checksum file produced by upload-release-assets.
           gh release download "$TAG" --repo "$REPO" \
             --pattern SHA256SUMS-dist.txt --output /tmp/sums.txt --clobber
           ZIP_SHA="$(awk '/oxide-sloc-windows-x64\.zip$/{print $1}' /tmp/sums.txt)"
-          # Source-tarball digest (homebrew) — deterministic per tag.
           SRC_SHA="$(curl -fsSL "https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz" \
                      | sha256sum | cut -d' ' -f1)"
           echo "windows-zip sha256: $ZIP_SHA"
@@ -943,32 +759,47 @@ jobs:
           app-id: ${{ secrets.TOOLCHAIN_APP_ID }}
           private-key: ${{ secrets.TOOLCHAIN_APP_PRIVATE_KEY }}
 
-      - name: Open PR with refreshed installer manifests
+      - name: Open one PR with all dist artifacts + installer manifests
         id: cpr
         if: steps.latest.outputs.is_latest == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
-          branch: dist/update-installers-${{ github.run_id }}
+          branch: dist/update-${{ github.run_id }}
           base: main
           add-paths: |
+            dist/oxide-sloc-windows-x64.zip
+            dist/oxide-sloc-windows-x64.tar.gz
+            dist/oxide-sloc-linux-x86_64.tar.gz
             installer/scoop/oxide-sloc.json
             installer/homebrew/oxide-sloc.rb
             installer/chocolatey/oxide-sloc.nuspec
             installer/chocolatey/tools/chocolateyinstall.ps1
-          commit-message: "chore: refresh installer manifests (${{ steps.tag.outputs.tag }})"
-          title: "chore: refresh installer manifests (${{ steps.tag.outputs.tag }})"
+          commit-message: "chore: update dist binaries + installer manifests (${{ steps.tag.outputs.tag }})"
+          title: "chore: update dist binaries + installer manifests (${{ steps.tag.outputs.tag }})"
           body: |
-            Automated installer-manifest refresh from workflow run ${{ github.run_id }}.
+            Automated dist update from workflow run ${{ github.run_id }}.
 
-            Rewrites the scoop / homebrew / chocolatey manifests to
-            ${{ steps.tag.outputs.tag }} with the released asset digests
-            (winget and the nfpm deb/rpm are already drift-proof and untouched).
-            This PR was opened automatically because main is a protected branch.
-            Auto-merge is enabled — it lands on main as soon as Quality gates passes.
+            ONE PR for release ${{ steps.tag.outputs.tag }}, covering:
+            - `dist/oxide-sloc-windows-x64.zip` + `dist/oxide-sloc-windows-x64.tar.gz`
+              (packaged from the same signed exe; byte-equality asserted in CI).
+              install.sh prefers the `.tar.gz` on locked-down hosts where `unzip` /
+              PowerShell are unavailable, so both ship in lock-step.
+            - `dist/oxide-sloc-linux-x86_64.tar.gz` (UBI 8 / glibc 2.28 build).
+            - scoop / homebrew / chocolatey installer manifests, refreshed to the
+              released asset digests (winget + nfpm deb/rpm are drift-proof, untouched).
+
+            Opened as a SINGLE PR (not three) so there is no sibling-merge cascade:
+            main requires an up-to-date branch, and separate dist PRs used to leave
+            each other BEHIND with no event to re-trigger auto-merge. This PR was
+            opened automatically because main is a protected branch. Auto-merge is
+            enabled — it lands on main as soon as Quality gates passes.
           labels: "automated,dist"
           delete-branch: true
 
+      # Land on main automatically once Quality gates passes. Opened with the app
+      # token, so CI runs on the PR (unlike a GITHUB_TOKEN PR); auto-merge waits
+      # for that check to go green. Requires "Allow auto-merge" in repo settings.
       - name: Enable auto-merge
         if: steps.latest.outputs.is_latest == 'true' && steps.cpr.outputs.pull-request-number
         env:

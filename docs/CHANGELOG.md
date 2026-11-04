@@ -8,6 +8,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### CI/CD
+
+- **Dist updates now land in a single PR.** The release dist-commit flow previously opened
+  three separate PRs (Windows binaries, Linux binary, installer manifests); because `main`
+  requires an up-to-date branch, each merge left the siblings BEHIND with no event to
+  re-trigger auto-merge, so they could stall for hours. They are now collapsed into one
+  `commit-dist` PR — one Quality-gates run, one clean auto-merge, no sibling cascade. All
+  existing gates (zip/tar.gz byte-equality, per-platform version asserts, digest recompute)
+  are preserved.
+
 ---
 
 ## [1.6.28] — 2026-11-02
