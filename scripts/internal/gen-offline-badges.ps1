@@ -13,17 +13,34 @@
 #
 # Status badges (CI, coverage, scorecard, ...) render a neutral gray "offline"
 # rather than asserting a pass/fail state that cannot be known without network.
+#
+# -Version overrides the version stamped into version.svg / crates.svg. Omit it
+# (the normal local case, e.g. the /release flow) to read the current workspace
+# version from Cargo.toml. CI passes the release tag's version explicitly so the
+# badges are deterministic even if main has already advanced past the bump.
+
+param(
+    [string]$Version
+)
 
 $ErrorActionPreference = 'Stop'
 $outDir = Join-Path $PSScriptRoot '..\..\docs\badges'
 $outDir = [System.IO.Path]::GetFullPath($outDir)
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-# Pull the current workspace version so version/crates badges stay in sync.
-$cargo = Join-Path $PSScriptRoot '..\..\Cargo.toml'
-$ver = (Select-String -Path $cargo -Pattern '^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"' |
-    Select-Object -First 1).Matches[0].Groups[1].Value
-if (-not $ver) { throw "Could not read version from $cargo" }
+# Pull the workspace version (or use the explicit -Version) so version/crates
+# badges stay in sync.
+if ($Version) {
+    $ver = $Version.TrimStart('v')
+    if ($ver -notmatch '^[0-9]+\.[0-9]+\.[0-9]+') {
+        throw "Invalid -Version '$Version' — expected MAJOR.MINOR.PATCH (optionally v-prefixed)"
+    }
+} else {
+    $cargo = Join-Path $PSScriptRoot '..\..\Cargo.toml'
+    $ver = (Select-String -Path $cargo -Pattern '^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"' |
+        Select-Object -First 1).Matches[0].Groups[1].Value
+    if (-not $ver) { throw "Could not read version from $cargo" }
+}
 
 function Get-CharWidth([char]$c) {
     switch ($c) {

@@ -751,6 +751,19 @@ jobs:
           echo "source-tgz  sha256: $SRC_SHA"
           bash scripts/internal/update-installer-manifests.sh "$VERSION" "$ZIP_SHA" "$SRC_SHA"
 
+      # Re-stamp the committed offline fallback badges (docs/badges/version.svg +
+      # crates.svg embed the version literally). These are what the README shows
+      # on an air-gapped network — the live shields fetch fails and the browser's
+      # onerror handler swaps in these static SVGs — and what the Bitbucket mirror
+      # renders. Drive from the release TAG, not Cargo.toml, so the badges match
+      # the release even if main has advanced. pwsh is preinstalled on the runner.
+      - name: Refresh offline fallback badges
+        if: steps.latest.outputs.is_latest == 'true'
+        shell: pwsh
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: ./scripts/internal/gen-offline-badges.ps1 -Version $env:TAG
+
       - name: Generate app token
         id: app-token
         if: steps.latest.outputs.is_latest == 'true'
@@ -771,6 +784,8 @@ jobs:
             dist/oxide-sloc-windows-x64.zip
             dist/oxide-sloc-windows-x64.tar.gz
             dist/oxide-sloc-linux-x86_64.tar.gz
+            docs/badges/version.svg
+            docs/badges/crates.svg
             installer/scoop/oxide-sloc.json
             installer/homebrew/oxide-sloc.rb
             installer/chocolatey/oxide-sloc.nuspec
@@ -788,6 +803,9 @@ jobs:
             - `dist/oxide-sloc-linux-x86_64.tar.gz` (UBI 8 / glibc 2.28 build).
             - scoop / homebrew / chocolatey installer manifests, refreshed to the
               released asset digests (winget + nfpm deb/rpm are drift-proof, untouched).
+            - `docs/badges/version.svg` + `crates.svg` re-stamped to this release so
+              the air-gapped README fallbacks (shown when the live shields fetch fails)
+              and the Bitbucket mirror display the current version.
 
             Opened as a SINGLE PR (not three) so there is no sibling-merge cascade:
             main requires an up-to-date branch, and separate dist PRs used to leave
