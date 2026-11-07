@@ -3995,6 +3995,20 @@ async fn add_security_headers(
         "Cross-Origin-Embedder-Policy",
         HeaderValue::from_static("require-corp"),
     );
+    // Dynamic HTML pages can carry run-scoped or authenticated content (scan
+    // results, report views). Mark them no-store so shared/browser caches never
+    // persist them. Static assets (CSS/JS/images/fonts) are served with their own
+    // Content-Type and keep their default cacheability for performance.
+    let is_html = h
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.contains("text/html"));
+    if is_html {
+        h.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store, max-age=0"),
+        );
+    }
     if state.tls_enabled {
         h.insert(
             "Strict-Transport-Security",

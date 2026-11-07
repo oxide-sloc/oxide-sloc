@@ -68,6 +68,14 @@ jobs:
           WORKFLOW_RUN_TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
           TAG="${INPUT_TAG:-${WORKFLOW_RUN_TAG:-$REF_NAME}}"
+          # Defence-in-depth: validate the RESOLVED tag regardless of source. The
+          # workflow_dispatch input is gated earlier, but workflow_run.head_branch
+          # and ref_name feed TAG too and are used as a checkout ref + in the
+          # dist commit. Reject anything that is not a strict release tag.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Resolved tag '$TAG' is not a valid release tag (expected vMAJOR.MINOR.PATCH)"
+            exit 1
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved release tag: $TAG"
 
@@ -214,6 +222,14 @@ jobs:
           WORKFLOW_RUN_TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
           TAG="${INPUT_TAG:-${WORKFLOW_RUN_TAG:-$REF_NAME}}"
+          # Defence-in-depth: validate the RESOLVED tag regardless of source. The
+          # workflow_dispatch input is gated earlier, but workflow_run.head_branch
+          # and ref_name feed TAG too and are used as a checkout ref + in the
+          # dist commit. Reject anything that is not a strict release tag.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Resolved tag '$TAG' is not a valid release tag (expected vMAJOR.MINOR.PATCH)"
+            exit 1
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved release tag: $TAG"
 
