@@ -13,8 +13,8 @@
 class OxideSloc < Formula
   desc "IEEE 1045-1992 SLOC analysis, test detection, and code metrics workbench"
   homepage "https://github.com/oxide-sloc/oxide-sloc"
-  url "https://github.com/oxide-sloc/oxide-sloc/archive/refs/tags/v1.6.28.tar.gz"
-  sha256 "18ac5c1b74e034eec79b9e67119c8148fe2ed87152efbe6cf0fa81779add1499"
+  url "https://github.com/oxide-sloc/oxide-sloc/archive/refs/tags/v1.6.29.tar.gz"
+  sha256 "2d2d1ac2cd01435214a53e05e4e6ecc855862f30456381ad1c2879aa366e8249"
   license "AGPL-3.0-or-later"
   head "https://github.com/oxide-sloc/oxide-sloc.git", branch: "main"
 
