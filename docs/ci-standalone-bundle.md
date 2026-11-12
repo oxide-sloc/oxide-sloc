@@ -59,7 +59,7 @@ card without parsing the HTML report or depending on any oxide-sloc helper. Shap
   "schema": "oxide-sloc.ci-summary/v1",
   "report_title": "My Project — main",
   "scanner": "sloc",
-  "scanner_version": "1.6.28",
+  "scanner_version": "1.6.29",
   "generated_utc": "2026-11-12T04:35:37+00:00",
   "totals": { "files_analyzed": 42, "code_lines": 9123, "comment_lines": 1200,
               "blank_lines": 800, "total_physical_lines": 11123 },

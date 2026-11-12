@@ -8,6 +8,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [1.6.29] — 2026-11-11
+
+### Added
+
+- **Standalone CI bundle (`analyze --ci-bundle --out-dir <dir>`).** One command emits a
+  self-contained directory a CI pipeline (Jenkins, GitLab, GitHub Actions) can archive and
+  publish without copying any oxide-sloc helper scripts: `result.json`, the HTML/PDF/CSV/XLSX
+  reports, `scan-config.json`, a stable machine-readable `summary.json`
+  (`oxide-sloc.ci-summary/v1`), a self-contained CI dashboard (`index.html`), a
+  Jenkins-CSP-compatible report with externalized CSS/JS, and a local-import/compare bundle.
+- **Coverage-ingestion diagnostics.** Every run that supplies a coverage file now records the
+  resolved path and a `matched` / `no_match` / `parsed_no_entries` / `read_error` outcome with
+  entry and match counts, surfaced in the HTML and PDF reports — so adopters can tell an
+  oxide-sloc ingestion problem from a missing-coverage build config.
+
+### Changed
+
+- Renamed the user-facing coverage flag reference from `--lcov-path` to `--coverage-file` across
+  the reports and web UI: ingestion already auto-detects LCOV (lcov/gcov/llvm-cov), Cobertura
+  XML, JaCoCo XML, Istanbul/NYC JSON, and coverage.py JSON, so the LCOV-specific name was
+  misleading.
+
 ### CI/CD
 
 - **Dist updates now land in a single PR.** The release dist-commit flow previously opened
@@ -17,6 +41,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `commit-dist` PR — one Quality-gates run, one clean auto-merge, no sibling cascade. All
   existing gates (zip/tar.gz byte-equality, per-platform version asserts, digest recompute)
   are preserved.
+- Added a Windows Pester CI job exercising `analyze --ci-bundle` end-to-end (C++ GoogleTest
+  sources + an imported LCOV file) against the real binary.
 
 ---
 
