@@ -151,6 +151,7 @@ fn make_run() -> AnalysisRun {
         duplicate_groups: vec![],
         duplicates_excluded: 0,
         authors: Vec::new(),
+        coverage_diagnostics: None,
     }
 }
 
@@ -321,6 +322,7 @@ fn make_empty_run() -> AnalysisRun {
         duplicate_groups: vec![],
         duplicates_excluded: 0,
         authors: Vec::new(),
+        coverage_diagnostics: None,
     }
 }
 
@@ -370,6 +372,7 @@ fn make_multi_lang_run() -> AnalysisRun {
         duplicate_groups: vec![],
         duplicates_excluded: 0,
         authors: Vec::new(),
+        coverage_diagnostics: None,
     }
 }
 

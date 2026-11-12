@@ -2602,6 +2602,7 @@ dependencies = [
  "chrono",
  "headless_chrome",
  "printpdf",
+ "serde",
  "serde_json",
  "sloc-config",
  "sloc-core",

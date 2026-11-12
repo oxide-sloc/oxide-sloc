@@ -53,6 +53,7 @@ fn fixture_run(run_id: &str) -> AnalysisRun {
         duplicate_groups: vec![],
         duplicates_excluded: 0,
         authors: Vec::new(),
+        coverage_diagnostics: None,
     }
 }
 

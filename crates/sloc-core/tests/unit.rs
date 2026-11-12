@@ -227,6 +227,7 @@ fn make_run_with_files(files: Vec<(&str, u64)>) -> AnalysisRun {
         duplicate_groups: vec![],
         duplicates_excluded: 0,
         authors: Vec::new(),
+        coverage_diagnostics: None,
     }
 }
 

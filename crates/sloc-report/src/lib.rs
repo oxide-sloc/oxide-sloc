@@ -2,9 +2,15 @@
 // Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
 #![allow(clippy::multiple_crate_versions)]
 
+mod ci_bundle;
 mod exports;
 mod pdf_compat;
 
+pub use ci_bundle::{
+    CI_SUMMARY_SCHEMA, CiBundlePaths, CiCoverage, CiLanguage, CiLexicalTests, CiStyle, CiSummary,
+    CiTotals, CspBundle, build_ci_summary, externalize_report_assets, render_ci_dashboard_html,
+    write_ci_bundle, write_ci_summary,
+};
 pub use exports::{
     CodeScanOptions, DEFAULT_COMPLEXITY_THRESHOLD, write_bitbucket, write_cloc_json,
     write_codeclimate, write_sarif,
@@ -441,6 +447,31 @@ mod filters {
 // ── Main renderer ─────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_lines)] // large HTML renderer; splitting would obscure the template structure
+/// Short label for a coverage ingestion outcome, used in report metadata.
+fn coverage_outcome_label(outcome: sloc_core::CoverageOutcome) -> &'static str {
+    use sloc_core::CoverageOutcome;
+    match outcome {
+        CoverageOutcome::ReadError => "Read error",
+        CoverageOutcome::ParsedNoEntries => "Parsed, no entries",
+        CoverageOutcome::NoMatch => "Parsed, no path match",
+        CoverageOutcome::Matched => "Matched",
+    }
+}
+
+/// Build a human-readable detail line for a coverage-ingestion diagnostic. Uses the parser's own
+/// `detail` when present, otherwise synthesizes a match summary.
+fn coverage_diag_detail(d: &sloc_core::CoverageDiagnostics) -> String {
+    if !d.detail.is_empty() {
+        return d.detail.clone();
+    }
+    format!(
+        "parsed {} coverage entries; {} of {} scanned files matched",
+        d.entries_parsed,
+        d.files_matched,
+        d.files_matched + d.files_unmatched
+    )
+}
+
 fn render_html_inner(
     run: &AnalysisRun,
     is_sub_report: bool,
@@ -547,6 +578,15 @@ fn render_html_inner(
         has_coverage_data: run.per_file_records.iter().any(|f| f.coverage.is_some()),
         has_fn_coverage: totals.coverage_functions_found > 0,
         has_branch_coverage: totals.coverage_branches_found > 0,
+        coverage_diag_status: run
+            .coverage_diagnostics
+            .as_ref()
+            .map(|d| coverage_outcome_label(d.outcome).to_string()),
+        coverage_diag_path: run
+            .coverage_diagnostics
+            .as_ref()
+            .map(|d| d.resolved_path.clone()),
+        coverage_diag_detail: run.coverage_diagnostics.as_ref().map(coverage_diag_detail),
         test_files_count: run
             .per_file_records
             .iter()
@@ -2618,7 +2658,7 @@ fn pdf_tc_no_coverage_note(ctx: &PdfCtx<'_>, mut y: f32) -> f32 {
         ctx.font_bold,
     );
     ctx.layer.use_text(
-        "Re-run with --lcov-path <file.info> to see per-file line, function, and branch coverage.",
+        "Re-run with --coverage-file <path> to see per-file line, function, and branch coverage.",
         6.0,
         Mm(margin + 4.0),
         Mm(y - note_h + 2.5),
@@ -6445,7 +6485,7 @@ struct WarningOpportunityRow {
             <div class="stat-chip">
               {% if has_coverage_data %}<div class="stat-chip-val">{{ cov_line_pct }}%</div>{% else %}<div class="stat-chip-val" style="color:var(--muted);">&mdash;</div>{% endif %}
               <div class="stat-chip-label">Line Coverage</div>
-              <div class="stat-chip-tip">Overall line coverage from LCOV data — run with --lcov-path to populate</div>
+              <div class="stat-chip-tip">Overall line coverage from imported data — run with --coverage-file to populate</div>
             </div>
           </div>
           {% if has_coverage_data %}
@@ -6539,10 +6579,25 @@ struct WarningOpportunityRow {
             </table>
           </div>
           {% else %}
+          {% if let Some(status) = coverage_diag_status %}
+          <div class="info-callout">
+            <span class="info-callout-icon">&#x26A0;</span>
+            <span>
+              A coverage file was supplied but no coverage is displayed &#x2014; ingestion status:
+              <strong>{{ status }}</strong>.
+              {% if let Some(detail) = coverage_diag_detail %}{{ detail }}{% endif %}
+              {% if let Some(path) = coverage_diag_path %}<br>Resolved coverage file: <code>{{ path }}</code>.{% endif %}
+              <br>This is an oxide-sloc ingestion result, independent of whether your build produced coverage.
+            </span>
+          </div>
+          {% else %}
           <div class="info-callout">
             <span class="info-callout-icon">&#x2139;</span>
-            <span>No code coverage detected. Re-run with <code>--lcov-path coverage.info</code> to see line, function, and branch coverage here.</span>
+            <span>No coverage file was supplied. Imported coverage is distinct from lexical test
+              detection: re-run with <code>--coverage-file &lt;path&gt;</code> (LCOV, Cobertura XML, or
+              JaCoCo XML) to see line, function, and branch coverage here.</span>
           </div>
+          {% endif %}
           {% endif %}
         </div>
       </section>
@@ -7136,7 +7191,12 @@ struct WarningOpportunityRow {
       if (window.location.protocol !== 'file:') return;
       document.body.classList.add('offline-view');
       var pdfBtn = document.getElementById('nav-view-pdf-btn');
-      if (pdfBtn) { pdfBtn.style.display = 'none'; }
+      // A pre-generated sibling PDF (data-standalone-pdf, set when --html-out and
+      // --pdf-out / --all-formats land in the same directory) opens via a relative
+      // path that works offline, so keep the button live. Only hide it when the
+      // only route left is the dead server endpoint.
+      var hasStandalonePdf = pdfBtn && pdfBtn.getAttribute('data-standalone-pdf');
+      if (pdfBtn && !hasStandalonePdf) { pdfBtn.style.display = 'none'; }
       var msg = 'Unavailable in a saved offline report. Open in a running oxide-sloc server to use this.';
       // Absolute (server-route) links are dead offline; relative artifact links are left intact.
       Array.prototype.slice.call(document.querySelectorAll('a[href^="/"]')).forEach(function (a) {
@@ -7144,6 +7204,8 @@ struct WarningOpportunityRow {
           a.addEventListener('click', function (e) { e.preventDefault(); });
           return;
         }
+        // Leave the standalone-PDF button fully functional offline.
+        if (a === pdfBtn && hasStandalonePdf) { return; }
         a.classList.add('offline-na');
         a.setAttribute('aria-disabled', 'true');
         a.setAttribute('tabindex', '-1');
@@ -10484,6 +10546,13 @@ struct ReportTemplate<'a> {
     has_coverage_data: bool,
     has_fn_coverage: bool,
     has_branch_coverage: bool,
+    /// Short coverage-ingestion status (e.g. "Matched", "No match", "Parse error"). Set only when
+    /// a coverage file was supplied; `None` means no coverage file was provided at all.
+    coverage_diag_status: Option<String>,
+    /// Resolved coverage-file path that was attempted. `None` when no file was supplied.
+    coverage_diag_path: Option<String>,
+    /// Longer, human-readable detail/hint about the coverage ingestion outcome.
+    coverage_diag_detail: Option<String>,
     test_files_count: u64,
     test_assertion_count: u64,
     test_suite_count: u64,

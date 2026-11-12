@@ -203,7 +203,16 @@ struct AnalyzeArgs {
     #[arg(long, requires = "out_dir")]
     all_formats: bool,
 
-    /// Output directory for the --all-formats bundle (created if missing).
+    /// Emit the complete standalone CI bundle into --out-dir: every --all-formats
+    /// artifact PLUS a machine-readable summary.json, a self-contained CI dashboard
+    /// (index.html), a Jenkins-CSP-compatible HTML report (csp/ with externalized
+    /// CSS/JS), and a local-import/compare bundle (import/). The whole directory can
+    /// be archived and published by Jenkins HTML Publisher with no helper scripts.
+    /// Requires --out-dir.
+    #[arg(long, requires = "out_dir")]
+    ci_bundle: bool,
+
+    /// Output directory for the --all-formats / --ci-bundle bundle (created if missing).
     #[arg(long, value_name = "DIR")]
     out_dir: Option<PathBuf>,
 
@@ -1278,6 +1287,21 @@ fn derive_project_name(path: &Path) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+/// Write the complete standalone CI bundle into `--out-dir` and print the entry pages.
+fn write_ci_bundle_outputs(run: &AnalysisRun, args: &AnalyzeArgs, quiet: bool) -> Result<()> {
+    let Some(dir) = args.out_dir.as_deref() else {
+        anyhow::bail!("--ci-bundle requires --out-dir");
+    };
+    let paths = sloc_report::write_ci_bundle(run, dir)?;
+    if !quiet {
+        println!("ci-bundle written to {}", paths.dir.display());
+        println!("  dashboard : {}", paths.dashboard_html.display());
+        println!("  report    : {}", paths.report_html.display());
+        println!("  summary   : {}", paths.summary_json.display());
+    }
+    Ok(())
+}
+
 /// Write all requested output artifacts and print paths when not quiet.
 fn write_outputs(run: &AnalysisRun, args: &AnalyzeArgs, quiet: bool) -> Result<()> {
     if let Some(path) = &args.json_out {
@@ -1493,7 +1517,11 @@ fn apply_complexity_gate(run: &AnalysisRun, max_cc: u32) {
 
 async fn run_analyze(mut args: AnalyzeArgs) -> Result<()> {
     apply_default_open_location(&mut args);
-    expand_all_formats(&mut args)?;
+    // --ci-bundle writes the whole standalone directory itself; don't also expand the six
+    // --all-formats paths (that would double-write report.html et al. at the top level).
+    if !args.ci_bundle {
+        expand_all_formats(&mut args)?;
+    }
     let config = resolve_analyze_config(&args)?;
     let quiet = args.quiet;
     let mut run = tokio::task::spawn_blocking(move || analyze(&config, "analyze", None, None))
@@ -1512,7 +1540,11 @@ async fn run_analyze(mut args: AnalyzeArgs) -> Result<()> {
         print_summary(&run, args.per_file, args.plain);
     }
 
-    write_outputs(&run, &args, quiet)?;
+    if args.ci_bundle {
+        write_ci_bundle_outputs(&run, &args, quiet)?;
+    } else {
+        write_outputs(&run, &args, quiet)?;
+    }
 
     if args.open {
         open_outputs(&args, quiet);
@@ -2448,13 +2480,17 @@ fn load_base_config(config_path: Option<&Path>) -> Result<AppConfig> {
 
 fn resolve_analyze_config(args: &AnalyzeArgs) -> Result<AppConfig> {
     let mut config = load_base_config(args.config.as_deref())?;
+    // Apply the named profile FIRST so it replaces the base TOML sections, then let
+    // CLI flags override on top. A profile overwrites entire config sections, so
+    // applying it after the CLI args would clobber them (e.g. --report-title would
+    // be lost to the profile's reporting defaults). CLI arguments must always win.
+    if let Some(profile) = &args.profile {
+        config.apply_profile(profile)?;
+    }
     apply_discovery_cli_args(&mut config, args);
     apply_analysis_cli_args(&mut config, args);
     if let Some(title) = &args.report_title {
         config.reporting.report_title.clone_from(title);
-    }
-    if let Some(profile) = &args.profile {
-        config.apply_profile(profile)?;
     }
     config.validate()?;
     if config.discovery.root_paths.is_empty() {
@@ -4545,6 +4581,91 @@ mod all_formats_tests {
     fn all_formats_without_out_dir_is_rejected_at_parse_time() {
         let err = Cli::try_parse_from(["oxide-sloc", "analyze", ".", "--all-formats"]);
         assert!(err.is_err(), "--all-formats must require --out-dir");
+    }
+
+    #[test]
+    fn ci_bundle_requires_out_dir() {
+        let err = Cli::try_parse_from(["oxide-sloc", "analyze", ".", "--ci-bundle"]);
+        assert!(err.is_err(), "--ci-bundle must require --out-dir");
+        let ok = Cli::try_parse_from([
+            "oxide-sloc",
+            "analyze",
+            ".",
+            "--ci-bundle",
+            "--out-dir",
+            "o",
+        ]);
+        assert!(ok.is_ok(), "--ci-bundle with --out-dir must parse");
+    }
+}
+
+#[cfg(test)]
+mod report_title_precedence_tests {
+    use super::{AnalyzeArgs, Cli, Commands, resolve_analyze_config};
+    use clap::Parser;
+
+    fn parse_analyze(argv: &[&str]) -> AnalyzeArgs {
+        match Cli::try_parse_from(argv).expect("args parse").command {
+            Some(Commands::Analyze(a)) => *a,
+            other => panic!("expected analyze subcommand, got {other:?}"),
+        }
+    }
+
+    /// A CLI `--report-title` must survive a `--profile` whose reporting section sets its own
+    /// title: CLI args override both the profile and the base TOML.
+    #[test]
+    fn cli_report_title_overrides_profile() {
+        let dir = std::env::temp_dir().join(format!("oxide_sloc_title_{}", super::uuid_simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg_path = dir.join("sloc.toml");
+        std::fs::write(
+            &cfg_path,
+            "[reporting]\nreport_title = \"Base Title\"\n\n\
+             [profiles.ci]\n[profiles.ci.reporting]\nreport_title = \"Profile Title\"\n",
+        )
+        .unwrap();
+        let cfg_s = cfg_path.to_str().unwrap();
+        let args = parse_analyze(&[
+            "oxide-sloc",
+            "analyze",
+            ".",
+            "--config",
+            cfg_s,
+            "--profile",
+            "ci",
+            "--report-title",
+            "CLI Title",
+        ]);
+        let resolved = resolve_analyze_config(&args).expect("resolve");
+        assert_eq!(resolved.reporting.report_title, "CLI Title");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Without a CLI title, the selected profile's title replaces the base TOML's.
+    #[test]
+    fn profile_title_applies_when_no_cli_title() {
+        let dir = std::env::temp_dir().join(format!("oxide_sloc_title2_{}", super::uuid_simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg_path = dir.join("sloc.toml");
+        std::fs::write(
+            &cfg_path,
+            "[reporting]\nreport_title = \"Base Title\"\n\n\
+             [profiles.ci]\n[profiles.ci.reporting]\nreport_title = \"Profile Title\"\n",
+        )
+        .unwrap();
+        let cfg_s = cfg_path.to_str().unwrap();
+        let args = parse_analyze(&[
+            "oxide-sloc",
+            "analyze",
+            ".",
+            "--config",
+            cfg_s,
+            "--profile",
+            "ci",
+        ]);
+        let resolved = resolve_analyze_config(&args).expect("resolve");
+        assert_eq!(resolved.reporting.report_title, "Profile Title");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

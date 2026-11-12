@@ -480,6 +480,45 @@ pub struct Author {
     pub commit_count: u64,
 }
 
+/// High-level outcome of a coverage-file ingestion attempt. Lets CI adopters distinguish an
+/// oxide-sloc ingestion problem (bad path / unparseable file / path-mismatch) from a build-or-test
+/// configuration problem (no coverage ever produced).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageOutcome {
+    /// A coverage file was resolved but could not be read from disk.
+    ReadError,
+    /// The file was read but the parser produced zero coverage entries (wrong/empty format).
+    ParsedNoEntries,
+    /// Entries parsed, but none matched any scanned source path (path-prefix mismatch).
+    NoMatch,
+    /// At least one scanned file was matched to a coverage entry.
+    Matched,
+}
+
+/// Diagnostics describing how a supplied coverage file was ingested. Attached to [`AnalysisRun`]
+/// only when a coverage file was actually resolved (so `None` == "no coverage file was supplied").
+/// Surfaced in HTML/PDF report metadata so adopters can tell why no coverage is displayed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoverageDiagnostics {
+    /// The resolved coverage-file path that was attempted (as given / env-resolved).
+    pub resolved_path: String,
+    /// High-level ingestion outcome.
+    pub outcome: CoverageOutcome,
+    /// Number of coverage entries parsed from the file.
+    #[serde(default)]
+    pub entries_parsed: usize,
+    /// Number of scanned source files matched to a coverage entry.
+    #[serde(default)]
+    pub files_matched: u32,
+    /// Number of scanned source files with no matching coverage entry.
+    #[serde(default)]
+    pub files_unmatched: u32,
+    /// Human-readable detail (parser error text, or a hint). Empty when not applicable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisRun {
     pub tool: ToolMetadata,
@@ -541,6 +580,11 @@ pub struct AnalysisRun {
     /// indices are referenced by `FileRecord::ownership`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub authors: Vec<Author>,
+    /// Diagnostics for a supplied coverage file. `None` when no coverage file was supplied; `Some`
+    /// records the resolved path and ingestion outcome (read error / no entries / no match / match)
+    /// so CI adopters can distinguish an ingestion problem from a missing-coverage build config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_diagnostics: Option<CoverageDiagnostics>,
 }
 
 #[derive(Default)]
@@ -2345,6 +2389,7 @@ fn assemble_run(
         duplicate_groups,
         duplicates_excluded: 0,
         authors,
+        coverage_diagnostics: None,
     };
     // Collapse GitHub no-reply aliases into the same person's real-email identity before the run
     // is serialized, so every downstream surface (HTML report, web, JSON, MCP) sees one identity.
@@ -2453,9 +2498,9 @@ pub fn analyze(
         Vec::new()
     };
 
-    attach_coverage(config, &mut analyzed, &mut warnings);
+    let coverage_diagnostics = attach_coverage(config, &mut analyzed, &mut warnings);
 
-    Ok(assemble_run(
+    let mut run = assemble_run(
         config,
         runtime_mode,
         analyzed,
@@ -2464,15 +2509,24 @@ pub fn analyze(
         submodule_summaries,
         progress,
         cancel,
-    ))
+    );
+    run.coverage_diagnostics = coverage_diagnostics;
+    Ok(run)
 }
 
-fn attach_coverage(config: &AppConfig, analyzed: &mut [FileRecord], warnings: &mut Vec<String>) {
-    let Some(cov_path) = coverage::resolve_coverage_file(config.analysis.coverage_file.as_deref())
-    else {
-        return;
-    };
-    tracing::debug!(path = %cov_path.display(), "loading coverage file");
+/// Attach per-file coverage from a resolved coverage file and report an ingestion diagnostic.
+///
+/// Returns `None` when no coverage file was supplied at all, and `Some(CoverageDiagnostics)`
+/// describing the outcome (read error / parsed-no-entries / no-match / matched) when a file was
+/// resolved — so downstream surfaces can tell an ingestion problem from a missing-coverage build.
+fn attach_coverage(
+    config: &AppConfig,
+    analyzed: &mut [FileRecord],
+    warnings: &mut Vec<String>,
+) -> Option<CoverageDiagnostics> {
+    let cov_path = coverage::resolve_coverage_file(config.analysis.coverage_file.as_deref())?;
+    let resolved_path = cov_path.display().to_string();
+    tracing::debug!(path = %resolved_path, "loading coverage file");
     match fs::read_to_string(&cov_path) {
         Ok(content) => {
             let cov_map = coverage::parse_coverage_auto(&cov_path, &content);
@@ -2487,26 +2541,59 @@ fn attach_coverage(config: &AppConfig, analyzed: &mut [FileRecord], warnings: &m
                     unmatched += 1;
                 }
             }
+            let entries_parsed = cov_map.len();
             tracing::debug!(
-                path = %cov_path.display(),
-                coverage_entries = cov_map.len(),
+                path = %resolved_path,
+                coverage_entries = entries_parsed,
                 files_matched = matched,
                 files_unmatched = unmatched,
                 "coverage attached"
             );
-            if unmatched > 0 && matched == 0 {
+            let (outcome, detail) = if entries_parsed == 0 {
+                (
+                    CoverageOutcome::ParsedNoEntries,
+                    "coverage file parsed to zero entries — check the file format (LCOV, \
+                     Cobertura XML, or JaCoCo XML are supported)"
+                        .to_string(),
+                )
+            } else if matched == 0 {
                 tracing::warn!(
-                    path = %cov_path.display(),
+                    path = %resolved_path,
                     "coverage file loaded but no source files could be matched — check that paths in the coverage report match the scanned directory"
                 );
-            }
+                (
+                    CoverageOutcome::NoMatch,
+                    format!(
+                        "parsed {entries_parsed} coverage entries but none matched the scanned \
+                         source paths — check that the coverage report's file paths line up with \
+                         the scanned directory"
+                    ),
+                )
+            } else {
+                (CoverageOutcome::Matched, String::new())
+            };
+            Some(CoverageDiagnostics {
+                resolved_path,
+                outcome,
+                entries_parsed,
+                files_matched: matched,
+                files_unmatched: unmatched,
+                detail,
+            })
         }
         Err(e) => {
-            tracing::warn!(path = %cov_path.display(), error = %e, "coverage file could not be read");
+            tracing::warn!(path = %resolved_path, error = %e, "coverage file could not be read");
             warnings.push(format!(
-                "coverage file '{}' could not be read: {e}",
-                cov_path.display()
+                "coverage file '{resolved_path}' could not be read: {e}"
             ));
+            Some(CoverageDiagnostics {
+                resolved_path,
+                outcome: CoverageOutcome::ReadError,
+                entries_parsed: 0,
+                files_matched: 0,
+                files_unmatched: 0,
+                detail: e.to_string(),
+            })
         }
     }
 }
@@ -4422,6 +4509,7 @@ author-mail <other@example.com>
             duplicate_groups: vec![],
             duplicates_excluded: 0,
             authors,
+            coverage_diagnostics: None,
         }
     }
 
@@ -5021,6 +5109,7 @@ author-mail <other@example.com>
             duplicate_groups: vec![],
             duplicates_excluded: 0,
             authors: Vec::new(),
+            coverage_diagnostics: None,
         };
         let json_path = dir.path().join("test.json");
         write_json(&run, &json_path).unwrap();

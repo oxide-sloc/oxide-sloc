@@ -20382,6 +20382,7 @@ pub fn build_sub_run(
         duplicate_groups: vec![],
         duplicates_excluded: 0,
         authors,
+        coverage_diagnostics: None,
     }
 }
 
@@ -28400,7 +28401,7 @@ struct ScanSetupTemplate {
       {% if has_coverage_data %}
       <div class="cocomo-box-note">Lines instrumented: <strong>{{ cov_lines_summary }}</strong> &nbsp;&middot;&nbsp; Open the full HTML report for a per-file breakdown.</div>
       {% else %}
-      <div class="cocomo-box-note">No code coverage detected. Re-run with <code>--lcov-path &lt;coverage.info&gt;</code> to populate this section.</div>
+      <div class="cocomo-box-note">No code coverage detected. Re-run with <code>--coverage-file &lt;path&gt;</code> to populate this section.</div>
       {% endif %}
     </div>
 

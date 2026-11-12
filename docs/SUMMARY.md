@@ -14,6 +14,7 @@
 # CI/CD Integration
 
 - [CI Integrations Overview](ci-integrations.md)
+- [Standalone CI Bundle](ci-standalone-bundle.md)
 - [Multi-Instance Git Scanning](multi-instance.md)
 - [Jenkins Setup](jenkins-manual-setup.md)
 - [SonarQube Setup](sonarqube-manual-setup.md)
