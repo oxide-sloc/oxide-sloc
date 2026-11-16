@@ -105,6 +105,11 @@ pub struct RegistryEntry {
     /// ISO 8601 author-date of the last git commit at scan time.
     #[serde(default)]
     pub git_commit_date: Option<String>,
+    /// Dominant branch-prefix work category merged over the scan's activity window (e.g.
+    /// "feature", "fix", "hotfix"), cached for a compact badge in the history list without having
+    /// to reload the full run JSON. `None` when the run captured no branch activity.
+    #[serde(default)]
+    pub branch_category_dominant: Option<String>,
     /// Operating system the scan ran on (e.g. "windows", "linux"). Lets pooled reports
     /// from different environments be told apart in the list/compare/trend views.
     #[serde(default)]
@@ -350,6 +355,7 @@ mod tests {
             git_tags: None,
             git_nearest_tag: None,
             git_commit_date: None,
+            branch_category_dominant: None,
             scan_os: None,
             scan_host: None,
             scan_user: None,

@@ -85,6 +85,7 @@ fn make_run() -> AnalysisRun {
             files_unmatched: 0,
             detail: String::new(),
         }),
+        branch_activity: None,
     }
 }
 

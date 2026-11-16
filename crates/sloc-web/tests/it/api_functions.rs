@@ -255,6 +255,7 @@ fn make_parent_run_with_submodule() -> (AnalysisRun, SubmoduleSummary) {
         duplicates_excluded: 0,
         authors: Vec::new(),
         coverage_diagnostics: None,
+        branch_activity: None,
     };
 
     let sub = SubmoduleSummary {

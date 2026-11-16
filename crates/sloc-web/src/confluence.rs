@@ -1722,6 +1722,7 @@ mod http_tests {
             duplicates_excluded: 0,
             authors: Vec::new(),
             coverage_diagnostics: None,
+            branch_activity: None,
         }
     }
 

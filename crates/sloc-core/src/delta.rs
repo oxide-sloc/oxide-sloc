@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::{AnalysisRun, FileRecord};
+use crate::{AnalysisRun, BranchCategoryCount, FileRecord, MergedBranch, tally_branch_categories};
 
 #[derive(Debug, Serialize)]
 pub struct SummaryDelta {
@@ -37,6 +37,11 @@ pub struct SummaryDelta {
     /// Current line coverage percentage. `None` if current has no coverage data.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_coverage_line_pct: Option<f64>,
+    /// Per-category tally of the branches merged *between* the two scans, derived from the current
+    /// run's branch-activity window filtered to merges newer than the baseline. Empty when the
+    /// current run carries no branch activity (non-git path, disabled window, or no merges).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_since_last_scan: Vec<BranchCategoryCount>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy)]
@@ -240,6 +245,34 @@ fn coverage_line_pct(hit: u64, found: u64) -> Option<f64> {
 
 #[must_use]
 #[allow(clippy::too_many_lines)]
+/// Re-tally the current run's merged branches, keeping only merges newer than the baseline scan,
+/// so the result reflects the work merged *between* the two scans. Uses the baseline's recorded
+/// commit date as the cutoff, falling back to its scan timestamp. Merges whose own date is missing
+/// or unparseable are kept (they cannot be proven older). Empty when the current run has no
+/// branch activity. This is pure in-memory filtering of already-stored data — no git access.
+fn work_merged_since(baseline: &AnalysisRun, current: &AnalysisRun) -> Vec<BranchCategoryCount> {
+    let Some(activity) = &current.branch_activity else {
+        return Vec::new();
+    };
+    let cutoff: DateTime<Utc> = baseline
+        .git_commit_date
+        .as_deref()
+        .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
+        .map_or(baseline.tool.timestamp_utc, |d| d.with_timezone(&Utc));
+    let recent: Vec<MergedBranch> = activity
+        .merges
+        .iter()
+        .filter(|m| {
+            m.date
+                .as_deref()
+                .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
+                .is_none_or(|d| d.with_timezone(&Utc) > cutoff)
+        })
+        .cloned()
+        .collect();
+    tally_branch_categories(&recent)
+}
+
 pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanComparison {
     let baseline_map: HashMap<&str, &FileRecord> = baseline
         .per_file_records
@@ -343,6 +376,7 @@ pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanCompa
             coverage_line_pct_delta,
             baseline_coverage_line_pct: baseline_cov_pct,
             current_coverage_line_pct: current_cov_pct,
+            work_since_last_scan: work_merged_since(baseline, current),
         },
         file_deltas,
         files_added,
@@ -370,6 +404,10 @@ pub struct MultiScanPoint {
     pub files_analyzed: i64,
     pub test_count: i64,
     pub coverage_line_pct: Option<f64>,
+    /// Per-category tally of branches merged within this scan's activity window, so each point on
+    /// the timeline can show the kind of work it captured. Empty when the run has no branch activity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_categories: Vec<BranchCategoryCount>,
 }
 
 /// Per-file code counts across N scan points.
@@ -559,6 +597,11 @@ pub fn compute_multi_delta(runs: &[&AnalysisRun]) -> MultiScanComparison {
                 files_analyzed: s.files_analyzed.cast_signed(),
                 test_count: s.test_count.cast_signed(),
                 coverage_line_pct,
+                work_categories: r
+                    .branch_activity
+                    .as_ref()
+                    .map(|a| a.categories.clone())
+                    .unwrap_or_default(),
             }
         })
         .collect();

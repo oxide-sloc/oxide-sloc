@@ -498,6 +498,7 @@ fn render_html_inner(
     // The HTML report paginates client-side, so surface a deeper ranking (up to 200 files)
     // than the 15-row PDF page.
     let hotspot_rows = build_hotspot_rows(run, 200);
+    let work_category_rows = build_work_category_rows(run);
     let author_rows = build_author_rows(run);
     let own_summary = build_ownership_summary(run);
 
@@ -750,6 +751,10 @@ fn render_html_inner(
         duplicate_group_count: run.duplicate_groups.len(),
         has_hotspots: !hotspot_rows.is_empty(),
         hotspot_rows,
+        has_branch_activity: !work_category_rows.is_empty(),
+        branch_activity_window: run.branch_activity.as_ref().map_or(0, |a| a.window_days),
+        work_merges_total: work_category_rows.iter().map(|r| r.count).sum(),
+        work_category_rows,
         has_ownership: !author_rows.is_empty(),
         ownership_rows: author_rows,
         own_contributors: own_summary.contributors,
@@ -863,6 +868,35 @@ fn build_hotspot_rows(run: &AnalysisRun, limit: usize) -> Vec<HotspotRow> {
     });
     rows.truncate(limit);
     rows
+}
+
+/// One chip in the "Work Merged" panel: a work category with its merged-branch count, display
+/// label, and canonical palette colour.
+struct WorkCategoryRow {
+    label: String,
+    count: u32,
+    color: String,
+}
+
+/// Build the per-category chips for the "Work Merged" panel from a run's branch activity, ordered
+/// by count descending (already the order produced by `tally_branch_categories`).
+fn build_work_category_rows(run: &AnalysisRun) -> Vec<WorkCategoryRow> {
+    run.branch_activity
+        .as_ref()
+        .map(|a| {
+            a.categories
+                .iter()
+                .map(|c| {
+                    let (label, color) = sloc_core::branch_category_display(&c.category);
+                    WorkCategoryRow {
+                        label: label.to_string(),
+                        count: c.count,
+                        color: color.to_string(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One row of the Code Ownership table: a contributor's blame-based line tallies.
@@ -6838,6 +6872,19 @@ struct WarningOpportunityRow {
       </section>
       {% endif %}
 
+      {% if has_branch_activity %}
+      <section class="panel" id="work-merged-section">
+        <div class="toolbar"><div class="toolbar-left"><h2>Work Merged</h2></div></div>
+        <p class="section-desc">Branches merged into this repo over the last <strong>{{ branch_activity_window }}</strong> days, classified by branch-name prefix &mdash; a quick read of <strong>what kind of work</strong> landed. Recovered from merge commits, so merged-and-deleted branches still count. Anything without a recognized prefix falls into <strong>Other</strong>. Squash-merged branches carry no branch name and are not counted here.</p>
+        <div class="summary-strip">
+        {% for w in work_category_rows %}
+          <div class="stat-chip" style="border-left:4px solid {{ w.color }};"><div class="stat-chip-val" style="color:{{ w.color }};">{{ w.count }}</div><div class="stat-chip-label">{{ w.label }}</div></div>
+        {% endfor %}
+        </div>
+        <p class="section-desc" style="margin-top:8px;">{{ work_merges_total }} merged {% if work_merges_total == 1 %}branch{% else %}branches{% endif %} in the window.</p>
+      </section>
+      {% endif %}
+
       {% if has_ownership %}
       <section class="panel" id="ownership-section">
         <div class="toolbar"><div class="toolbar-left"><h2>Code Ownership</h2><input id="ownership-search" class="search" type="search" placeholder="Filter authors..." /></div></div>
@@ -10642,6 +10689,14 @@ struct ReportTemplate<'a> {
     has_hotspots: bool,
     /// Top-N files by `code_lines × recent commits` (empty unless activity was collected).
     hotspot_rows: Vec<HotspotRow>,
+    /// True when the branch-activity pass recovered merged-branch work categories.
+    has_branch_activity: bool,
+    /// Activity window (days) the branch-activity pass scanned for merge commits.
+    branch_activity_window: u32,
+    /// Per-category merged-branch chips for the "Work Merged" panel.
+    work_category_rows: Vec<WorkCategoryRow>,
+    /// Total merged branches across all categories (chip subtitle).
+    work_merges_total: u32,
     /// True when an attribution scan populated per-author ownership.
     has_ownership: bool,
     /// Per-contributor ownership rows (empty unless attribution ran on a git repo).

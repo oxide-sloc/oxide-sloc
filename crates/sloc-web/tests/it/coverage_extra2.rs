@@ -169,6 +169,7 @@ fn base_run(id: &str, root: &str) -> AnalysisRun {
         duplicates_excluded: 0,
         authors: Vec::new(),
         coverage_diagnostics: None,
+        branch_activity: None,
     }
 }
 

@@ -228,6 +228,7 @@ fn make_run_with_files(files: Vec<(&str, u64)>) -> AnalysisRun {
         duplicates_excluded: 0,
         authors: Vec::new(),
         coverage_diagnostics: None,
+        branch_activity: None,
     }
 }
 
@@ -439,6 +440,66 @@ fn compute_delta_modified_file_shrunk() {
     assert_eq!(cmp.summary.code_lines_delta, -15);
 }
 
+#[test]
+fn compute_delta_work_since_filters_by_baseline_date() {
+    use sloc_core::{BranchActivity, BranchCategoryCount, MergedBranch};
+
+    let mut base = make_run_with_files(vec![("src/lib.rs", 40)]);
+    // Baseline was taken at the start of the month.
+    base.git_commit_date = Some("2024-05-01T00:00:00+00:00".into());
+
+    let mut current = make_run_with_files(vec![("src/lib.rs", 80)]);
+    // Current run captured three merges: two after the baseline, one before it.
+    let merges = vec![
+        MergedBranch {
+            commit: "aaa".into(),
+            date: Some("2024-05-10T00:00:00+00:00".into()),
+            branch: "feature/a".into(),
+            category: "feature".into(),
+        },
+        MergedBranch {
+            commit: "bbb".into(),
+            date: Some("2024-05-05T00:00:00+00:00".into()),
+            branch: "hotfix/b".into(),
+            category: "hotfix".into(),
+        },
+        MergedBranch {
+            commit: "ccc".into(),
+            date: Some("2024-04-20T00:00:00+00:00".into()),
+            branch: "feature/old".into(),
+            category: "feature".into(),
+        },
+    ];
+    current.branch_activity = Some(BranchActivity {
+        window_days: 90,
+        categories: vec![BranchCategoryCount {
+            category: "feature".into(),
+            count: 2,
+        }],
+        merges,
+    });
+
+    let cmp = compute_delta(&base, &current);
+    // Only the two merges newer than the baseline date count: 1 feature + 1 hotfix.
+    let feature = cmp
+        .summary
+        .work_since_last_scan
+        .iter()
+        .find(|c| c.category == "feature")
+        .unwrap();
+    assert_eq!(
+        feature.count, 1,
+        "the pre-baseline feature merge is excluded"
+    );
+    let hotfix = cmp
+        .summary
+        .work_since_last_scan
+        .iter()
+        .find(|c| c.category == "hotfix")
+        .unwrap();
+    assert_eq!(hotfix.count, 1);
+}
+
 // ── Tier 2: hash-based per-file churn + reclassification ─────────────────────
 
 /// Overwrite the single file record's per-line code hashes + whole-file content hash,
@@ -615,6 +676,7 @@ fn make_registry_entry(run_id: &str) -> RegistryEntry {
         git_tags: None,
         git_nearest_tag: None,
         git_commit_date: None,
+        branch_category_dominant: None,
         scan_os: None,
         scan_host: None,
         scan_user: None,

@@ -140,6 +140,7 @@ fn make_run(run_id: &str) -> AnalysisRun {
         duplicates_excluded: 0,
         authors: Vec::new(),
         coverage_diagnostics: None,
+        branch_activity: None,
     }
 }
 

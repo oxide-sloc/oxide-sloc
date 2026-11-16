@@ -5946,6 +5946,7 @@ fn registry_entry_from_run(
         git_tags: None,
         git_nearest_tag: None,
         git_commit_date: None,
+        branch_category_dominant: run.dominant_branch_category(),
         scan_os,
         scan_host,
         scan_user,
@@ -6775,6 +6776,7 @@ fn build_registry_entry_from_json(json_path: PathBuf) -> Option<RegistryEntry> {
         git_tags: run.git_tags.clone(),
         git_nearest_tag: run.git_nearest_tag.clone(),
         git_commit_date: run.git_commit_date.clone(),
+        branch_category_dominant: run.dominant_branch_category(),
         scan_os,
         scan_host,
         scan_user,
@@ -7497,6 +7499,7 @@ pub(crate) fn build_run_registry_entry(
         git_tags: run.git_tags.clone(),
         git_nearest_tag: run.git_nearest_tag.clone(),
         git_commit_date: run.git_commit_date.clone(),
+        branch_category_dominant: run.dominant_branch_category(),
         scan_os,
         scan_host,
         scan_user,
@@ -10955,6 +10958,10 @@ struct HistoryEntryRow {
     imports: u64,
     test_count: u64,
     git_branch: String,
+    /// Dominant merged-branch work category label (e.g. "Feature"), empty when none was recorded.
+    work_category: String,
+    /// Canonical palette colour for `work_category`.
+    work_category_color: String,
     git_commit: String,
     /// Full-length commit SHA shown as a hover tooltip (falls back to short when absent).
     git_commit_long: String,
@@ -11157,6 +11164,16 @@ fn make_history_rows(reg: &ScanRegistry) -> Vec<HistoryEntryRow> {
                 imports: e.summary.imports,
                 test_count: e.summary.test_count,
                 git_branch: e.git_branch.clone().unwrap_or_default(),
+                work_category: e
+                    .branch_category_dominant
+                    .as_deref()
+                    .map(|c| sloc_core::branch_category_display(c).0.to_string())
+                    .unwrap_or_default(),
+                work_category_color: e
+                    .branch_category_dominant
+                    .as_deref()
+                    .map(|c| sloc_core::branch_category_display(c).1.to_string())
+                    .unwrap_or_default(),
                 git_commit: e.git_commit.clone().unwrap_or_default(),
                 git_commit_long: {
                     let short = e.git_commit.clone().unwrap_or_default();
@@ -11962,6 +11979,9 @@ async fn compare_handler(
         current_test_count: effective_current.summary_totals.test_count,
         baseline_coverage_pct: s.baseline_coverage_line_pct,
         current_coverage_pct: s.current_coverage_line_pct,
+        work_since_rows: build_work_chips(&s.work_since_last_scan),
+        has_work_since: !s.work_since_last_scan.is_empty(),
+        work_since_total: s.work_since_last_scan.iter().map(|c| c.count).sum(),
     };
 
     Html(
@@ -13146,6 +13166,18 @@ fn build_mc_scan_strip(
                 html_escape(branch)
             )
         };
+        let work_html = sloc_core::dominant_branch_category(&pt.work_categories)
+            .map(|cat| {
+                let (label, color) = sloc_core::branch_category_display(&cat);
+                format!(
+                    "<div class=\"mc-card-row\"><span class=\"mc-row-label\">Work:</span>\
+                     <span style=\"display:inline-block;font-size:10px;font-weight:800;\
+                     text-transform:uppercase;letter-spacing:.04em;color:#fff;border-radius:6px;\
+                     padding:2px 7px;background:{color};\" \
+                     title=\"Dominant kind of work merged over the activity window\">{label}</span></div>"
+                )
+            })
+            .unwrap_or_default();
         let (commit_date_html, author_html) = mc_entry_html_data(entries, i, &pt.run_id);
         let tags_html = pt
             .git_tags
@@ -13198,6 +13230,7 @@ fn build_mc_scan_strip(
               <a class="mc-card-commit" href="{report_link}" target="_blank" title="View report">{commit}</a>
               <div class="mc-card-rows">
                 <div class="mc-card-row"><span class="mc-row-label">Branch:</span>{branch_html}</div>
+                {work_html}
                 <div class="mc-card-row"><span class="mc-row-label">Last commit on:</span><span class="mc-row-val">{commit_date}</span></div>
                 <div class="mc-card-row"><span class="mc-row-label">Last commit by:</span>{author_html}</div>
                 <div class="mc-card-row"><span class="mc-row-label">Scanned on:</span><span class="mc-row-val mc-ts-local" data-utc-ms="{ts_ms}">{ts}</span></div>
@@ -20383,6 +20416,7 @@ pub fn build_sub_run(
         duplicates_excluded: 0,
         authors,
         coverage_diagnostics: None,
+        branch_activity: None,
     }
 }
 
@@ -31409,6 +31443,7 @@ struct RelocateScanTemplate {
     .run-id-chip{font-family:ui-monospace,monospace;font-size:11px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--muted);}
     .git-chip{font-family:ui-monospace,monospace;font-size:11px;font-weight:700;background:rgba(100,130,220,0.08);border:1px solid rgba(100,130,220,0.20);border-radius:6px;padding:2px 7px;color:var(--accent);}
     body.dark-theme .git-chip{background:rgba(111,155,255,0.12);border-color:rgba(111,155,255,0.25);color:var(--accent);}
+    .work-badge{display:inline-block;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#fff;border-radius:6px;padding:2px 7px;vertical-align:middle;}
     .metric-num{font-weight:700;color:var(--text);}
     .metric-secondary{font-size:11px;color:var(--muted);margin-top:3px;}
     .skipped-pill{font-size:10px;font-weight:600;font-style:italic;color:var(--muted);opacity:.9;font-variant-numeric:tabular-nums;white-space:nowrap;}
@@ -31706,7 +31741,7 @@ struct RelocateScanTemplate {
               <td><span class="metric-num">{{ entry.code_lines }}</span></td>
               <td><span class="metric-num">{{ entry.comment_lines }}</span></td>
               <td><span class="metric-num">{{ entry.blank_lines }}</span></td>
-              <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}</td>
+              <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}{% if !entry.work_category.is_empty() %} <span class="work-badge" style="background:{{ entry.work_category_color }};" title="Dominant kind of work merged over the activity window">{{ entry.work_category }}</span>{% endif %}</td>
               <td>{% if !entry.git_commit.is_empty() %}<span class="git-chip git-commit-chip" data-full-commit="{{ entry.git_commit_long }}">{{ entry.git_commit }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}</td>
               <td>{% if !entry.performed_by.is_empty() %}<span class="git-chip"{% if !entry.scan_os.is_empty() %} title="OS: {{ entry.scan_os }}"{% endif %}>{{ entry.performed_by }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}</td>
               <td class="report-cell">
@@ -32500,6 +32535,7 @@ struct HistoryTemplate {
     .run-id-chip{font-family:ui-monospace,monospace;font-size:11px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--muted);}
     .git-chip{font-family:ui-monospace,monospace;font-size:11px;font-weight:700;background:rgba(100,130,220,0.08);border:1px solid rgba(100,130,220,0.20);border-radius:6px;padding:2px 7px;color:var(--accent);}
     body.dark-theme .git-chip{background:rgba(111,155,255,0.12);border-color:rgba(111,155,255,0.25);color:var(--accent);}
+    .work-badge{display:inline-block;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#fff;border-radius:6px;padding:2px 7px;vertical-align:middle;}
     .metric-num{font-weight:700;color:var(--text);}
     .metric-secondary{font-size:11px;color:var(--muted);margin-top:2px;}
     .commit-tip{position:fixed;z-index:9999;display:none;background:var(--text);color:var(--bg);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;font-weight:600;letter-spacing:.02em;padding:7px 11px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,0.28);pointer-events:none;white-space:nowrap;}
@@ -32782,7 +32818,7 @@ struct HistoryTemplate {
               <td><span class="metric-num">{{ entry.code_lines }}</span></td>
               <td><span class="metric-num">{{ entry.comment_lines }}</span></td>
               <td><span class="metric-num">{{ entry.blank_lines }}</span></td>
-              <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span class="sx-eac76940" >&#8212;</span>{% endif %}</td>
+              <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span class="sx-eac76940" >&#8212;</span>{% endif %}{% if !entry.work_category.is_empty() %} <span class="work-badge" style="background:{{ entry.work_category_color }};" title="Dominant kind of work merged over the activity window">{{ entry.work_category }}</span>{% endif %}</td>
               <td>{% if !entry.git_commit.is_empty() %}<span class="git-chip git-commit-chip sx-53f53688"  data-full-commit="{{ entry.git_commit_long }}">{{ entry.git_commit }}</span>{% else %}<span class="sx-eac76940" >&#8212;</span>{% endif %}</td>
               <td class="sx-bf562f19" >{% if !entry.submodule_links.is_empty() %}<div class="submod-chips-cell">{% for sub in entry.submodule_links %}<span class="submod-chip">{{ sub.name }}</span>{% endfor %}</div>{% else %}<span class="sx-eac76940" >&#8212;</span>{% endif %}</td>
             </tr>
@@ -33441,6 +33477,10 @@ struct CompareSelectTemplate {
     body.dark-theme .insight-val.high{color:#ff6b6b;}
     body.dark-theme .insight-val.med{color:#f0c060;}
     .insight-sub{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.4;}
+    .work-since-grid{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;}
+    .ws-chip{display:flex;flex-direction:column;align-items:flex-start;gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 12px;min-width:72px;}
+    .ws-count{font-weight:800;font-size:18px;font-variant-numeric:tabular-nums;}
+    .ws-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);}
     .file-changes-grid{display:flex;flex-direction:column;gap:5px;margin-top:6px;font-size:12px;}
     .fc-row{display:flex;align-items:center;gap:8px;}
     .fc-count{font-weight:800;font-size:16px;min-width:28px;}
@@ -33612,6 +33652,7 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
     #cmp-tl-svg{display:block;width:100%;}
     .git-chip{font-family:ui-monospace,monospace;font-size:11px;font-weight:700;background:rgba(100,130,220,0.08);border:1px solid rgba(100,130,220,0.20);border-radius:6px;padding:2px 7px;color:var(--accent);}
     body.dark-theme .git-chip{background:rgba(111,155,255,0.12);border-color:rgba(111,155,255,0.25);color:var(--accent);}
+    .work-badge{display:inline-block;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#fff;border-radius:6px;padding:2px 7px;vertical-align:middle;}
     #ic-tt{display:none;position:fixed;background:rgba(15,10,6,.95);color:rgba(255,255,255,0.92);border-radius:8px;padding:7px 11px;font-size:12px;line-height:1.5;pointer-events:none;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.28);max-width:240px;white-space:nowrap;}
   </style>
 </head>
@@ -33825,6 +33866,18 @@ body.dark-theme .churn-note{color:#e6965a;background:rgba(230,150,90,0.16);}
             <div class="fc-row fc-total"><span class="fc-count">{{ files_total|commas }}</span><span class="fc-label">Total (modified + added + removed + unchanged)</span></div>
           </div>
         </div>
+        {% if has_work_since %}
+        <div class="delta-card delta-card-wide">
+          <div class="dc-tip">Branches merged between these two scans, classified by branch-name prefix.<br>Recovered from merge commits, so merged-and-deleted branches still count.<br>Branches without a recognized prefix fall into Other; squash merges carry no branch name and are not counted.</div>
+          <div class="delta-card-label">Work since last scan</div>
+          <div class="work-since-grid">
+          {% for w in work_since_rows %}
+            <div class="ws-chip" style="border-left:4px solid {{ w.color }};"><span class="ws-count" style="color:{{ w.color }};">{{ w.count }}</span><span class="ws-label">{{ w.label }}</span></div>
+          {% endfor %}
+          </div>
+          <div class="delta-card-from" style="margin-top:8px;">{{ work_since_total }} merged {% if work_since_total == 1 %}branch{% else %}branches{% endif %} in this interval</div>
+        </div>
+        {% endif %}
       </div>
       <div class="insights-panel">
         <div class="insight-card">
@@ -35293,6 +35346,36 @@ struct CompareTemplate {
     current_test_count: u64,
     baseline_coverage_pct: Option<f64>,
     current_coverage_pct: Option<f64>,
+    /// Per-category chips for the branches merged between the two scans (empty when neither run
+    /// carried branch activity).
+    work_since_rows: Vec<WorkChip>,
+    /// True when `work_since_rows` is non-empty (controls the "Work since last scan" card).
+    has_work_since: bool,
+    /// Total merged branches represented in `work_since_rows`.
+    work_since_total: u32,
+}
+
+/// One work-category chip (display label, merged-branch count, canonical palette colour) used by
+/// the Compare "Work since last scan" card.
+struct WorkChip {
+    label: String,
+    count: u32,
+    color: String,
+}
+
+/// Build work-category chips from a per-category tally, resolving each category's display label
+/// and canonical colour via [`sloc_core::branch_category_display`].
+fn build_work_chips(cats: &[sloc_core::BranchCategoryCount]) -> Vec<WorkChip> {
+    cats.iter()
+        .map(|c| {
+            let (label, color) = sloc_core::branch_category_display(&c.category);
+            WorkChip {
+                label: label.to_string(),
+                count: c.count,
+                color: color.to_string(),
+            }
+        })
+        .collect()
 }
 
 // ── LoginTemplate ──────────────────────────────────────────────────────────────
@@ -38928,6 +39011,7 @@ mod utility_tests {
                 coverage_line_pct_delta: None,
                 baseline_coverage_line_pct: None,
                 current_coverage_line_pct: None,
+                work_since_last_scan: vec![],
             },
             file_deltas: vec![
                 sloc_core::FileDelta {

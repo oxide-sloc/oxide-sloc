@@ -585,6 +585,67 @@ pub struct AnalysisRun {
     /// so CI adopters can distinguish an ingestion problem from a missing-coverage build config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage_diagnostics: Option<CoverageDiagnostics>,
+    /// Classification of the *kind* of work merged into the repo over the git-activity window,
+    /// derived from the branch-name prefixes recovered from merge commits (`feature/`, `fix/`,
+    /// `hotfix/`, …). `None` on a non-git path, when the window is disabled, or when no merge
+    /// commits were found. See [`BranchActivity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_activity: Option<BranchActivity>,
+}
+
+/// Branch-prefix "work category" summary for a scan. Populated from merge commits within the
+/// git-activity window (`analysis.activity_window_days`): each merge commit's subject preserves
+/// the merged branch name even after the branch is deleted, so this survives
+/// `delete_branch_on_merge` workflows where a live `git branch` listing would miss them.
+///
+/// Squash-merge workflows collapse a branch to a single non-merge commit with no branch name in
+/// the subject; those merges are not recoverable and are not represented here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchActivity {
+    /// History window (days) that was scanned for merge commits.
+    pub window_days: u32,
+    /// Per-category tally over the whole window, ordered by count descending. Categories are the
+    /// normalized buckets from [`classify_branch_prefix`] (`feature`, `fix`, `hotfix`, `release`,
+    /// `chore`, `docs`, `refactor`, `other`).
+    pub categories: Vec<BranchCategoryCount>,
+    /// Individual merged-branch records within the window, so a scan-to-scan comparison can
+    /// re-tally only the merges newer than the baseline without any further git access.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merges: Vec<MergedBranch>,
+}
+
+/// Count of merged branches that fell into one normalized work category.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchCategoryCount {
+    pub category: String,
+    pub count: u32,
+}
+
+/// One branch recovered from a merge commit within the activity window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergedBranch {
+    /// Short commit SHA of the merge commit.
+    pub commit: String,
+    /// ISO 8601 author-date of the merge commit, used to filter "since last scan". `None` if the
+    /// date could not be parsed from the log line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// Raw branch name extracted from the merge subject, e.g. `feature/login`.
+    pub branch: String,
+    /// Normalized work category (see [`classify_branch_prefix`]).
+    pub category: String,
+}
+
+impl AnalysisRun {
+    /// Dominant work category recorded in this run's branch activity (highest-count non-`other`,
+    /// falling back to `other`), suitable for a compact history badge. `None` when the run
+    /// captured no branch activity.
+    #[must_use]
+    pub fn dominant_branch_category(&self) -> Option<String> {
+        self.branch_activity
+            .as_ref()
+            .and_then(|a| dominant_branch_category(&a.categories))
+    }
 }
 
 #[derive(Default)]
@@ -887,6 +948,165 @@ fn parse_activity_log(out: &str) -> HashMap<String, (u32, Option<String>)> {
         }
     }
     map
+}
+
+/// Normalize a branch name to a work category by its prefix. Synonyms collapse to one canonical
+/// bucket; anything without a recognized prefix is `"other"`. Case-insensitive on the prefix.
+///
+/// `feature`←`feature/`|`feat/`; `fix`←`fix/`|`bugfix/`; `hotfix`←`hotfix/`; `release`←`release/`;
+/// `chore`←`chore/`|`build/`; `docs`←`docs/`; `refactor`←`refactor/`; else `other`.
+#[must_use]
+pub fn classify_branch_prefix(name: &str) -> &'static str {
+    let lower = name.trim().to_ascii_lowercase();
+    // Longest/most-specific synonyms first so e.g. `feature/` is not shadowed by a shorter match.
+    const RULES: &[(&str, &str)] = &[
+        ("feature/", "feature"),
+        ("feat/", "feature"),
+        ("bugfix/", "fix"),
+        ("fix/", "fix"),
+        ("hotfix/", "hotfix"),
+        ("release/", "release"),
+        ("chore/", "chore"),
+        ("build/", "chore"),
+        ("docs/", "docs"),
+        ("refactor/", "refactor"),
+    ];
+    for (prefix, category) in RULES {
+        if lower.starts_with(prefix) {
+            return category;
+        }
+    }
+    "other"
+}
+
+/// Human-readable label and canonical data-palette colour (hex) for a normalized work category.
+/// Colours mirror the app-standard chart palette so every surface renders a category the same way.
+/// Unknown categories fall back to the `other` label and a neutral tone.
+#[must_use]
+pub fn branch_category_display(category: &str) -> (&'static str, &'static str) {
+    match category {
+        "feature" => ("Feature", "#C45C10"),
+        "fix" => ("Fix", "#2A6846"),
+        "hotfix" => ("Hotfix", "#B23030"),
+        "release" => ("Release", "#4472C4"),
+        "chore" => ("Chore", "#D4A017"),
+        "docs" => ("Docs", "#805099"),
+        "refactor" => ("Refactor", "#2E75B6"),
+        _ => ("Other", "#7b675b"),
+    }
+}
+
+/// Branch-prefix "work category" summary over `window_days`, computed with a single
+/// `git log --merges` pass. Each merge commit's subject preserves the merged branch name even
+/// after the branch is deleted. Best-effort: returns `None` when git is unavailable, the path is
+/// not a repository, or no merge commits fall within the window — a scan never fails on this.
+fn detect_branch_activity(project_path: &Path, window_days: u32) -> Option<BranchActivity> {
+    let since = format!("--since={window_days} days ago");
+    // %x1f (unit separator) delimits short-sha / author-date / subject on one line per merge.
+    let out = run_git_cmd(
+        project_path,
+        &[
+            "log",
+            "--merges",
+            since.as_str(),
+            "--pretty=format:%h%x1f%aI%x1f%s",
+        ],
+    )?;
+    let merges = parse_merge_log(&out);
+    if merges.is_empty() {
+        return None;
+    }
+    Some(BranchActivity {
+        window_days,
+        categories: tally_branch_categories(&merges),
+        merges,
+    })
+}
+
+/// Parse `git log --merges --pretty=format:%h%x1f%aI%x1f%s` output into merged-branch records,
+/// skipping merge commits whose subject carries no recoverable branch name.
+fn parse_merge_log(out: &str) -> Vec<MergedBranch> {
+    out.lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\u{1f}');
+            let commit = fields.next()?.trim();
+            let date = fields.next().map(str::trim).filter(|d| !d.is_empty());
+            let subject = fields.next().unwrap_or("");
+            let branch = extract_merge_branch(subject)?;
+            (!commit.is_empty()).then(|| MergedBranch {
+                commit: commit.to_owned(),
+                date: date.map(str::to_owned),
+                category: classify_branch_prefix(&branch).to_owned(),
+                branch,
+            })
+        })
+        .collect()
+}
+
+/// Recover the merged branch name from a merge-commit subject. Handles the default messages of
+/// `git merge` and the GitHub/GitLab/Bitbucket merge-commit strategy:
+/// - `Merge branch 'X'` / `Merge branch 'X' into Y` → `X`
+/// - `Merge remote-tracking branch 'origin/X'` → `X`
+/// - `Merge pull request #N from owner/X` → `X`
+///
+/// Returns `None` when no branch token can be isolated (e.g. a squash or an octopus/ff subject).
+fn extract_merge_branch(subject: &str) -> Option<String> {
+    let s = subject.trim();
+    // `Merge pull request #42 from owner/feature/login`
+    if let Some(rest) = s.strip_prefix("Merge pull request") {
+        let after_from = rest.split_once(" from ")?.1.trim();
+        let token = after_from.split_whitespace().next()?;
+        // Strip the leading `owner/` (fork/namespace) to leave the branch path.
+        let branch = token.split_once('/').map_or(token, |(_, b)| b);
+        return (!branch.is_empty()).then(|| branch.to_owned());
+    }
+    // `Merge branch 'X'` / `Merge remote-tracking branch 'origin/X'` (quoted branch token).
+    if s.starts_with("Merge ") && s.contains('\'') {
+        let inside = s.split('\'').nth(1)?.trim();
+        // Drop a leading remote segment like `origin/`.
+        let branch = inside.strip_prefix("origin/").unwrap_or(inside);
+        return (!branch.is_empty()).then(|| branch.to_owned());
+    }
+    None
+}
+
+/// Tally merged-branch records per normalized category, ordered by count descending (then category
+/// name for stable output).
+#[must_use]
+pub fn tally_branch_categories(merges: &[MergedBranch]) -> Vec<BranchCategoryCount> {
+    let mut counts: HashMap<&str, u32> = HashMap::new();
+    for m in merges {
+        *counts.entry(m.category.as_str()).or_insert(0) += 1;
+    }
+    let mut out: Vec<BranchCategoryCount> = counts
+        .into_iter()
+        .map(|(category, count)| BranchCategoryCount {
+            category: category.to_owned(),
+            count,
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.category.cmp(&b.category))
+    });
+    out
+}
+
+/// The dominant work category for a set of per-category counts: the highest-count category that
+/// isn't `other`, falling back to `other` only when nothing else is present.
+#[must_use]
+pub fn dominant_branch_category(categories: &[BranchCategoryCount]) -> Option<String> {
+    categories
+        .iter()
+        .filter(|c| c.category != "other")
+        .max_by(|a, b| {
+            a.count
+                .cmp(&b.count)
+                .then_with(|| b.category.cmp(&a.category))
+        })
+        .or_else(|| categories.iter().find(|c| c.category == "other"))
+        .map(|c| c.category.clone())
 }
 
 /// Update the shared phase label (if the caller supplied one) so a polling UI can show which
@@ -2315,9 +2535,13 @@ fn assemble_run(
     // Per-file git activity for the hotspots view (on by default, single `git log` pass,
     // best-effort). A window of 0 (or None) disables it; a non-git path yields an empty result.
     let activity_window = config.analysis.activity_window_days.unwrap_or(0);
+    let mut branch_activity = None;
     if let (true, Some(root)) = (activity_window > 0, first_root.as_deref()) {
         set_progress_phase(progress, "Reading git history");
         apply_file_activity(root, activity_window, &mut analyzed);
+        // One extra `git log --merges` pass to classify the *kind* of work merged in the window
+        // by branch-name prefix. Best-effort and shares the same window gate as the activity pass.
+        branch_activity = detect_branch_activity(root, activity_window);
     }
 
     // Per-author code-ownership attribution (opt-in: one `git blame` per file). Best-effort —
@@ -2390,6 +2614,7 @@ fn assemble_run(
         duplicates_excluded: 0,
         authors,
         coverage_diagnostics: None,
+        branch_activity,
     };
     // Collapse GitHub no-reply aliases into the same person's real-email identity before the run
     // is serialized, so every downstream surface (HTML report, web, JSON, MCP) sees one identity.
@@ -4255,6 +4480,96 @@ mod tests {
         assert!(parse_activity_log("").is_empty());
     }
 
+    // ── Branch-prefix work categories ─────────────────────────────────────────
+    #[test]
+    fn classify_branch_prefix_maps_synonyms() {
+        assert_eq!(classify_branch_prefix("feature/login"), "feature");
+        assert_eq!(classify_branch_prefix("feat/login"), "feature");
+        assert_eq!(classify_branch_prefix("fix/crash"), "fix");
+        assert_eq!(classify_branch_prefix("bugfix/crash"), "fix");
+        assert_eq!(classify_branch_prefix("hotfix/urgent"), "hotfix");
+        assert_eq!(classify_branch_prefix("release/1.2.0"), "release");
+        assert_eq!(classify_branch_prefix("chore/deps"), "chore");
+        assert_eq!(classify_branch_prefix("build/ci"), "chore");
+        assert_eq!(classify_branch_prefix("docs/readme"), "docs");
+        assert_eq!(classify_branch_prefix("refactor/core"), "refactor");
+        // Case-insensitive on the prefix.
+        assert_eq!(classify_branch_prefix("Feature/Login"), "feature");
+        // Unknown prefixes and bare names fall into `other`.
+        assert_eq!(classify_branch_prefix("dev"), "other");
+        assert_eq!(classify_branch_prefix("wip/experiment"), "other");
+        assert_eq!(classify_branch_prefix(""), "other");
+    }
+
+    #[test]
+    fn extract_merge_branch_handles_common_subjects() {
+        assert_eq!(
+            extract_merge_branch("Merge branch 'feature/login'").as_deref(),
+            Some("feature/login")
+        );
+        assert_eq!(
+            extract_merge_branch("Merge branch 'feature/login' into develop").as_deref(),
+            Some("feature/login")
+        );
+        assert_eq!(
+            extract_merge_branch("Merge remote-tracking branch 'origin/hotfix/x'").as_deref(),
+            Some("hotfix/x")
+        );
+        assert_eq!(
+            extract_merge_branch("Merge pull request #42 from someone/fix/null-deref").as_deref(),
+            Some("fix/null-deref")
+        );
+        // A subject with no recoverable branch token yields None (e.g. squash/octopus).
+        assert_eq!(
+            extract_merge_branch("Squashed commit of the whole PR"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_merge_log_tallies_categories() {
+        let out = "a1b2c3d\u{1f}2024-05-02T10:00:00+00:00\u{1f}Merge branch 'feature/a'\n\
+                   b2c3d4e\u{1f}2024-05-01T10:00:00+00:00\u{1f}Merge branch 'feature/b' into main\n\
+                   c3d4e5f\u{1f}2024-04-30T10:00:00+00:00\u{1f}Merge pull request #7 from u/hotfix/c\n\
+                   d4e5f6a\u{1f}2024-04-29T10:00:00+00:00\u{1f}Squashed commit, no branch\n";
+        let merges = parse_merge_log(out);
+        // The squash line carries no branch and is dropped.
+        assert_eq!(merges.len(), 3);
+        let cats = tally_branch_categories(&merges);
+        let feature = cats.iter().find(|c| c.category == "feature").unwrap();
+        assert_eq!(feature.count, 2);
+        let hotfix = cats.iter().find(|c| c.category == "hotfix").unwrap();
+        assert_eq!(hotfix.count, 1);
+        // Ordered by count descending — feature (2) precedes hotfix (1).
+        assert_eq!(cats.first().unwrap().category, "feature");
+    }
+
+    #[test]
+    fn dominant_branch_category_prefers_named_over_other() {
+        let cats = vec![
+            BranchCategoryCount {
+                category: "other".into(),
+                count: 9,
+            },
+            BranchCategoryCount {
+                category: "fix".into(),
+                count: 2,
+            },
+        ];
+        // Even though `other` has the higher count, a named category wins.
+        assert_eq!(dominant_branch_category(&cats).as_deref(), Some("fix"));
+        // With only `other`, it falls back to `other`.
+        let only_other = vec![BranchCategoryCount {
+            category: "other".into(),
+            count: 3,
+        }];
+        assert_eq!(
+            dominant_branch_category(&only_other).as_deref(),
+            Some("other")
+        );
+        assert_eq!(dominant_branch_category(&[]), None);
+    }
+
     // ── Attribution cost estimate ─────────────────────────────────────────────
     #[test]
     fn attribution_severity_buckets_by_file_count() {
@@ -4510,6 +4825,7 @@ author-mail <other@example.com>
             duplicates_excluded: 0,
             authors,
             coverage_diagnostics: None,
+            branch_activity: None,
         }
     }
 
@@ -5110,6 +5426,7 @@ author-mail <other@example.com>
             duplicates_excluded: 0,
             authors: Vec::new(),
             coverage_diagnostics: None,
+            branch_activity: None,
         };
         let json_path = dir.path().join("test.json");
         write_json(&run, &json_path).unwrap();

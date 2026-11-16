@@ -414,6 +414,7 @@ mod tests {
             git_tags: None,
             git_nearest_tag: None,
             git_commit_date: None,
+            branch_category_dominant: None,
             scan_os: None,
             scan_host: None,
             scan_user: None,

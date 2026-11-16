@@ -152,6 +152,7 @@ fn make_run() -> AnalysisRun {
         duplicates_excluded: 0,
         authors: Vec::new(),
         coverage_diagnostics: None,
+        branch_activity: None,
     }
 }
 
@@ -323,6 +324,7 @@ fn make_empty_run() -> AnalysisRun {
         duplicates_excluded: 0,
         authors: Vec::new(),
         coverage_diagnostics: None,
+        branch_activity: None,
     }
 }
 
@@ -373,6 +375,7 @@ fn make_multi_lang_run() -> AnalysisRun {
         duplicates_excluded: 0,
         authors: Vec::new(),
         coverage_diagnostics: None,
+        branch_activity: None,
     }
 }
 
@@ -1053,6 +1056,7 @@ fn make_scan_comparison() -> ScanComparison {
             coverage_line_pct_delta: None,
             baseline_coverage_line_pct: None,
             current_coverage_line_pct: None,
+            work_since_last_scan: vec![],
         },
         file_deltas: vec![
             FileDelta {
@@ -1233,6 +1237,7 @@ fn write_diff_csv_empty_comparison() {
             coverage_line_pct_delta: None,
             baseline_coverage_line_pct: None,
             current_coverage_line_pct: None,
+            work_since_last_scan: vec![],
         },
         file_deltas: vec![],
         files_added: 0,
@@ -1285,6 +1290,7 @@ fn write_diff_xlsx_empty_comparison() {
             coverage_line_pct_delta: None,
             baseline_coverage_line_pct: None,
             current_coverage_line_pct: None,
+            work_since_last_scan: vec![],
         },
         file_deltas: vec![],
         files_added: 0,

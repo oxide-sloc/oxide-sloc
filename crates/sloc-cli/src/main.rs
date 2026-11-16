@@ -3097,6 +3097,9 @@ fn print_diff_summary(cmp: &ScanComparison, plain: bool) {
             println!("code_lines_added={added}");
             println!("code_lines_removed={removed}");
         }
+        for c in &s.work_since_last_scan {
+            println!("work_{}={}", c.category, c.count);
+        }
         return;
     }
 
@@ -3124,6 +3127,17 @@ fn print_diff_summary(cmp: &ScanComparison, plain: bool) {
             paint!(col, "32", added),
             paint!(col, "31", removed),
         );
+    }
+    if !s.work_since_last_scan.is_empty() {
+        let parts: Vec<String> = s
+            .work_since_last_scan
+            .iter()
+            .map(|c| {
+                let (label, _) = sloc_core::branch_category_display(&c.category);
+                format!("{} {}", c.count, label)
+            })
+            .collect();
+        println!("  Work since: {}", parts.join(", "));
     }
 
     let changed: Vec<_> = cmp
