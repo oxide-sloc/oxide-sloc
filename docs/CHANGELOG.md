@@ -10,6 +10,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.31] — 2026-11-16
+
+### Changed
+
+- **CI action refresh.** Swept the GitHub Actions pinned dependencies and bumped the CodeQL
+  action group (3 updates), `peter-evans/create-pull-request`, `softprops/action-gh-release`,
+  `docker/login-action`, and `sigstore/cosign-installer` to their latest releases. No changes
+  to the analyzer, CLI, web UI, or offline build payload; a plain `git clone` still builds fully
+  offline. All four CI gates pass (fmt, clippy -D warnings, build, test).
+
+---
+
 ## [1.6.30] — 2026-11-15
 
 ### Added
