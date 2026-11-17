@@ -10,6 +10,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.30] — 2026-11-15
+
+### Added
+
+- **"Work Merged" classification.** Branches merged into the repo over the git-activity window
+  are now classified by branch-name prefix into work categories (`feature`, `fix`, `hotfix`,
+  `release`, `chore`, `docs`, `refactor`, and `other`), giving a quick read of *what kind of
+  work* landed. Categories are recovered from merge-commit subjects, so merged-and-deleted
+  branches still count (squash-merges carry no branch name and are not counted). Surfaced as a
+  "Work Merged" panel in the HTML/PDF report, a work-category badge in the web hotspots view,
+  and a "work merged since last scan" summary on the Compare page and CLI diff output.
+
+### Changed
+
+- **Dependency refresh.** Swept all compatible crates against crates.io and updated seven to
+  their latest patch releases: `bumpalo`, `cc`, `errno`, `mio`, `rand`, `rustls-webpki`, and
+  `ureq`. Regenerated the offline/air-gapped vendor archive (`vendor.tar.gz.*` +
+  `vendor.checksums.sha256`) from the new `Cargo.lock` so a plain `git clone` still builds
+  fully offline. `matchit` (pinned by `axum`) and `generic-array` (locked by the
+  digest/crypto-common chain) remain upstream-constrained and are left as-is. Rust toolchain
+  already current (1.99 channel). All four CI gates pass (fmt, clippy -D warnings, build, test).
+
+---
+
 ## [1.6.29] — 2026-11-11
 
 ### Added
