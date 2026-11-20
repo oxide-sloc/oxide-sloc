@@ -92,6 +92,12 @@ ignore = [
   # to the exact advisory so any real vulnerability still fails the gate. cargo-audit already
   # treats this as an allowed warning; this keeps cargo-deny consistent.
   "RUSTSEC-2026-0374",
+  # chrono is unmaintained (not a vulnerability) — the advisory itself states no safe
+  # upgrade is available and all versions are affected. chrono is a core dependency used
+  # for timestamps across the workspace; the suggested alternatives (jiff / time) are a
+  # substantial migration, not a dependency bump. Scoped to the exact advisory so any real
+  # vulnerability still fails the gate.
+  "RUSTSEC-2026-0543",
 ]
 
 [sources]
