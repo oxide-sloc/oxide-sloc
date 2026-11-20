@@ -1,0 +1,23 @@
+name: "oxide-sloc CodeQL config"
+
+# Query filters applied on top of the default Rust security suite.
+#
+# rust/unsafe-deserialization is excluded by design. In a pure-serde Rust
+# codebase the only deserializers in use are serde_json and toml, both of which
+# deserialize into statically-known concrete types (or serde_json::Value). Unlike
+# Java/pickle/YAML-with-tags, serde cannot instantiate attacker-chosen types or
+# execute code during deserialization, so the remote-code-execution / type-
+# confusion threat this query targets is not reachable here. The query instead
+# fires on the mere data-flow shape "remote HTTP body -> serde", which is the
+# unavoidable shape of every webhook / config-import handler in the web server.
+#
+# The genuine remaining risk (resource exhaustion from a huge/deeply-nested body)
+# is already mitigated independently of this query:
+#   - every webhook route carries a 512 KB DefaultBodyLimit; the global layer
+#     caps the rest (see crates/sloc-web/src/lib.rs router setup);
+#   - webhook payloads are HMAC/token authenticated before any scan is dispatched;
+#   - the config-import handler runs AppConfig::validate() on the parsed value.
+# Those protections are the actual control surface and live in code, not here.
+query-filters:
+  - exclude:
+      id: rust/unsafe-deserialization
