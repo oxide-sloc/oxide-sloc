@@ -83,5 +83,6 @@ jenkins-tests:
 	python3 ci/jenkins/tests/test-bundle-artifacts.py
 	python3 ci/jenkins/discovery/tests/test_discover_bitbucket.py
 	python3 ci/jenkins/discovery/tests/test_job_template_guards.py
+	python3 ci/jenkins/discovery/tests/test_dispatch_event.py
 	bash   ci/jenkins/tests/test-notify-bitbucket.sh
 	bash   ci/jenkins/tests/test-artifact-push.sh

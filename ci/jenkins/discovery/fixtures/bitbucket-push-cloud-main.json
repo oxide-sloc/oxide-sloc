@@ -1,0 +1,26 @@
+{
+  "repository": {
+    "uuid": "{11111111-2222-3333-4444-555555555555}",
+    "name": "widget",
+    "slug": "widget",
+    "full_name": "my-workspace/widget",
+    "workspace": { "slug": "my-workspace" },
+    "links": {
+      "clone": [
+        { "name": "https", "href": "https://bitbucket.org/my-workspace/widget.git" }
+      ]
+    }
+  },
+  "push": {
+    "changes": [
+      {
+        "new": {
+          "type": "branch",
+          "name": "main",
+          "target": { "hash": "0123456789abcdef0123456789abcdef01234567" }
+        },
+        "old": { "type": "branch", "name": "main" }
+      }
+    ]
+  }
+}

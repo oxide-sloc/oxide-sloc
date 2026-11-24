@@ -1,0 +1,159 @@
+// Jenkinsfile.discovery -- the control pipeline for oxide-sloc Bitbucket
+// discovery.  It is SEPARATE from the root Jenkinsfile (the central scanner);
+// it never obtains or runs the scanner itself.  Two modes:
+//
+//   DISCOVER  Build/transfer a normalized inventory, then run the Job DSL seed
+//             (seed-discovery.groovy) to create/update managed trigger jobs.
+//             Runs on a schedule and on demand.
+//
+//   DISPATCH  Handle one validated Bitbucket push webhook: verify it, normalize
+//             it (dispatch_event.py), resolve it against the APPROVED inventory,
+//             and trigger the matching managed job / central scan with the
+//             exact pushed commit SHA.  Never trusts a URL or job name from the
+//             payload.
+//
+// Everything organization-specific (Bitbucket endpoint, project/workspace,
+// credential ids, folder name, webhook secret) is a parameter or Jenkins
+// credential -- nothing is hardcoded here.
+
+@Library('oxide-sloc-helpers@none') _   // optional; helpers are loaded by path below
+
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'MODE', choices: ['DISCOVER', 'DISPATCH'], description: 'Discovery seed or event dispatch')
+
+        // Tool source (the discovery scripts live in THIS repo checkout).
+        string(name: 'MANAGED_FOLDER', defaultValue: 'oxide-sloc-scans', description: 'Owned Jenkins folder')
+        string(name: 'CENTRAL_JOB', defaultValue: 'oxide-sloc', description: 'Central scanner job to invoke')
+        string(name: 'BRANCH_POLICY', defaultValue: '^(main|develop|release/.+)$', description: 'Allowed refs')
+        string(name: 'NIGHTLY_CRON', defaultValue: 'H H(1-4) * * *', description: 'Managed-job nightly cron')
+        string(name: 'POLICY_REVISION', defaultValue: '', description: 'Opaque revision tag stored on jobs')
+
+        // DISCOVER inputs.
+        choice(name: 'PROVIDER', choices: ['bitbucket-server', 'bitbucket-cloud'], description: 'Bitbucket flavour')
+        string(name: 'BASE_URL', defaultValue: '', description: 'Server/DC base URL (blank for Cloud default)')
+        string(name: 'PROJECT', defaultValue: '', description: 'Server/DC project key')
+        string(name: 'WORKSPACE_SLUG', defaultValue: '', description: 'Cloud workspace')
+        string(name: 'CREDENTIAL_ID', defaultValue: '', description: 'Jenkins credential id stored on jobs')
+        string(name: 'BITBUCKET_CREDENTIALS', defaultValue: '', description: 'Jenkins cred for the REST API (user:token)')
+        string(name: 'OFFLINE_INVENTORY', defaultValue: '', description: 'Air-gap: path to a transferred inventory')
+        booleanParam(name: 'PREFER_SSH', defaultValue: false, description: 'Prefer SSH clone URLs')
+        booleanParam(name: 'DRY_RUN', defaultValue: false, description: 'Plan only; create nothing')
+
+        // Bounds (fail closed when exceeded).
+        string(name: 'MAX_REPOS', defaultValue: '500', description: 'Max repositories to manage')
+        string(name: 'MAX_BRANCHES_PER_REPO', defaultValue: '25', description: 'Max branches per repository')
+
+        // DISPATCH inputs (typically fed by a Generic Webhook Trigger).
+        text(name: 'EVENT_PAYLOAD', defaultValue: '', description: 'Raw push webhook JSON (DISPATCH)')
+        string(name: 'EVENT_SIGNATURE', defaultValue: '', description: 'Signature/token header value (DISPATCH)')
+        string(name: 'COOLDOWN_SECONDS', defaultValue: '120', description: 'Duplicate-delivery suppression window')
+    }
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 20, unit: 'MINUTES')
+    }
+
+    environment {
+        DISC = 'ci/jenkins/discovery'
+        INVENTORY_PATH = 'inventory.json'
+        STATE_DIR = '.discovery-state'
+    }
+
+    stages {
+        stage('Load helpers') {
+            steps {
+                script {
+                    helpers = load 'ci/jenkins/pipeline-helpers.groovy'
+                }
+            }
+        }
+
+        stage('Build / load inventory') {
+            when { expression { params.MODE == 'DISCOVER' } }
+            steps {
+                script {
+                    if (params.OFFLINE_INVENTORY?.trim()) {
+                        // Air-gap: re-normalize a transferred inventory; no HTTP.
+                        helpers.shx("python3 ${env.DISC}/discover_bitbucket.py " +
+                            "--offline-inventory '${params.OFFLINE_INVENTORY}' --out ${env.INVENTORY_PATH}")
+                    } else {
+                        withCredentials([usernamePassword(credentialsId: params.BITBUCKET_CREDENTIALS,
+                                usernameVariable: 'BITBUCKET_USER', passwordVariable: 'BITBUCKET_TOKEN')]) {
+                            def extra = params.PROVIDER == 'bitbucket-cloud' ?
+                                "--workspace '${params.WORKSPACE_SLUG}'" :
+                                "--base-url '${params.BASE_URL}' --project '${params.PROJECT}'"
+                            def ssh = params.PREFER_SSH ? '--prefer-ssh' : ''
+                            helpers.shx("python3 ${env.DISC}/discover_bitbucket.py " +
+                                "--provider '${params.PROVIDER}' ${extra} ${ssh} " +
+                                "--credential-id '${params.CREDENTIAL_ID}' " +
+                                "--managed-folder '${params.MANAGED_FOLDER}' " +
+                                "--branch-policy '${params.BRANCH_POLICY}' " +
+                                "--out ${env.INVENTORY_PATH}")
+                        }
+                    }
+                    archiveArtifacts artifacts: env.INVENTORY_PATH, onlyIfSuccessful: true
+                }
+            }
+        }
+
+        stage('Seed managed jobs') {
+            when { expression { params.MODE == 'DISCOVER' } }
+            environment {
+                MANAGED_FOLDER = "${params.MANAGED_FOLDER}"
+                CENTRAL_JOB = "${params.CENTRAL_JOB}"
+                NIGHTLY_CRON = "${params.NIGHTLY_CRON}"
+                POLICY_REVISION = "${params.POLICY_REVISION}"
+                MAX_REPOS = "${params.MAX_REPOS}"
+                MAX_BRANCHES_PER_REPO = "${params.MAX_BRANCHES_PER_REPO}"
+                DRY_RUN = "${params.DRY_RUN}"
+            }
+            steps {
+                // Configure "Action for removed jobs" = Disable so repositories
+                // that leave the inventory are disabled, never deleted.
+                jobDsl targets: "${env.DISC}/seed-discovery.groovy",
+                       removedJobAction: 'DISABLE',
+                       removedViewAction: 'IGNORE',
+                       lookupStrategy: 'JENKINS_ROOT',
+                       failOnMissingPlugin: true,
+                       ignoreExisting: false
+            }
+        }
+
+        stage('Dispatch event') {
+            when { expression { params.MODE == 'DISPATCH' } }
+            steps {
+                script {
+                    if (!params.EVENT_PAYLOAD?.trim()) {
+                        echo 'No event payload; nothing to dispatch.'
+                        return
+                    }
+                    writeFile file: 'event.json', text: params.EVENT_PAYLOAD
+                    // Verify + normalize + resolve against the approved inventory.
+                    def json = helpers.shxStdout(
+                        "WEBHOOK_SECRET=\"\$WEBHOOK_SECRET\" python3 ${env.DISC}/dispatch_event.py " +
+                        "--payload event.json --inventory ${env.INVENTORY_PATH} " +
+                        "--branch-policy '${params.BRANCH_POLICY}' " +
+                        "--signature '${params.EVENT_SIGNATURE}' " +
+                        "--state-dir ${env.STATE_DIR} --cooldown-seconds ${params.COOLDOWN_SECONDS}").trim()
+                    def plan = readJSON text: json
+                    if (!plan.dispatches) {
+                        echo "Ignored: ${plan.ignored?.join('; ')}"
+                        return
+                    }
+                    for (d in plan.dispatches) {
+                        build job: d.job_name, wait: false, propagate: false,
+                            parameters: [
+                                string(name: 'SCAN_REPO_URL', value: d.central_params.SCAN_REPO_URL),
+                                string(name: 'SCAN_REF', value: d.central_params.SCAN_REF),
+                                string(name: 'SCAN_CREDENTIALS_ID', value: d.central_params.SCAN_CREDENTIALS_ID),
+                            ]
+                    }
+                }
+            }
+        }
+    }
+}

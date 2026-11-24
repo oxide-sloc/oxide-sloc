@@ -29,6 +29,7 @@ import inventory as inv  # noqa: E402
 
 TEMPLATE = os.path.join(DISCOVERY, "job-template.groovy")
 SEED = os.path.join(DISCOVERY, "seed-discovery.groovy")
+PIPELINE = os.path.join(DISCOVERY, "Jenkinsfile.discovery")
 
 PASSED = 0
 
@@ -82,7 +83,7 @@ def test_no_bad_unicode_escapes() -> None:
     """Groovy unicode-preprocesses the whole source; a bare `\\u` aborts compile."""
     print("groovy unicode-escape safety:")
     bad = re.compile(r"(?<!\\)(?:\\\\)*\\u(?!u*[0-9A-Fa-f]{4})")
-    for path in (TEMPLATE, SEED):
+    for path in (TEMPLATE, SEED, PIPELINE):
         offenders = [i + 1 for i, line in enumerate(_read(path).splitlines()) if bad.search(line)]
         check(f"no invalid \\u escape in {os.path.basename(path)}", not offenders)
 
