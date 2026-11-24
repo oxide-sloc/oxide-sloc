@@ -1,0 +1,36 @@
+{
+  "pagelen": 100,
+  "next": null,
+  "values": [
+    {
+      "uuid": "{11111111-2222-3333-4444-555555555555}",
+      "slug": "widget",
+      "name": "widget",
+      "full_name": "my-workspace/widget",
+      "is_private": true,
+      "workspace": { "slug": "my-workspace" },
+      "mainbranch": { "name": "main" },
+      "links": {
+        "clone": [
+          { "name": "https", "href": "https://bitbucket.org/my-workspace/widget.git" },
+          { "name": "ssh", "href": "git@bitbucket.org:my-workspace/widget.git" }
+        ]
+      }
+    },
+    {
+      "uuid": "{99999999-8888-7777-6666-555555555555}",
+      "slug": "widget-fork",
+      "name": "widget-fork",
+      "full_name": "my-workspace/widget-fork",
+      "is_private": true,
+      "parent": { "full_name": "my-workspace/widget" },
+      "workspace": { "slug": "my-workspace" },
+      "mainbranch": { "name": "main" },
+      "links": {
+        "clone": [
+          { "name": "https", "href": "https://bitbucket.org/my-workspace/widget-fork.git" }
+        ]
+      }
+    }
+  ]
+}

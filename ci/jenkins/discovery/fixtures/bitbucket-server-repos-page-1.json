@@ -1,0 +1,46 @@
+{
+  "size": 3,
+  "limit": 100,
+  "isLastPage": true,
+  "start": 0,
+  "values": [
+    {
+      "slug": "widget",
+      "id": 101,
+      "name": "widget",
+      "archived": false,
+      "project": { "key": "PROJ" },
+      "links": {
+        "clone": [
+          { "name": "http", "href": "https://git.example.invalid/scm/PROJ/widget.git" },
+          { "name": "ssh", "href": "ssh://git@git.example.invalid:7999/PROJ/widget.git" }
+        ]
+      }
+    },
+    {
+      "slug": "legacy",
+      "id": 102,
+      "name": "legacy",
+      "archived": true,
+      "project": { "key": "PROJ" },
+      "links": {
+        "clone": [
+          { "name": "http", "href": "https://git.example.invalid/scm/PROJ/legacy.git" }
+        ]
+      }
+    },
+    {
+      "slug": "widget-fork",
+      "id": 103,
+      "name": "widget-fork",
+      "archived": false,
+      "origin": { "slug": "widget", "id": 101 },
+      "project": { "key": "PROJ" },
+      "links": {
+        "clone": [
+          { "name": "http", "href": "https://git.example.invalid/scm/PROJ/widget-fork.git" }
+        ]
+      }
+    }
+  ]
+}

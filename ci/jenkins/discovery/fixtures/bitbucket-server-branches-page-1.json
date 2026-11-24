@@ -1,0 +1,12 @@
+{
+  "size": 4,
+  "limit": 100,
+  "isLastPage": true,
+  "start": 0,
+  "values": [
+    { "id": "refs/heads/main", "displayId": "main" },
+    { "id": "refs/heads/develop", "displayId": "develop" },
+    { "id": "refs/heads/release/1.2", "displayId": "release/1.2" },
+    { "id": "refs/heads/feature/experimental", "displayId": "feature/experimental" }
+  ]
+}

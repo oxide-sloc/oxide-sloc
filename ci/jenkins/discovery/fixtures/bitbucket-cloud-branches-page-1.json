@@ -1,0 +1,9 @@
+{
+  "pagelen": 100,
+  "next": null,
+  "values": [
+    { "name": "main", "type": "branch" },
+    { "name": "release/2.0", "type": "branch" },
+    { "name": "bugfix/typo", "type": "branch" }
+  ]
+}
