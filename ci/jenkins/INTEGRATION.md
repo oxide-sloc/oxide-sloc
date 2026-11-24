@@ -316,3 +316,15 @@ Bitbucket status and Confluence page anyway (Tier-3).
   service-account profile is read-only) and `SLOC_ALLOW_ONLINE_RUSTUP=1` (opt-in
   to internet rustup; unset fails fast offline instead of consuming the committed
   `toolchain/` Windows bundle).
+
+---
+
+## Scaling to many repos — automatic discovery (opt-in)
+
+To keep a scan job per repository/branch across a whole Bitbucket project
+without adding a `Jenkinsfile` to any of them, use the opt-in discovery
+subsystem under `ci/jenkins/discovery/`. It discovers repositories from
+Bitbucket Server/DC or Cloud, keeps bounded managed trigger jobs that invoke
+**this** central job, and dispatches approved pushes for `main`, `develop`, and
+`release/*` as SHA-pinned scans. It changes nothing about the central job.
+See [`docs/jenkins-discovery.md`](../../docs/jenkins-discovery.md).

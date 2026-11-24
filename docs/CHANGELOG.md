@@ -8,6 +8,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Jenkins Bitbucket project discovery (opt-in).** New `ci/jenkins/discovery/`
+  subsystem that discovers repositories from Bitbucket Server/DC or Cloud,
+  creates/updates bounded managed Jenkins trigger jobs (nightly, disabled — not
+  deleted — when a repo leaves the inventory), and dispatches approved push
+  events for `main`, `develop`, and `release/*` as SHA-pinned scans against the
+  central `oxide-sloc` job. Stdlib-only, air-gap capable (offline inventory),
+  and fully fixture-tested via `make jenkins-tests`. The central scan job's
+  default behavior is unchanged. See [`docs/jenkins-discovery.md`](jenkins-discovery.md). (#196)
+
 ---
 
 ## [1.6.31] — 2026-11-16
