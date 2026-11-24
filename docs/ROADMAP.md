@@ -17,6 +17,10 @@ section. Completed work ships as patch or minor releases; breaking changes targe
 - **`validate` drift auditing** — extend beyond the current config validation to a
   `oxide-sloc validate <result.json>` mode that re-counts from the original files and reports any
   drift, useful for auditing saved results against a live checkout.
+- **Jenkins project discovery and managed scans** -- discover repositories from
+  Bitbucket Server/DC or Cloud, create/update bounded Jenkins trigger jobs,
+  dispatch approved push events for `main`, `develop`, and `release/*`, and
+  stagger nightly scans. See #196.
 - Silver / Gold OpenSSF Best Practices badge criteria
 - WASM build target for browser-native analysis
 - Language Server Protocol (LSP) integration for IDE inline metrics
