@@ -56,7 +56,10 @@ download_one() {
         echo "[ERROR] ${output_name} is not a valid gzip archive." >&2
         return 1
     fi
-    if ! tar -tzf "${output}" | grep -qE '^python/'; then
+    # NOTE: no `grep -q` here — under `set -o pipefail`, grep -q matches the
+    # first entry and closes the pipe, tar takes SIGPIPE, and pipefail would
+    # make this check spuriously fail. Reading all of tar's output avoids it.
+    if ! tar -tzf "${output}" | grep -E '^python/' >/dev/null; then
         echo "[ERROR] ${output_name} does not contain a top-level python/ tree." >&2
         return 1
     fi
