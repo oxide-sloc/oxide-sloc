@@ -1,0 +1,121 @@
+# Freshness reminder for committed runtime bundles that Dependabot cannot track.
+#
+# Dependabot watches the cargo + github-actions ecosystems (see
+# .github/dependabot.yml). It has no ecosystem for the GitHub-release bundles we
+# commit for offline/air-gap use:
+#
+#   * python/      — portable CPython from astral-sh/python-build-standalone
+#   * rust-toolchain.toml / toolchain/ — the pinned Rust channel
+#
+# This job is the lightweight equivalent: on a monthly schedule (and on demand)
+# it compares the committed versions against upstream and, when something is
+# behind, opens or updates ONE tracking issue. When everything is current it
+# writes a green note to the run summary and closes any stale tracking issue.
+# It never commits binaries — re-bundling must run on a machine with internet
+# (see ci/jenkins/bundle-python.sh and scripts/internal/bundle-rust-toolchain.sh).
+
+name: Bundled deps freshness
+
+on:
+  schedule:
+    - cron: "0 7 1 * *" # 07:00 UTC on the 1st of each month
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the report only; do not open/close any issue"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bundled-deps-freshness
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # job-scoped: open/update the tracking issue
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TITLE: "chore: bundled runtime updates available"
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Check bundled runtimes against upstream
+        run: |
+          set -euo pipefail
+          STALE=0
+          REPORT="## Bundled runtime freshness — $(date -u +%Y-%m-%d)"$'\n'
+
+          # ── CPython (python-build-standalone) ──────────────────────────────
+          hdr="$(grep -m1 -oE 'CPython [0-9]+\.[0-9]+\.[0-9]+ \([0-9]+\)' python/checksums.sha256)"
+          PY_CUR_VER="$(printf '%s' "$hdr" | sed -E 's/CPython ([0-9.]+) .*/\1/')"
+          PY_CUR_REL="$(printf '%s' "$hdr" | sed -E 's/.*\(([0-9]+)\).*/\1/')"
+          MINOR="$(printf '%s' "$PY_CUR_VER" | cut -d. -f1-2)"
+
+          PY_LATEST_REL="$(gh api repos/astral-sh/python-build-standalone/releases/latest --jq '.tag_name')"
+          PY_LATEST_VER="$(gh api repos/astral-sh/python-build-standalone/releases/latest --jq '.assets[].name' \
+            | grep -oE "cpython-${MINOR}\.[0-9]+\+${PY_LATEST_REL}-x86_64-pc-windows-msvc-install_only_stripped" \
+            | sed -E "s/.*${MINOR}\.([0-9]+)\+.*/${MINOR}.\1/" | sort -t. -k3 -n | tail -1 || true)"
+
+          if [ -n "$PY_LATEST_VER" ] && [ "${PY_CUR_VER}+${PY_CUR_REL}" != "${PY_LATEST_VER}+${PY_LATEST_REL}" ]; then
+            STALE=1
+            REPORT+=$'\n'"- ⚠️ **CPython**: committed \`${PY_CUR_VER} (${PY_CUR_REL})\` → latest \`${PY_LATEST_VER} (${PY_LATEST_REL})\`."$'\n'
+            REPORT+="  Update: \`RELEASE=${PY_LATEST_REL} PYVER=${PY_LATEST_VER} bash ci/jenkins/bundle-python.sh\` then commit \`python/\`."$'\n'
+          else
+            REPORT+=$'\n'"- ✅ **CPython**: \`${PY_CUR_VER} (${PY_CUR_REL})\` is current."$'\n'
+          fi
+
+          # ── Rust toolchain channel ─────────────────────────────────────────
+          RUST_CUR="$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          RUST_LATEST_FULL="$(gh api repos/rust-lang/rust/releases/latest --jq '.tag_name')"
+          RUST_LATEST="$(printf '%s' "$RUST_LATEST_FULL" | cut -d. -f1-2)"
+
+          if [ -n "$RUST_LATEST" ] && [ "$RUST_CUR" != "$RUST_LATEST" ]; then
+            STALE=1
+            REPORT+=$'\n'"- ⚠️ **Rust toolchain**: pinned \`${RUST_CUR}\` → latest stable \`${RUST_LATEST_FULL}\`."$'\n'
+            REPORT+="  Update: bump \`channel\` in \`rust-toolchain.toml\` (the bundle-toolchain workflow then rebuilds \`toolchain/\`)."$'\n'
+          else
+            REPORT+=$'\n'"- ✅ **Rust toolchain**: \`${RUST_CUR}\` matches latest stable \`${RUST_LATEST_FULL}\`."$'\n'
+          fi
+
+          printf '%s\n' "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$REPORT"
+
+          {
+            echo "STALE=$STALE"
+            echo "REPORT<<REPORT_EOF"
+            printf '%s\n' "$REPORT"
+            echo "REPORT_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Open, update, or close the tracking issue
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          EXISTING="$(gh issue list --state open --json number,title \
+            --jq ".[] | select(.title==\"${TITLE}\") | .number" | head -1 || true)"
+
+          if [ "${STALE}" = "1" ]; then
+            if [ -n "${EXISTING}" ]; then
+              gh issue comment "${EXISTING}" --body "${REPORT}"
+              echo "Updated tracking issue #${EXISTING}."
+            else
+              gh issue create --title "${TITLE}" --label dependencies --body "${REPORT}"
+              echo "Opened new tracking issue."
+            fi
+          else
+            if [ -n "${EXISTING}" ]; then
+              gh issue close "${EXISTING}" \
+                --comment "All bundled runtimes are current as of $(date -u +%Y-%m-%d). Closing."
+              echo "Closed stale tracking issue #${EXISTING}."
+            else
+              echo "Everything current; no tracking issue needed."
+            fi
+          fi
