@@ -64,10 +64,16 @@ jobs:
             | grep -oE "cpython-${MINOR}\.[0-9]+\+${PY_LATEST_REL}-x86_64-pc-windows-msvc-install_only_stripped" \
             | sed -E "s/.*${MINOR}\.([0-9]+)\+.*/${MINOR}.\1/" | sort -t. -k3 -n | tail -1 || true)"
 
-          if [ -n "$PY_LATEST_VER" ] && [ "${PY_CUR_VER}+${PY_CUR_REL}" != "${PY_LATEST_VER}+${PY_LATEST_REL}" ]; then
+          # Only a genuine CPython *version* bump is issue-worthy — that is where the
+          # security/CVE content lands. A newer standalone release carrying the SAME
+          # CPython version (native-lib rebuilds) is noted but does not nag.
+          PY_NEWER="$(printf '%s\n%s\n' "$PY_CUR_VER" "$PY_LATEST_VER" | sort -V | tail -1)"
+          if [ -n "$PY_LATEST_VER" ] && [ "$PY_LATEST_VER" != "$PY_CUR_VER" ] && [ "$PY_NEWER" = "$PY_LATEST_VER" ]; then
             STALE=1
             REPORT+=$'\n'"- ⚠️ **CPython**: committed \`${PY_CUR_VER} (${PY_CUR_REL})\` → latest \`${PY_LATEST_VER} (${PY_LATEST_REL})\`."$'\n'
             REPORT+="  Update: \`RELEASE=${PY_LATEST_REL} PYVER=${PY_LATEST_VER} bash ci/jenkins/bundle-python.sh\` then commit \`python/\`."$'\n'
+          elif [ -n "$PY_LATEST_REL" ] && [ "$PY_LATEST_REL" != "$PY_CUR_REL" ]; then
+            REPORT+=$'\n'"- ℹ️ **CPython**: \`${PY_CUR_VER}\` is current; a newer build \`${PY_LATEST_REL}\` (same version, native-lib refresh) exists. Re-bundle optional."$'\n'
           else
             REPORT+=$'\n'"- ✅ **CPython**: \`${PY_CUR_VER} (${PY_CUR_REL})\` is current."$'\n'
           fi
