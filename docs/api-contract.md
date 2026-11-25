@@ -101,10 +101,13 @@ curl -X POST "$OXIDE_SLOC_URL/api/schedules" -H 'Content-Type: application/json'
 
 ### Webhooks — trigger a scan when an upstream build finishes (public, HMAC)
 
-The provider-agnostic receiver is `POST /webhooks/ci`; GitHub/GitLab/Bitbucket
-native push events go to `/webhooks/{github,gitlab,bitbucket}`. The body is signed
-HMAC-SHA256 with the schedule's `webhook_secret`; an invalid signature returns the
-same `202` as success (no oracle). See the
+The provider-agnostic receiver is `POST /webhooks/ci`; native push events go to
+`/webhooks/{github,gitlab,bitbucket,gitea,azure}`. GitHub, Bitbucket, and Gitea
+sign the body HMAC-SHA256 with the schedule's `webhook_secret` (GitHub/Bitbucket
+via `X-Hub-Signature[-256]`, Gitea via a bare-hex `X-Gitea-Signature`); GitLab
+matches a shared token in `X-Gitlab-Token`, and Azure DevOps (Service Hooks carry
+no HMAC) matches a shared token configured as the `X-Sloc-Token` request header.
+An invalid signature/token returns the same `202` as success (no oracle). See the
 [downstream-trigger kit](../ci/downstream-trigger/README.md) for the full contract,
 guards (success gate, idempotency, retry/backoff, fail-closed), and copy-paste
 wiring for every CI.

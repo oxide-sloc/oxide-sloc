@@ -43,6 +43,9 @@ This document covers how to wire oxide-sloc into your CI/CD pipelines and how to
    - [Amazon S3](#amazon-s3)
    - [MinIO](#minio)
    - [Azure Blob Storage](#azure-blob-storage)
+   - [Google Cloud Storage](#google-cloud-storage)
+   - [GitLab Package Registry](#gitlab-package-registry)
+   - [GitHub Packages](#github-packages)
    - [Generic HTTP PUT](#generic-http-put)
    - [Registering artifact repo credentials](#registering-artifact-repo-credentials)
 9. [Environment variables reference](#environment-variables-reference)
@@ -563,7 +566,7 @@ The first build runs with no parameters — Jenkins uses it to discover the `par
 | `NOTIFY_EMAIL` | _(skip)_ | Comma-separated recipients. Requires `SLOC_SMTP_HOST`, `SLOC_SMTP_USER`, `SLOC_SMTP_PASS` credentials. |
 | `POOL_INGEST_URL` | _(disabled)_ | Base URL of a central oxide-sloc `serve` instance (e.g. `https://sloc.corp.internal:4317`). When set, the verified `result.json` is POSTed to `<URL>/api/ingest` so this run's report pools with reports from every other environment (local, other CI agents) and shows up in that server's View Reports / Compare / Trend. Best-effort — a failed push logs a warning and never fails the build. Blank = disabled. |
 | `POOL_INGEST_TOKEN_CREDENTIAL` | _(empty)_ | Jenkins Secret Text credential ID holding the pool server's API key (`SLOC_API_KEY`). Bound to `SLOC_WEBHOOK_TOKEN` in the environment only — never placed on the command line. Leave empty for an unauthenticated pool server. |
-| `ARTIFACT_REPO_TYPE` | `none` | Artifact repository backend: `none` / `artifactory` / `nexus` / `nexus2` / `s3` / `minio` / `azure-blob` / `generic-http`. |
+| `ARTIFACT_REPO_TYPE` | `none` | Artifact repository backend: `none` / `artifactory` / `nexus` / `nexus2` / `s3` / `minio` / `azure-blob` / `gcs` / `gitlab-packages` / `github-packages` / `generic-http`. |
 | `ARTIFACT_REPO_URL` | _(empty)_ | Base URL of the artifact repository (see [Artifact Repository Integration](#artifact-repository-integration)). |
 | `ARTIFACT_REPO_PATH` | `oxide-sloc/${JOB_NAME}/${BUILD_NUMBER}` | Path prefix for uploaded artifacts. Tokens `${JOB_NAME}` and `${BUILD_NUMBER}` are substituted at runtime. |
 | `ARTIFACT_REPO_EXTRA` | _(empty)_ | Provider-specific config: Nexus repo name, Azure container name, MinIO endpoint URL, or extra S3 flags. |
@@ -1669,9 +1672,61 @@ Uses the Azure CLI (`az storage blob upload`). Derives the storage account name 
 
 ---
 
+### Google Cloud Storage
+
+Uploads each artifact with `gcloud storage cp` (falling back to `gsutil cp` on older SDKs). Authentication comes entirely from the ambient gcloud credential chain — an activated service account, `GOOGLE_APPLICATION_CREDENTIALS`, or a workload-identity/metadata credential on a GCP runner — so no key material is read from `ARTIFACT_REPO_*`.
+
+**Build parameters:**
+
+| Parameter | Example value |
+|-----------|---------------|
+| `ARTIFACT_REPO_TYPE` | `gcs` |
+| `ARTIFACT_REPO_URL` | `gs://my-bucket` |
+| `ARTIFACT_REPO_PATH` | `oxide-sloc/${JOB_NAME}/${BUILD_NUMBER}` |
+| `ARTIFACT_REPO_EXTRA` | extra flags for `gcloud storage cp` (e.g. `--cache-control=no-cache`) |
+
+**Requires:** the Google Cloud SDK (`gcloud` or `gsutil`) on the agent.
+
+---
+
+### GitLab Package Registry
+
+Uploads each artifact with `curl -X PUT` to the generic Package Registry API: `<ARTIFACT_REPO_URL>/projects/<id>/packages/generic/<package>/<version>/<file>`.
+
+**Build parameters:**
+
+| Parameter | Example value |
+|-----------|---------------|
+| `ARTIFACT_REPO_TYPE` | `gitlab-packages` |
+| `ARTIFACT_REPO_URL` | `https://gitlab.example.com/api/v4` |
+| `ARTIFACT_REPO_EXTRA` | `<project-id>/<package>/<version>` (e.g. `42/oxide-sloc/1.6.30`; default package/version: `oxide-sloc/latest`) |
+
+**Auth:** `SLOC_ARTIFACT_REPO_PASS` (a PAT/project token) is sent as the `PRIVATE-TOKEN` header. Inside a GitLab CI job the ambient `CI_JOB_TOKEN` is used automatically as `JOB-TOKEN` when no token is supplied.
+
+---
+
+### GitHub Packages
+
+GitHub Packages has no generic/raw file store, so reports are published to the repo's **Maven** registry — the one GitHub Packages surface that accepts arbitrary file uploads over a plain HTTP PUT: `<ARTIFACT_REPO_URL>/<ARTIFACT_REPO_PATH>/<file>`.
+
+**Build parameters:**
+
+| Parameter | Example value |
+|-----------|---------------|
+| `ARTIFACT_REPO_TYPE` | `github-packages` |
+| `ARTIFACT_REPO_URL` | `https://maven.pkg.github.com/OWNER/REPO` |
+| `ARTIFACT_REPO_PATH` | `oxide-sloc/${JOB_NAME}/${BUILD_NUMBER}` |
+| `ARTIFACT_REPO_EXTRA` | optional extra path segments under the Maven repo |
+
+**Auth:** HTTP Basic with `SLOC_ARTIFACT_REPO_USER` (GitHub username; defaults to `x-access-token` when omitted) and `SLOC_ARTIFACT_REPO_PASS` (a PAT or the Actions `GITHUB_TOKEN` carrying `write:packages`).
+
+> **Azure Artifacts / Cloudsmith / other package feeds** are reachable today through the `generic-http` backend (both accept HTTP PUT uploads) — set `ARTIFACT_REPO_TYPE=generic-http` with the feed's upload URL and a Bearer token or Basic credentials.
+
+---
+
 ### Generic HTTP PUT
 
-Sends each artifact via `curl -X PUT` to `<ARTIFACT_REPO_URL>/<ARTIFACT_REPO_PATH>/<filename>`. Works with any HTTP server that accepts PUT requests (Gitea package registry, custom artifact stores, Sonatype endpoints, etc.).
+Sends each artifact via `curl -X PUT` to `<ARTIFACT_REPO_URL>/<ARTIFACT_REPO_PATH>/<filename>`. Works with any HTTP server that accepts PUT requests (Gitea package registry, Azure Artifacts, Cloudsmith, custom artifact stores, Sonatype endpoints, etc.).
 
 **Build parameters:**
 
@@ -1728,16 +1783,17 @@ Or via **Manage Jenkins → Credentials → System → Global credentials → Ad
 ### Publishing from GitLab CI
 
 The `.gitlab-ci.yml` in this repository has an `artifact-push` job in the
-`publish` stage that drives `ci/artifact-push.sh` across **all seven backends**
-(`artifactory`, `nexus`, `nexus2`, `s3`, `minio`, `azure-blob`, `generic-http`).
-It runs automatically when `ARTIFACT_REPO_TYPE` (and `ARTIFACT_REPO_URL`) are
-set, and is otherwise available as a manual action.
+`publish` stage that drives `ci/artifact-push.sh` across **all backends**
+(`artifactory`, `nexus`, `nexus2`, `s3`, `minio`, `azure-blob`, `gcs`,
+`gitlab-packages`, `github-packages`, `generic-http`). It runs automatically when
+`ARTIFACT_REPO_TYPE` (and `ARTIFACT_REPO_URL`) are set, and is otherwise available
+as a manual action.
 
 **GitLab CI/CD variables to set** (Settings → CI/CD → Variables):
 
 | Variable | Required | Description |
 |---|---|---|
-| `ARTIFACT_REPO_TYPE` | Yes | One of `artifactory` / `nexus` / `nexus2` / `s3` / `minio` / `azure-blob` / `generic-http` |
+| `ARTIFACT_REPO_TYPE` | Yes | One of `artifactory` / `nexus` / `nexus2` / `s3` / `minio` / `azure-blob` / `gcs` / `gitlab-packages` / `github-packages` / `generic-http` |
 | `ARTIFACT_REPO_URL` | Yes | Base URL of the repository service |
 | `ARTIFACT_REPO_USER` | Backend-dependent — mask it | Username / access-key ID |
 | `ARTIFACT_REPO_PASS` | Backend-dependent — mask it | Password / API token / secret key |
@@ -1819,7 +1875,7 @@ The step stages the compiled binary and scan reports (`result.json`, `report.htm
 | `SLOC_BB_COMMIT`      | `bitbucket-status` | Commit SHA the build status attaches to                         |
 | `SLOC_VCS_TOKEN/REPO/API_URL`, `SLOC_PR_NUMBER` | `pr-comment` | Token, repo, API base, and PR/MR number for PR/MR comments |
 | `VT_API_KEY`          | `release.yml` | VirusTotal API v3 key; enables binary scanning on every tagged release |
-| `ARTIFACT_REPO_TYPE`         | Artifact push | Backend: `artifactory` / `nexus` / `nexus2` / `s3` / `minio` / `azure-blob` / `generic-http` |
+| `ARTIFACT_REPO_TYPE`         | Artifact push | Backend: `artifactory` / `nexus` / `nexus2` / `s3` / `minio` / `azure-blob` / `gcs` / `gitlab-packages` / `github-packages` / `generic-http` |
 | `ARTIFACT_REPO_URL`          | Artifact push | Base URL of the artifact repository (see [Artifact Repository Integration](#artifact-repository-integration)) |
 | `ARTIFACT_REPO_PATH`         | Artifact push | Path prefix / key prefix for uploaded artifacts |
 | `ARTIFACT_REPO_EXTRA`        | Artifact push | Provider-specific config (Nexus repo name, Azure container, MinIO endpoint, S3 flags) |
@@ -1865,9 +1921,21 @@ oxide-sloc bitbucket-status out/result.json \
   --bitbucket-url https://bitbucket.corp.com --token "$PAT" \
   --repo PLAT/payments-api --commit "$GIT_COMMIT" --state SUCCESSFUL
 
-# Post an SLOC delta comment to a PR/MR (GitHub / GitLab / Bitbucket)
+# Post an SLOC delta comment to a PR/MR
+# (GitHub / GitLab / Bitbucket / Azure DevOps / Gitea)
 oxide-sloc pr-comment out/result.json --baseline out/base.json \
   --provider github --repo owner/repo --pr-number 42 --token "$TOKEN"
+
+# Gitea (self-hosted; --api-url is required)
+oxide-sloc pr-comment out/result.json \
+  --provider gitea --api-url https://gitea.corp.com \
+  --repo owner/repo --pr-number 42 --token "$TOKEN"
+
+# Azure DevOps (--api-url is the org base, --repo is project/repo;
+# the token authenticates as Basic ":<PAT>" automatically)
+oxide-sloc pr-comment out/result.json \
+  --provider azure --api-url https://dev.azure.com/myorg \
+  --repo myproject/myrepo --pr-number 42 --token "$AZURE_PAT"
 ```
 
 `jira` and `bitbucket-status` accept `--dry-run` (print method + URL + body, no

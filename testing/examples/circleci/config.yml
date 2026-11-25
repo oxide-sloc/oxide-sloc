@@ -54,8 +54,11 @@ jobs:
           command: |
             mkdir -p sloc-out
             oxide-sloc analyze . \
+              --report-title "oxide-sloc — ${CIRCLE_PROJECT_REPONAME}" \
               --json-out sloc-out/result.json \
-              --html-out sloc-out/report.html
+              --html-out sloc-out/report.html \
+              --csv-out sloc-out/report.csv \
+              --xlsx-out sloc-out/report.xlsx
 
       - run:
           name: Upload to oxide-sloc server
@@ -70,10 +73,27 @@ jobs:
           name: Push to artifact repository
           command: |
             if [ -n "$ARTIFACT_REPO_TYPE" ] && [ -n "$ARTIFACT_REPO_URL" ]; then
+              ARTIFACT_REPO_PATH="${ARTIFACT_REPO_PATH:-oxide-sloc/${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BUILD_NUM}}" \
               ARTIFACT_DIR=sloc-out \
-              ARTIFACT_FILES="result.json report.html" \
+              ARTIFACT_FILES="result.json report.html report.csv report.xlsx" \
+              ARTIFACT_GENERATE_MANIFEST="true" \
               bash ci/artifact-push.sh
             fi
+
+      - run:
+          name: Comment on the pull request
+          command: |
+            # CIRCLE_PULL_REQUEST is the PR URL; its last path segment is the number.
+            if [ -z "${CIRCLE_PULL_REQUEST:-}" ] || [ -z "${GITHUB_TOKEN:-}" ]; then
+              echo "Not a PR build (or GITHUB_TOKEN unset) — skipping PR comment."
+              exit 0
+            fi
+            PR_NUMBER="${CIRCLE_PULL_REQUEST##*/}"
+            oxide-sloc pr-comment sloc-out/result.json \
+              --provider github \
+              --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
+              --pr-number "$PR_NUMBER" \
+              --token "$GITHUB_TOKEN" || echo "PR comment failed (non-fatal)."
 
       - store_artifacts:
           path: sloc-out
