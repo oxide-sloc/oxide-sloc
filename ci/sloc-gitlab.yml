@@ -84,7 +84,7 @@ spec:
       description: "Display label in /view-reports (blank = $CI_PROJECT_PATH)."
     artifact-repo-type:
       default: "none"
-      options: ["none", "artifactory", "nexus", "nexus2", "s3", "minio", "azure-blob", "generic-http"]
+      options: ["none", "artifactory", "nexus", "nexus2", "s3", "minio", "azure-blob", "gcs", "gitlab-packages", "github-packages", "generic-http"]
       description: "Push artifacts to this repository backend (via ci/artifact-push.sh)."
     artifact-repo-url:
       default: ""

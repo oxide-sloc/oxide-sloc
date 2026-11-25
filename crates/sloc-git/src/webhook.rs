@@ -12,6 +12,11 @@ pub enum WebhookProvider {
     GitHub,
     GitLab,
     Bitbucket,
+    /// Azure DevOps Services / Server (`git.push` Service Hook).
+    AzureDevOps,
+    /// Gitea (and API-compatible forks such as Forgejo). Push payloads mirror
+    /// GitHub's shape; signatures use a bare-hex HMAC-SHA256 header.
+    Gitea,
     /// Provider-agnostic build-completion trigger (`/webhooks/ci`). Fired by an
     /// upstream CI build finishing rather than by a git push, so it carries no
     /// native provider payload — any CI system (incl. very old pipelines) can
@@ -84,6 +89,19 @@ pub fn verify_github_sig(body: &[u8], sig_header: &str, secret: &str) -> bool {
 #[must_use]
 pub fn verify_bitbucket_sig(body: &[u8], sig_header: &str, secret: &str) -> bool {
     verify_github_sig(body, sig_header, secret)
+}
+
+/// Verify a Gitea `X-Gitea-Signature` HMAC-SHA256 signature. Unlike GitHub's
+/// header, Gitea sends a *bare* lowercase hex digest with no `sha256=` scheme
+/// prefix. Returns `false` for an empty header rather than erroring.
+#[must_use]
+pub fn verify_gitea_sig(body: &[u8], sig_header: &str, secret: &str) -> bool {
+    let sig = sig_header.trim();
+    if sig.is_empty() {
+        return false;
+    }
+    let expected_hex = hmac_sha256_hex(secret.as_bytes(), body);
+    constant_eq_str(&expected_hex, sig)
 }
 
 /// Compute the HMAC-SHA256 of `msg` keyed by `secret`, returned as a lowercase
@@ -276,6 +294,87 @@ pub fn parse_bitbucket_push(body: &[u8]) -> Result<WebhookEvent> {
     })
 }
 
+/// Parse a Gitea (or Forgejo) `push` webhook payload. The payload mirrors
+/// GitHub's shape — top-level `ref` + `after` and a `repository.clone_url` — so
+/// the same field extraction applies; only the pusher field name differs.
+///
+/// # Errors
+/// Returns an error if the body is not valid JSON or required fields are missing.
+pub fn parse_gitea_push(body: &[u8]) -> Result<WebhookEvent> {
+    let v: serde_json::Value = serde_json::from_slice(body)?;
+    let repo_url = require_str(&v, &["repository", "clone_url"], "repository.clone_url")?;
+    let ref_str = v["ref"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing field: ref"))?;
+    let (branch, is_tag) = strip_ref(ref_str);
+    let commit_sha = v["after"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("missing field: after"))?
+        .to_owned();
+    // Gitea's pusher object uses `username` (with `login` as an older alias).
+    let pusher = v["pusher"]["username"]
+        .as_str()
+        .or_else(|| v["pusher"]["login"].as_str())
+        .map(str::to_owned);
+    Ok(WebhookEvent {
+        provider: WebhookProvider::Gitea,
+        repo_url,
+        branch,
+        commit_sha,
+        pusher,
+        event: if is_tag {
+            TriggerEvent::Tag
+        } else {
+            TriggerEvent::Push
+        },
+    })
+}
+
+/// Parse an Azure DevOps `git.push` Service Hook payload.
+///
+/// Azure nests everything under `resource`: the clone URL is
+/// `resource.repository.remoteUrl`, and each ref change is an entry in
+/// `resource.refUpdates` carrying `name` (`refs/heads/…` or `refs/tags/…`) and
+/// `newObjectId` (the pushed commit SHA). Only the first ref update is scanned.
+///
+/// # Errors
+/// Returns an error if the body is not valid JSON or required fields are missing.
+pub fn parse_azure_push(body: &[u8]) -> Result<WebhookEvent> {
+    let v: serde_json::Value = serde_json::from_slice(body)?;
+    let repo_url = require_str(
+        &v,
+        &["resource", "repository", "remoteUrl"],
+        "resource.repository.remoteUrl",
+    )?;
+    let update = &v["resource"]["refUpdates"][0];
+    let ref_str = update["name"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("missing field: resource.refUpdates[0].name"))?;
+    let (branch, is_tag) = strip_ref(ref_str);
+    let commit_sha = update["newObjectId"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("missing field: resource.refUpdates[0].newObjectId"))?
+        .to_owned();
+    let pusher = v["resource"]["pushedBy"]["displayName"]
+        .as_str()
+        .map(str::to_owned);
+    Ok(WebhookEvent {
+        provider: WebhookProvider::AzureDevOps,
+        repo_url,
+        branch,
+        commit_sha,
+        pusher,
+        event: if is_tag {
+            TriggerEvent::Tag
+        } else {
+            TriggerEvent::Push
+        },
+    })
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn require_str(v: &serde_json::Value, path: &[&str], field: &str) -> Result<String> {
@@ -363,5 +462,72 @@ mod tests {
         let body = br#"{"action":"created","repository":{"clone_url":"https://github.com/o/r.git"},
             "release":{"tag_name":"v2.0.0"}}"#;
         assert!(parse_github_release(body).is_err());
+    }
+
+    #[test]
+    fn gitea_push_to_branch_is_push_event() {
+        let body = br#"{"ref":"refs/heads/main","after":"abc123",
+            "repository":{"clone_url":"https://gitea.example.com/o/r.git"},
+            "pusher":{"username":"nima"}}"#;
+        let e = parse_gitea_push(body).unwrap();
+        assert_eq!(e.provider, WebhookProvider::Gitea);
+        assert_eq!(e.event, TriggerEvent::Push);
+        assert_eq!(e.branch, "main");
+        assert_eq!(e.commit_sha, "abc123");
+        assert_eq!(e.pusher.as_deref(), Some("nima"));
+    }
+
+    #[test]
+    fn gitea_push_to_tag_is_tag_event() {
+        let body = br#"{"ref":"refs/tags/v1.2.0","after":"def456",
+            "repository":{"clone_url":"https://gitea.example.com/o/r.git"}}"#;
+        let e = parse_gitea_push(body).unwrap();
+        assert_eq!(e.event, TriggerEvent::Tag);
+        assert_eq!(e.branch, "v1.2.0");
+    }
+
+    #[test]
+    fn gitea_signature_is_bare_hex_no_prefix() {
+        let secret = "gitea-secret";
+        let body = br#"{"ref":"refs/heads/main","after":"abc"}"#;
+        let good = hmac_sha256_hex(secret.as_bytes(), body);
+        assert!(verify_gitea_sig(body, &good, secret));
+        // A GitHub-style `sha256=` prefix is NOT accepted by the Gitea verifier.
+        assert!(!verify_gitea_sig(body, &format!("sha256={good}"), secret));
+        assert!(!verify_gitea_sig(body, "", secret));
+        assert!(!verify_gitea_sig(body, &good, "wrong-secret"));
+    }
+
+    #[test]
+    fn azure_push_to_branch_is_push_event() {
+        let body = br#"{"eventType":"git.push","resource":{
+            "refUpdates":[{"name":"refs/heads/main","oldObjectId":"0",
+                "newObjectId":"cafe1234"}],
+            "repository":{"remoteUrl":"https://dev.azure.com/org/proj/_git/repo","name":"repo"},
+            "pushedBy":{"displayName":"Nima"}}}"#;
+        let e = parse_azure_push(body).unwrap();
+        assert_eq!(e.provider, WebhookProvider::AzureDevOps);
+        assert_eq!(e.event, TriggerEvent::Push);
+        assert_eq!(e.branch, "main");
+        assert_eq!(e.commit_sha, "cafe1234");
+        assert_eq!(e.repo_url, "https://dev.azure.com/org/proj/_git/repo");
+        assert_eq!(e.pusher.as_deref(), Some("Nima"));
+    }
+
+    #[test]
+    fn azure_push_to_tag_is_tag_event() {
+        let body = br#"{"resource":{
+            "refUpdates":[{"name":"refs/tags/v3.0.0","newObjectId":"beef"}],
+            "repository":{"remoteUrl":"https://dev.azure.com/org/proj/_git/repo"}}}"#;
+        let e = parse_azure_push(body).unwrap();
+        assert_eq!(e.event, TriggerEvent::Tag);
+        assert_eq!(e.branch, "v3.0.0");
+    }
+
+    #[test]
+    fn azure_missing_ref_update_is_error() {
+        let body = br#"{"resource":{"refUpdates":[],
+            "repository":{"remoteUrl":"https://dev.azure.com/o/p/_git/r"}}}"#;
+        assert!(parse_azure_push(body).is_err());
     }
 }

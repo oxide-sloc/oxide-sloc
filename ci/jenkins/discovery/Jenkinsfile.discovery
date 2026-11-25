@@ -32,12 +32,18 @@ pipeline {
         string(name: 'POLICY_REVISION', defaultValue: '', description: 'Opaque revision tag stored on jobs')
 
         // DISCOVER inputs.
-        choice(name: 'PROVIDER', choices: ['bitbucket-server', 'bitbucket-cloud'], description: 'Bitbucket flavour')
-        string(name: 'BASE_URL', defaultValue: '', description: 'Server/DC base URL (blank for Cloud default)')
-        string(name: 'PROJECT', defaultValue: '', description: 'Server/DC project key')
-        string(name: 'WORKSPACE_SLUG', defaultValue: '', description: 'Cloud workspace')
+        choice(name: 'PROVIDER',
+               choices: ['bitbucket-server', 'bitbucket-cloud', 'github', 'gitlab'],
+               description: 'SCM provider / flavour')
+        string(name: 'BASE_URL', defaultValue: '',
+               description: 'API base URL (Bitbucket Server/DC, GHE, or self-managed GitLab; blank = provider default)')
+        string(name: 'PROJECT', defaultValue: '',
+               description: 'Scope: Bitbucket project key / GitHub org / GitLab group path')
+        string(name: 'WORKSPACE_SLUG', defaultValue: '',
+               description: 'Bitbucket Cloud workspace (Cloud only; ignored by other providers)')
         string(name: 'CREDENTIAL_ID', defaultValue: '', description: 'Jenkins credential id stored on jobs')
-        string(name: 'BITBUCKET_CREDENTIALS', defaultValue: '', description: 'Jenkins cred for the REST API (user:token)')
+        string(name: 'BITBUCKET_CREDENTIALS', defaultValue: '',
+               description: 'Jenkins cred for the REST API (user:token; token is used for GitHub/GitLab)')
         string(name: 'OFFLINE_INVENTORY', defaultValue: '', description: 'Air-gap: path to a transferred inventory')
         booleanParam(name: 'PREFER_SSH', defaultValue: false, description: 'Prefer SSH clone URLs')
         booleanParam(name: 'DRY_RUN', defaultValue: false, description: 'Plan only; create nothing')
@@ -78,21 +84,37 @@ pipeline {
                 script {
                     if (params.OFFLINE_INVENTORY?.trim()) {
                         // Air-gap: re-normalize a transferred inventory; no HTTP.
+                        // inventory.load_inventory is provider-agnostic, so any
+                        // discoverer's --offline-inventory path is equivalent.
                         helpers.shx("python3 ${env.DISC}/discover_bitbucket.py " +
                             "--offline-inventory '${params.OFFLINE_INVENTORY}' --out ${env.INVENTORY_PATH}")
                     } else {
                         withCredentials([usernamePassword(credentialsId: params.BITBUCKET_CREDENTIALS,
-                                usernameVariable: 'BITBUCKET_USER', passwordVariable: 'BITBUCKET_TOKEN')]) {
-                            def extra = params.PROVIDER == 'bitbucket-cloud' ?
-                                "--workspace '${params.WORKSPACE_SLUG}'" :
-                                "--base-url '${params.BASE_URL}' --project '${params.PROJECT}'"
+                                usernameVariable: 'API_USER', passwordVariable: 'API_TOKEN')]) {
                             def ssh = params.PREFER_SSH ? '--prefer-ssh' : ''
-                            helpers.shx("python3 ${env.DISC}/discover_bitbucket.py " +
-                                "--provider '${params.PROVIDER}' ${extra} ${ssh} " +
-                                "--credential-id '${params.CREDENTIAL_ID}' " +
+                            def common = "${ssh} --credential-id '${params.CREDENTIAL_ID}' " +
                                 "--managed-folder '${params.MANAGED_FOLDER}' " +
                                 "--branch-policy '${params.BRANCH_POLICY}' " +
-                                "--out ${env.INVENTORY_PATH}")
+                                "--out ${env.INVENTORY_PATH}"
+                            def cmd
+                            switch (params.PROVIDER) {
+                                case 'github':
+                                    cmd = "GITHUB_TOKEN=\"\$API_TOKEN\" python3 ${env.DISC}/discover_github.py " +
+                                        "--org '${params.PROJECT}' --base-url '${params.BASE_URL}' ${common}"
+                                    break
+                                case 'gitlab':
+                                    cmd = "GITLAB_TOKEN=\"\$API_TOKEN\" python3 ${env.DISC}/discover_gitlab.py " +
+                                        "--group '${params.PROJECT}' --base-url '${params.BASE_URL}' ${common}"
+                                    break
+                                default:
+                                    def extra = params.PROVIDER == 'bitbucket-cloud' ?
+                                        "--workspace '${params.WORKSPACE_SLUG}'" :
+                                        "--base-url '${params.BASE_URL}' --project '${params.PROJECT}'"
+                                    cmd = "BITBUCKET_USER=\"\$API_USER\" BITBUCKET_TOKEN=\"\$API_TOKEN\" " +
+                                        "python3 ${env.DISC}/discover_bitbucket.py " +
+                                        "--provider '${params.PROVIDER}' ${extra} ${common}"
+                            }
+                            helpers.shx(cmd)
                         }
                     }
                     archiveArtifacts artifacts: env.INVENTORY_PATH, onlyIfSuccessful: true

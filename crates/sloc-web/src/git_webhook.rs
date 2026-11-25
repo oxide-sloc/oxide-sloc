@@ -19,10 +19,10 @@ use tracing::info;
 
 use sloc_git::{
     ScanSchedule, ScanScheduleKind, ScanScheduleProvider, ScheduleStore, WebhookEvent,
-    WebhookProvider, clone_or_fetch, create_worktree, destroy_worktree, get_sha,
-    parse_bitbucket_push, parse_github_pull_request, parse_github_push, parse_github_release,
-    parse_gitlab_push,
-    webhook::{verify_bitbucket_sig, verify_github_sig},
+    WebhookProvider, clone_or_fetch, create_worktree, destroy_worktree, get_sha, parse_azure_push,
+    parse_bitbucket_push, parse_gitea_push, parse_github_pull_request, parse_github_push,
+    parse_github_release, parse_gitlab_push,
+    webhook::{verify_bitbucket_sig, verify_gitea_sig, verify_github_sig},
 };
 
 use sloc_core::AnalysisRun;
@@ -244,6 +244,52 @@ pub async fn handle_bitbucket_webhook(
     };
     let sig = header_str(&headers, "x-hub-signature");
     dispatch_hmac_webhook(state, event, &body, &sig, is_valid_bitbucket_sig).await;
+    StatusCode::ACCEPTED.into_response()
+}
+
+pub async fn handle_gitea_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let event = match parse_gitea_push(&body) {
+        Ok(e) => e,
+        Err(e) => {
+            info!(error = %e, "gitea webhook payload parse failed");
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid gitea push payload: {e}"),
+            )
+                .into_response();
+        }
+    };
+    // Gitea signs with a bare-hex HMAC-SHA256 in X-Gitea-Signature (no scheme prefix).
+    let sig = header_str(&headers, "x-gitea-signature");
+    dispatch_hmac_webhook(state, event, &body, &sig, is_valid_gitea_sig).await;
+    StatusCode::ACCEPTED.into_response()
+}
+
+pub async fn handle_azure_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let event = match parse_azure_push(&body) {
+        Ok(e) => e,
+        Err(e) => {
+            info!(error = %e, "azure devops webhook payload parse failed");
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid azure devops push payload: {e}"),
+            )
+                .into_response();
+        }
+    };
+    // Azure DevOps Service Hooks carry no HMAC. Operators configure a shared
+    // secret as a custom HTTP header on the subscription, matched constant-time
+    // against the schedule secret exactly like the GitLab token path.
+    let token = header_str(&headers, "x-sloc-token");
+    dispatch_token_webhook(state, event, &token).await;
     StatusCode::ACCEPTED.into_response()
 }
 
@@ -522,6 +568,10 @@ fn is_valid_bitbucket_sig(body: &[u8], sig: &str, secret: &str) -> bool {
     verify_bitbucket_sig(body, sig, secret)
 }
 
+fn is_valid_gitea_sig(body: &[u8], sig: &str, secret: &str) -> bool {
+    verify_gitea_sig(body, sig, secret)
+}
+
 // Takes owned values so each iteration can move into the async task after cloning.
 #[allow(clippy::needless_pass_by_value)]
 fn spawn_scans(state: AppState, event: WebhookEvent, schedules: Vec<ScanSchedule>) {
@@ -654,6 +704,8 @@ fn build_schedule(req: CreateScheduleRequest) -> ScanSchedule {
             Some("github") => ScanScheduleProvider::GitHub,
             Some("gitlab") => ScanScheduleProvider::GitLab,
             Some("bitbucket") => ScanScheduleProvider::Bitbucket,
+            Some("azure") => ScanScheduleProvider::AzureDevOps,
+            Some("gitea") => ScanScheduleProvider::Gitea,
             _ => ScanScheduleProvider::Any,
         };
         ScanSchedule::new_webhook(
@@ -1130,6 +1182,48 @@ mod tests {
         };
         let s = build_schedule(req);
         assert_eq!(s.provider, ScanScheduleProvider::Bitbucket);
+    }
+
+    #[test]
+    fn build_schedule_azure_provider() {
+        let req = CreateScheduleRequest {
+            label: "AZ".into(),
+            repo_url: "https://dev.azure.com/org/proj/_git/repo".into(),
+            branch: "main".into(),
+            kind: "webhook".into(),
+            provider: Some("azure".into()),
+            interval_secs: None,
+            webhook_secret: Some("tok".into()),
+            trigger_events: Vec::new(),
+        };
+        let s = build_schedule(req);
+        assert_eq!(s.provider, ScanScheduleProvider::AzureDevOps);
+    }
+
+    #[test]
+    fn build_schedule_gitea_provider() {
+        let req = CreateScheduleRequest {
+            label: "GT".into(),
+            repo_url: "https://gitea.example.com/o/r.git".into(),
+            branch: "main".into(),
+            kind: "webhook".into(),
+            provider: Some("gitea".into()),
+            interval_secs: None,
+            webhook_secret: Some("sec".into()),
+            trigger_events: Vec::new(),
+        };
+        let s = build_schedule(req);
+        assert_eq!(s.provider, ScanScheduleProvider::Gitea);
+    }
+
+    #[test]
+    fn is_valid_gitea_sig_bare_hex_roundtrips() {
+        let secret = "gitea-secret";
+        let body = b"payload-bytes";
+        let good = sloc_git::webhook::hmac_sha256_hex(secret.as_bytes(), body);
+        assert!(is_valid_gitea_sig(body, &good, secret));
+        assert!(!is_valid_gitea_sig(body, "", secret));
+        assert!(!is_valid_gitea_sig(body, &good, "wrong"));
     }
 
     #[test]

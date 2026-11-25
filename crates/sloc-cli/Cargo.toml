@@ -26,6 +26,45 @@ path = "src/lib.rs"
 [package.metadata.docs.rs]
 no-default-features = true
 
+# ── cargo-binstall: `cargo binstall oxide-sloc` fetches the prebuilt GitHub Release
+# asset instead of compiling from source. Release assets are not named by target triple
+# (they use linux-x86_64 / macos-arm64 / windows-x64), so each supported target is mapped
+# explicitly below. The binary inside every archive is plain `oxide-sloc`/`oxide-sloc.exe`,
+# so bin-dir points at the archive root. The top-level pkg-url is only a fallback for
+# unlisted targets; every shipped platform has an override.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/oxide-sloc-linux-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/oxide-sloc-linux-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/oxide-sloc-linux-arm64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/oxide-sloc-linux-arm64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/oxide-sloc-windows-x64.zip"
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/oxide-sloc-windows-x64.zip"
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/oxide-sloc-macos-x86_64"
+pkg-fmt = "bin"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/oxide-sloc-macos-arm64"
+pkg-fmt = "bin"
+
 # ── OS packages (inert to cargo; read only by cargo-deb / cargo-generate-rpm) ──
 # Build a .deb:  cargo build --release -p oxide-sloc && cargo deb -p oxide-sloc --no-build
 # Build a .rpm:  cargo build --release -p oxide-sloc && cargo generate-rpm -p crates/sloc-cli

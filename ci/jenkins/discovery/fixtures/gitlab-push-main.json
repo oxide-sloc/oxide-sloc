@@ -1,0 +1,15 @@
+{
+  "object_kind": "push",
+  "event_name": "push",
+  "ref": "refs/heads/main",
+  "checkout_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "project_id": 201,
+  "project": {
+    "id": 201,
+    "name": "widget",
+    "path_with_namespace": "mygroup/widget",
+    "web_url": "https://gitlab.com/mygroup/widget",
+    "git_http_url": "https://gitlab.com/mygroup/widget.git"
+  },
+  "user_username": "nima"
+}

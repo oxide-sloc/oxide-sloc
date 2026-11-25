@@ -1,0 +1,21 @@
+[
+  {
+    "id": 201,
+    "path": "widget",
+    "path_with_namespace": "mygroup/widget",
+    "web_url": "https://gitlab.com/mygroup/widget",
+    "http_url_to_repo": "https://gitlab.com/mygroup/widget.git",
+    "ssh_url_to_repo": "git@gitlab.com:mygroup/widget.git",
+    "namespace": { "full_path": "mygroup" }
+  },
+  {
+    "id": 202,
+    "path": "forked",
+    "path_with_namespace": "mygroup/forked",
+    "web_url": "https://gitlab.com/mygroup/forked",
+    "http_url_to_repo": "https://gitlab.com/mygroup/forked.git",
+    "ssh_url_to_repo": "git@gitlab.com:mygroup/forked.git",
+    "forked_from_project": { "id": 999 },
+    "namespace": { "full_path": "mygroup" }
+  }
+]

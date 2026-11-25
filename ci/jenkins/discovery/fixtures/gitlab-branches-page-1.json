@@ -1,0 +1,6 @@
+[
+  { "name": "main" },
+  { "name": "develop" },
+  { "name": "release/3.0" },
+  { "name": "feature/wip" }
+]

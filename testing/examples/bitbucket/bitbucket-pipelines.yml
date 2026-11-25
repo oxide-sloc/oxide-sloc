@@ -17,6 +17,10 @@
 #   4. Uploads the HTML report as a downloadable artifact.
 #   5. Optionally posts a PR comment with a SLOC summary table and delta.
 #   6. Optionally publishes all artifacts to a Sonatype Nexus repository.
+#      (The NEXUS_* variables below map onto ci/artifact-push.sh, which also
+#      supports artifactory / s3 / minio / azure-blob / gcs / gitlab-packages /
+#      github-packages / generic-http — set ARTIFACT_REPO_TYPE directly to use
+#      another backend instead of the Nexus-named shims.)
 #
 # Bitbucket Code Insights docs:
 #   https://developer.atlassian.com/cloud/bitbucket/rest/api-group-reports/

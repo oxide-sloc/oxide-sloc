@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Normalize and safely dispatch a Bitbucket push webhook to a managed scan.
+"""Normalize and safely dispatch a git push webhook to a managed scan.
 
-This is the event half of discovery.  A webhook is HOSTILE input, so the
-dispatcher is built around one rule: **the payload may say what happened, but it
-may never say what we do about it.**  Concretely:
+Handles Bitbucket (Server/DC + Cloud), GitHub (incl. Enterprise), and GitLab
+push payloads through one provider-agnostic pipeline. This is the event half of
+discovery. A webhook is HOSTILE input, so the dispatcher is built around one
+rule: **the payload may say what happened, but it may never say what we do about
+it.** Concretely:
 
   * The pushed branch and commit SHA are read from the payload.
   * The clone URL, credential id, and Jenkins job to trigger are looked up in
@@ -40,7 +42,22 @@ import inventory as inv
 
 PROVIDER_SERVER = "bitbucket-server"
 PROVIDER_CLOUD = "bitbucket-cloud"
+PROVIDER_GITHUB = "github"
+PROVIDER_GITLAB = "gitlab"
 _ZERO_HASH = "0" * 40
+
+
+def _split_ref(ref: str) -> tuple[str, bool]:
+    """Return ``(short_name, is_tag)`` for a full git ref.
+
+    ``refs/heads/main`` -> ``("main", False)``; ``refs/tags/v1`` ->
+    ``("v1", True)``; anything else is returned unchanged as a branch.
+    """
+    if ref.startswith("refs/tags/"):
+        return ref[len("refs/tags/"):], True
+    if ref.startswith("refs/heads/"):
+        return ref[len("refs/heads/"):], False
+    return ref, False
 
 
 class DispatchResult:
@@ -86,10 +103,16 @@ def verify_signature(secret: str, raw_body: bytes, header_value: str) -> bool:
 def detect_provider(payload: dict) -> str | None:
     if not isinstance(payload, dict):
         return None
+    # GitLab is unambiguous: it stamps every hook with an object_kind.
+    if payload.get("object_kind") in ("push", "tag_push"):
+        return PROVIDER_GITLAB
     if isinstance(payload.get("push"), dict) and "repository" in payload:
         return PROVIDER_CLOUD
     if "changes" in payload and "repository" in payload:
         return PROVIDER_SERVER
+    # GitHub's push payload is the loosest shape, so check it last.
+    if "after" in payload and "ref" in payload and "repository" in payload:
+        return PROVIDER_GITHUB
     return None
 
 
@@ -164,6 +187,57 @@ def _normalize_cloud(payload: dict, pattern: str) -> list[DispatchResult]:
     return results
 
 
+def _normalize_github(payload: dict, pattern: str) -> list[DispatchResult]:
+    repo = payload.get("repository") or {}
+    repo_id = str(repo.get("id", ""))
+    full = repo.get("full_name", "")
+    slug = repo.get("name") or (full.split("/")[-1] if full else "")
+    owner = (repo.get("owner") or {}).get("login") or (full.split("/")[0] if "/" in full else "")
+    host = urlsplit(repo.get("clone_url") or repo.get("html_url") or "").hostname or ""
+    branch, is_tag = _split_ref(payload.get("ref") or "")
+    after = payload.get("after", "")
+    return [
+        _decide(
+            provider=PROVIDER_GITHUB,
+            host=host,
+            project=owner,
+            repo_id=repo_id,
+            repo_slug=slug,
+            branch=branch,
+            commit_sha=after,
+            is_tag=is_tag,
+            is_delete=(payload.get("deleted") is True or after == _ZERO_HASH),
+            pattern=pattern,
+        )
+    ]
+
+
+def _normalize_gitlab(payload: dict, pattern: str) -> list[DispatchResult]:
+    project = payload.get("project") or {}
+    repo_id = str(project.get("id", payload.get("project_id", "")))
+    full = project.get("path_with_namespace", "")
+    slug = full.split("/")[-1] if full else project.get("name", "")
+    namespace = full.rsplit("/", 1)[0] if "/" in full else full
+    host = urlsplit(project.get("git_http_url") or project.get("web_url") or "").hostname or ""
+    branch, ref_is_tag = _split_ref(payload.get("ref") or "")
+    after = payload.get("checkout_sha") or payload.get("after", "")
+    is_tag = ref_is_tag or payload.get("object_kind") == "tag_push"
+    return [
+        _decide(
+            provider=PROVIDER_GITLAB,
+            host=host,
+            project=namespace,
+            repo_id=repo_id,
+            repo_slug=slug,
+            branch=branch,
+            commit_sha=after,
+            is_tag=is_tag,
+            is_delete=(after == _ZERO_HASH),
+            pattern=pattern,
+        )
+    ]
+
+
 def _decide(*, provider, host, project, repo_id, repo_slug, branch, commit_sha,
             is_tag, is_delete, pattern) -> DispatchResult:
     ident = dict(
@@ -194,6 +268,10 @@ def normalize(payload: dict, pattern: str = inv.DEFAULT_BRANCH_POLICY) -> list[D
         return _normalize_server(payload, pattern)
     if provider == PROVIDER_CLOUD:
         return _normalize_cloud(payload, pattern)
+    if provider == PROVIDER_GITHUB:
+        return _normalize_github(payload, pattern)
+    if provider == PROVIDER_GITLAB:
+        return _normalize_gitlab(payload, pattern)
     return [DispatchResult(False, "unrecognized or malformed payload")]
 
 
@@ -251,7 +329,9 @@ def seen_recently(state_dir: str, repo_id: str, sha: str, cooldown: int, now=Non
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Normalize + dispatch a Bitbucket push event.")
+    parser = argparse.ArgumentParser(
+        description="Normalize + dispatch a git push event (Bitbucket / GitHub / GitLab)."
+    )
     parser.add_argument("--payload", default="-", help="Payload JSON file, or '-' for stdin.")
     parser.add_argument("--inventory", required=True, help="Approved discovery inventory JSON.")
     parser.add_argument("--branch-policy", default=inv.DEFAULT_BRANCH_POLICY)

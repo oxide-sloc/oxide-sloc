@@ -86,8 +86,8 @@ What you get:
 
 ### Artifact repository push
 
-Set `ARTIFACT_REPO_TYPE` to any backend (artifactory, nexus, s3, minio, azure-blob, generic-http)
-and fill in `ARTIFACT_REPO_URL`.  Add credentials `SLOC_ARTIFACT_REPO_USER` /
+Set `ARTIFACT_REPO_TYPE` to any backend (artifactory, nexus, nexus2, s3, minio, azure-blob, gcs,
+gitlab-packages, github-packages, generic-http) and fill in `ARTIFACT_REPO_URL`.  Add credentials `SLOC_ARTIFACT_REPO_USER` /
 `SLOC_ARTIFACT_REPO_PASS` in Jenkins for authenticated repositories.
 
 ---

@@ -505,16 +505,20 @@ pipeline {
         // docs/ci-integrations.md § Artifact Repository Integration for full details.
         choice(
             name:    'ARTIFACT_REPO_TYPE',
-            choices: ['none', 'artifactory', 'nexus', 'nexus2', 's3', 'minio', 'azure-blob', 'generic-http'],
+            choices: ['none', 'artifactory', 'nexus', 'nexus2', 's3', 'minio', 'azure-blob',
+                      'gcs', 'gitlab-packages', 'github-packages', 'generic-http'],
             description: 'Artifact repository backend to push scan results to after a successful build.\n' +
-                         '  none         — skip artifact repository push (default)\n' +
-                         '  artifactory  — JFrog Artifactory (REST PUT, user/pass or API key)\n' +
-                         '  nexus        — Sonatype Nexus Repository Manager 3 (raw-format REST upload)\n' +
-                         '  nexus2       — Sonatype Nexus Repository Manager 2 (PUT to content REST API)\n' +
-                         '  s3           — Amazon S3 (requires aws CLI on the agent)\n' +
-                         '  minio        — MinIO via aws CLI with custom --endpoint-url\n' +
-                         '  azure-blob   — Azure Blob Storage (requires az CLI on the agent)\n' +
-                         '  generic-http — any HTTP/HTTPS server accepting PUT requests'
+                         '  none            — skip artifact repository push (default)\n' +
+                         '  artifactory     — JFrog Artifactory (REST PUT, user/pass or API key)\n' +
+                         '  nexus           — Sonatype Nexus Repository Manager 3 (raw-format REST upload)\n' +
+                         '  nexus2          — Sonatype Nexus Repository Manager 2 (PUT to content REST API)\n' +
+                         '  s3              — Amazon S3 (requires aws CLI on the agent)\n' +
+                         '  minio           — MinIO via aws CLI with custom --endpoint-url\n' +
+                         '  azure-blob      — Azure Blob Storage (requires az CLI on the agent)\n' +
+                         '  gcs             — Google Cloud Storage (requires gcloud/gsutil on the agent)\n' +
+                         '  gitlab-packages — GitLab generic Package Registry (REST PUT, PRIVATE-TOKEN)\n' +
+                         '  github-packages — GitHub Packages Maven repo (REST PUT, user + PAT)\n' +
+                         '  generic-http    — any HTTP/HTTPS server accepting PUT requests'
         )
         string(
             name:         'ARTIFACT_REPO_URL',
@@ -540,11 +544,14 @@ pipeline {
             name:         'ARTIFACT_REPO_EXTRA',
             defaultValue: '',
             description:  'Provider-specific extra configuration (leave empty when unused):\n' +
-                          '  nexus / nexus2 — Nexus repository name (e.g. sloc-raw-hosted)\n' +
-                          '  azure-blob     — storage container name (e.g. sloc-reports)\n' +
-                          '  minio          — MinIO server endpoint URL (e.g. https://minio.internal:9000)\n' +
-                          '  s3             — extra flags for aws s3 cp (e.g. --sse aws:kms)\n' +
-                          '  others         — unused'
+                          '  nexus / nexus2  — Nexus repository name (e.g. sloc-raw-hosted)\n' +
+                          '  azure-blob      — storage container name (e.g. sloc-reports)\n' +
+                          '  minio           — MinIO server endpoint URL (e.g. https://minio.internal:9000)\n' +
+                          '  s3              — extra flags for aws s3 cp (e.g. --sse aws:kms)\n' +
+                          '  gcs             — extra flags for gcloud storage cp (e.g. --cache-control=no-cache)\n' +
+                          '  gitlab-packages — <project-id>/<package>/<version> (e.g. 42/oxide-sloc/1.6.30)\n' +
+                          '  github-packages — extra path segments under the Maven repo (optional)\n' +
+                          '  others          — unused'
         )
         booleanParam(
             name:         'ARTIFACT_PUSH_JSON',

@@ -8,7 +8,8 @@
 #   Set ARTIFACT_REPO_TYPE as a repository variable and ARTIFACT_REPO_URL,
 #   ARTIFACT_REPO_PATH, ARTIFACT_REPO_EXTRA as needed.  For authenticated repos
 #   set ARTIFACT_REPO_USER / ARTIFACT_REPO_PASS as repository secrets.
-#   Supported backends: artifactory | nexus | nexus2 | s3 | minio | azure-blob | generic-http
+#   Supported backends: artifactory | nexus | nexus2 | s3 | minio | azure-blob |
+#                        gcs | gitlab-packages | github-packages | generic-http
 #   See ci/artifact-push.sh and docs/ci-integrations.md for full details.
 #
 # How it works:

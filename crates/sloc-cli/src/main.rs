@@ -57,11 +57,18 @@ macro_rules! paint {
 #[command(name = "oxide-sloc", version)]
 #[command(about = "Cross-platform source line analysis tool")]
 #[command(
-    long_about = "Cross-platform source line analysis tool.\n\nRun without arguments to start the web UI on http://127.0.0.1:4317."
+    long_about = "Cross-platform source line analysis tool.\n\nRun `oxide-sloc <PATH>` to analyze a directory and print a per-language table.\nRun without arguments to start the web UI on http://127.0.0.1:4317."
 )]
+#[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+
+    /// Directory to analyze when no subcommand is given — a shorthand for
+    /// `oxide-sloc analyze <PATH>` that prints a per-language table (like
+    /// `tokei`/`scc`). With no path and no subcommand, the web UI starts instead.
+    #[arg(value_name = "PATH")]
+    paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -160,7 +167,7 @@ struct VerifyAuditArgs {
 // ── analyze ───────────────────────────────────────────────────────────────────
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Default)]
 struct AnalyzeArgs {
     /// One or more directories to scan
     #[arg(value_name = "PATH")]
@@ -696,6 +703,10 @@ enum VcsProvider {
     GitLab,
     #[value(name = "bitbucket")]
     Bitbucket,
+    #[value(name = "azure")]
+    AzureDevOps,
+    #[value(name = "gitea")]
+    Gitea,
 }
 
 #[derive(Debug, Args)]
@@ -715,13 +726,15 @@ struct PrCommentArgs {
 
     /// API base URL. Defaults to `https://api.github.com` (GitHub),
     /// `https://gitlab.com` (GitLab), or `https://api.bitbucket.org` (Bitbucket).
+    /// Required for Gitea (self-hosted, e.g. `https://gitea.example.com`) and
+    /// Azure DevOps (the org base, e.g. `https://dev.azure.com/myorg`).
     /// Override for self-hosted / Server-Data-Center instances.
     #[arg(long, value_name = "URL", env = "SLOC_VCS_API_URL")]
     api_url: Option<String>,
 
-    /// Repository. `owner/repo` (GitHub), numeric project ID or `namespace/project`
-    /// (GitLab), repo slug (Bitbucket Cloud, with --workspace), or `PROJECT/repo`
-    /// (Bitbucket Server/DC).
+    /// Repository. `owner/repo` (GitHub / Gitea), numeric project ID or
+    /// `namespace/project` (GitLab), repo slug (Bitbucket Cloud, with --workspace),
+    /// `PROJECT/repo` (Bitbucket Server/DC), or `project/repo` (Azure DevOps).
     #[arg(long, value_name = "REPO", env = "SLOC_VCS_REPO")]
     repo: String,
 
@@ -1062,6 +1075,29 @@ struct PruneArgs {
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
+/// Resolve the effective command from the parsed top-level args.
+///
+/// Dispatch rules (preserving the documented "bare command starts the web UI" contract):
+/// - an explicit subcommand always wins;
+/// - no subcommand **with** a positional path (`oxide-sloc .`, `oxide-sloc src tests`) is a
+///   shorthand for `analyze <paths>`, so the obvious first command prints a per-language table
+///   like `tokei`/`scc` instead of launching a server;
+/// - no subcommand and no path (`oxide-sloc`) starts `serve`, as before (also the Docker default).
+fn resolve_command(command: Option<Commands>, paths: Vec<PathBuf>) -> Commands {
+    match command {
+        Some(cmd) => cmd,
+        None if !paths.is_empty() => Commands::Analyze(Box::new(AnalyzeArgs {
+            paths,
+            ..Default::default()
+        })),
+        None => Commands::Serve(ServeArgs {
+            config: None,
+            bind: None,
+            server: false,
+        }),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1075,11 +1111,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    match cli.command.unwrap_or(Commands::Serve(ServeArgs {
-        config: None,
-        bind: None,
-        server: false,
-    })) {
+    match resolve_command(cli.command, cli.paths) {
         Commands::Analyze(args) => run_analyze(*args).await,
         Commands::Batch(args) => run_batch(args).await,
         Commands::Report(args) => run_report(&args),
@@ -2677,37 +2709,17 @@ fn print_plain_summary(run: &AnalysisRun) {
 }
 
 fn print_totals_header(run: &AnalysisRun, col: bool) {
+    // The headline line counts (files / physical / code / comment / blank) are carried by the
+    // self-contained "Total" row of the language table above; this block adds only the extras.
+    println!();
     println!("{}", paint!(col, "1", "SLOC Analysis Complete"));
-    println!(
-        "  {}  {}",
-        paint!(col, "36", "Files analyzed :"),
-        paint!(col, "32", run.summary_totals.files_analyzed)
-    );
-    println!(
-        "  {}  {}",
-        paint!(col, "36", "Files skipped  :"),
-        run.summary_totals.files_skipped
-    );
-    println!(
-        "  {}  {}",
-        paint!(col, "36", "Physical lines :"),
-        run.summary_totals.total_physical_lines
-    );
-    println!(
-        "  {}  {}",
-        paint!(col, "36", "Code lines     :"),
-        paint!(col, "32;1", run.summary_totals.code_lines)
-    );
-    println!(
-        "  {}  {}",
-        paint!(col, "36", "Comment lines  :"),
-        run.summary_totals.comment_lines
-    );
-    println!(
-        "  {}  {}",
-        paint!(col, "36", "Blank lines    :"),
-        run.summary_totals.blank_lines
-    );
+    if run.summary_totals.files_skipped > 0 {
+        println!(
+            "  {}  {}",
+            paint!(col, "36", "Files skipped  :"),
+            run.summary_totals.files_skipped
+        );
+    }
     if run.summary_totals.mixed_lines_separate > 0 {
         println!(
             "  {}  {}",
@@ -2910,6 +2922,21 @@ fn print_language_table(run: &AnalysisRun, col: bool) {
             lang.total_physical_lines,
         );
     }
+    // Self-contained total row so the table reads at a glance like tokei/scc. Pad the plain
+    // values first, then colour the whole line — wrapping individual fields in `paint!` would
+    // let ANSI codes count toward the column width and break alignment under colour.
+    let t = &run.summary_totals;
+    let total_row = format!(
+        "  {:<14} {:>6} {:>8} {:>9} {:>7} {:>8}",
+        "Total",
+        t.files_analyzed,
+        t.code_lines,
+        t.comment_lines,
+        t.blank_lines,
+        t.total_physical_lines,
+    );
+    println!("  {}", paint!(col, "2", "-".repeat(57)));
+    println!("{}", paint!(col, "1", total_row));
 }
 
 fn print_per_file_table(run: &AnalysisRun, col: bool) {
@@ -2995,8 +3022,10 @@ fn print_summary(run: &AnalysisRun, per_file: bool, plain: bool) {
     }
 
     let col = color_enabled();
-    print_totals_header(run, col);
+    // Lead with the per-language table (the headline most users came for, like tokei/scc),
+    // then the richer totals and derived metrics below it.
     print_language_table(run, col);
+    print_totals_header(run, col);
     if per_file {
         print_per_file_table(run, col);
     }
@@ -3546,6 +3575,12 @@ async fn run_pr_comment(args: PrCommentArgs) -> Result<()> {
         VcsProvider::Bitbucket => {
             post_bitbucket_comment(&args, &body).await?;
         }
+        VcsProvider::AzureDevOps => {
+            post_azure_comment(&args, &body).await?;
+        }
+        VcsProvider::Gitea => {
+            post_gitea_comment(&args, &body).await?;
+        }
     }
 
     println!("pr-comment: posted comment to PR #{}", args.pr_number);
@@ -3754,6 +3789,104 @@ async fn post_bitbucket_comment(args: &PrCommentArgs, body: &str) -> Result<()> 
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         anyhow::bail!("Bitbucket API returned HTTP {status}: {text}");
+    }
+    Ok(())
+}
+
+/// Gitea (and API-compatible forks such as Forgejo) expose a GitHub-shaped REST
+/// API. A PR comment is an issue comment: `POST
+/// /api/v1/repos/{owner}/{repo}/issues/{index}/comments`, authenticated with the
+/// `token <token>` scheme. There is no public default host, so `--api-url` (or
+/// `SLOC_VCS_API_URL`) is required.
+async fn post_gitea_comment(args: &PrCommentArgs, body: &str) -> Result<()> {
+    let base = args
+        .api_url
+        .as_deref()
+        .ok_or_else(|| {
+            anyhow::anyhow!("--api-url (or SLOC_VCS_API_URL) is required for Gitea (self-hosted)")
+        })?
+        .trim_end_matches('/');
+    let url = format!(
+        "{base}/api/v1/repos/{}/issues/{}/comments",
+        args.repo, args.pr_number
+    );
+
+    validate_webhook_url(&url, args.allow_private_net)?;
+
+    let payload = serde_json::json!({ "body": body });
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("token {}", args.token))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .with_context(|| format!("Gitea API POST to {url} failed"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Gitea API returned HTTP {status}: {text}");
+    }
+    Ok(())
+}
+
+/// Azure DevOps attaches PR comments as a *thread*: `POST
+/// {org}/{project}/_apis/git/repositories/{repo}/pullRequests/{id}/threads`.
+/// `--api-url` is the org base (`https://dev.azure.com/{org}`) and `--repo` is
+/// `project/repo`. A personal access token authenticates as HTTP Basic with an
+/// empty username (`:PAT`), the scheme Azure requires for PATs.
+async fn post_azure_comment(args: &PrCommentArgs, body: &str) -> Result<()> {
+    use base64::Engine as _;
+
+    let base = args
+        .api_url
+        .as_deref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--api-url (or SLOC_VCS_API_URL) is required for Azure DevOps \
+                 (the org base, e.g. https://dev.azure.com/myorg)"
+            )
+        })?
+        .trim_end_matches('/');
+    let (project, repo) = args
+        .repo
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("Azure DevOps --repo must be in project/repo form"))?;
+    let url = format!(
+        "{base}/{project}/_apis/git/repositories/{repo}/pullRequests/{}/threads?api-version=7.1",
+        args.pr_number
+    );
+
+    validate_webhook_url(&url, args.allow_private_net)?;
+
+    // Azure PATs authenticate as Basic ":<PAT>" (empty username).
+    let auth = {
+        let enc = base64::engine::general_purpose::STANDARD.encode(format!(":{}", args.token));
+        format!("Basic {enc}")
+    };
+    // commentType 1 = text; thread status 1 = active.
+    let payload = serde_json::json!({
+        "comments": [ { "parentCommentId": 0, "content": body, "commentType": 1 } ],
+        "status": 1
+    });
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", auth)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .with_context(|| format!("Azure DevOps API POST to {url} failed"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Azure DevOps API returned HTTP {status}: {text}");
     }
     Ok(())
 }
@@ -4525,6 +4658,60 @@ fn git_clone_path(repo_url: &str, clones_dir: &Path) -> PathBuf {
 
 fn uuid_simple() -> String {
     uuid::Uuid::new_v4().simple().to_string()
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::{Cli, Commands, resolve_command};
+    use clap::Parser;
+    use std::path::PathBuf;
+
+    fn parse(argv: &[&str]) -> Cli {
+        Cli::try_parse_from(argv).expect("args parse")
+    }
+
+    #[test]
+    fn bare_invocation_starts_the_web_ui() {
+        let cli = parse(&["oxide-sloc"]);
+        assert!(
+            matches!(resolve_command(cli.command, cli.paths), Commands::Serve(_)),
+            "`oxide-sloc` with no args must default to serve"
+        );
+    }
+
+    #[test]
+    fn a_positional_path_is_shorthand_for_analyze() {
+        let cli = parse(&["oxide-sloc", "."]);
+        match resolve_command(cli.command, cli.paths) {
+            Commands::Analyze(args) => {
+                assert_eq!(args.paths, vec![PathBuf::from(".")]);
+            }
+            other => panic!("`oxide-sloc .` must analyze, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiple_positional_paths_all_reach_analyze() {
+        let cli = parse(&["oxide-sloc", "src", "tests"]);
+        match resolve_command(cli.command, cli.paths) {
+            Commands::Analyze(args) => {
+                assert_eq!(
+                    args.paths,
+                    vec![PathBuf::from("src"), PathBuf::from("tests")]
+                );
+            }
+            other => panic!("expected analyze, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_explicit_subcommand_still_wins() {
+        let cli = parse(&["oxide-sloc", "serve"]);
+        assert!(matches!(
+            resolve_command(cli.command, cli.paths),
+            Commands::Serve(_)
+        ));
+    }
 }
 
 #[cfg(test)]

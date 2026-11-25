@@ -12,6 +12,7 @@
 <a href="https://github.com/oxide-sloc/oxide-sloc/actions/workflows/release.yml"><img alt="Release" src="https://github.com/oxide-sloc/oxide-sloc/actions/workflows/release.yml/badge.svg" onerror="this.onerror=null;this.src='docs/badges/release.svg'"></a>
 <a href="https://github.com/oxide-sloc/oxide-sloc/actions/workflows/docker.yml"><img alt="Docker" src="https://github.com/oxide-sloc/oxide-sloc/actions/workflows/docker.yml/badge.svg" onerror="this.onerror=null;this.src='docs/badges/docker.svg'"></a>
 <a href="https://github.com/oxide-sloc/oxide-sloc/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/oxide-sloc/oxide-sloc?label=release&color=blue" onerror="this.onerror=null;this.src='docs/badges/version.svg'"></a>
+<a href="https://github.com/oxide-sloc/oxide-sloc/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/oxide-sloc/oxide-sloc?style=flat&color=yellow" onerror="this.style.display='none'"></a>
 <a href="https://crates.io/crates/oxide-sloc"><img alt="crates.io" src="https://badgen.net/crates/v/oxide-sloc?label=crates.io&color=orange" onerror="this.onerror=null;this.src='docs/badges/crates.svg'"></a>
 <a href="https://codecov.io/gh/oxide-sloc/oxide-sloc"><img alt="codecov" src="https://codecov.io/gh/oxide-sloc/oxide-sloc/branch/main/graph/badge.svg" onerror="this.onerror=null;this.src='docs/badges/codecov.svg'"></a>
 [![License AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
@@ -20,16 +21,58 @@
 <a href="https://docs.rs/oxide-sloc"><img alt="docs.rs" src="https://img.shields.io/docsrs/oxide-sloc" onerror="this.onerror=null;this.src='docs/badges/docs.svg'"></a>
 <a href="./mcp.json"><img alt="MCP Server" src="https://img.shields.io/badge/MCP-server-orange" onerror="this.onerror=null;this.src='docs/badges/mcp.svg'"></a>
 
-**oxide-sloc** is a Rust-based local code analysis tool — IEEE 1045-1992 SLOC analysis, unit test detection, and coverage reporting.
+**oxide-sloc** measures, visualizes, and tracks your codebase — line counts, test coverage,
+refactor hotspots, and code ownership — from one fast local tool. No cloud, no telemetry, no
+account: it runs entirely on your machine.
 
-## Quick Start
+## Try it in 10 seconds
+
+```bash
+cargo install oxide-sloc --locked
+oxide-sloc .          # instant per-language table, like tokei/scc
+```
+
+<!-- Tip: record docs/screenshots/cli-demo.gif of the command below and embed it here — an
+     animated terminal is the single highest-converting asset for this README. -->
+
+```text
+By Language
+  Language        Files     Code  Comments   Blank    Total
+  Rust               42    12345       678     900    13923
+  TypeScript         18     4120       402     610     5132
+  ---------------------------------------------------------
+  Total              60    16465      1080    1510    19055
+
+SLOC Analysis Complete
+  Complexity     :  2041
+  Logical SLOC   :  14980
+  ULOC           :  11642  (70.7% unique)
+```
+
+Want interactive reports, trends, PDF/Excel export, and git tools? Start the local web UI:
+
+```bash
+oxide-sloc serve      # opens http://127.0.0.1:4317
+```
+
+**Why it's different from cloc / tokei / scc:** test metrics · git hotspots · code ownership ·
+COCOMO + complexity · HTML/PDF/Excel reports · MCP server callable by AI agents.
+[See the full comparison ↓](#why-oxide-sloc-vs-cloc--tokei--scc--ucc)
+
+> `oxide-sloc <PATH>` is a shorthand for `oxide-sloc analyze <PATH>`; use the `analyze`
+> subcommand directly when you want flags (`--per-file`, `--html-out`, coverage import, …).
+
+## Offline / from source
+
+Every user is assumed to be air-gapped — a plain `git clone` carries the vendored crates and an
+optional Rust toolchain, so no network, no pre-installed Rust, and no binary transfer are needed:
 
 ```bash
 bash scripts/run.sh   # installs on first run, then opens http://127.0.0.1:4317
 ```
 
-On **Windows with no Git Bash**, use the native-PowerShell installer instead — it needs
-no bash (see [Windows without Git Bash](#windows-without-git-bash)):
+On **Windows with no Git Bash**, use the native-PowerShell installer instead — it needs no bash
+(see [Windows without Git Bash](#windows-without-git-bash)):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\internal\install.ps1
@@ -118,7 +161,9 @@ integration — particularly as an MCP tool callable by Claude, Copilot, and oth
 | **Scoop** | `scoop bucket add oxide-sloc https://github.com/oxide-sloc/scoop-oxide-sloc && scoop install oxide-sloc` | Windows |
 | **Homebrew** | `brew tap oxide-sloc/oxide-sloc && brew install oxide-sloc` | macOS / Linux |
 | **Nix** | `nix run github:oxide-sloc/oxide-sloc` | Linux / macOS |
-| **cargo** | `cargo install oxide-sloc --locked` | Any |
+| **cargo** | `cargo install oxide-sloc --locked` | Any (builds from source) |
+| **cargo-binstall** | `cargo binstall oxide-sloc` | Any (prebuilt, no compile) |
+| **AUR** | `yay -S oxide-sloc-bin` | Arch Linux |
 | **DEB / RPM** | Download from [Releases](https://github.com/oxide-sloc/oxide-sloc/releases) | Ubuntu / RHEL |
 
 ### Docker

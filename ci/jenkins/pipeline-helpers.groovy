@@ -1423,7 +1423,8 @@ def runArchivePublish() {
 
 def runPushArtifacts() {
     def allowedTypes = [
-        'artifactory', 'nexus', 'nexus2', 's3', 'minio', 'azure-blob', 'generic-http'
+        'artifactory', 'nexus', 'nexus2', 's3', 'minio', 'azure-blob',
+        'gcs', 'gitlab-packages', 'github-packages', 'generic-http'
     ]
     if (!allowedTypes.contains(params.ARTIFACT_REPO_TYPE)) {
         error("Invalid ARTIFACT_REPO_TYPE: ${params.ARTIFACT_REPO_TYPE}")

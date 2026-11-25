@@ -1,0 +1,31 @@
+# Maintainer: Nima Shafie <nimzshafie@gmail.com>
+#
+# AUR binary package for oxide-sloc. Installs the prebuilt Linux x86_64 release
+# binary from GitHub Releases (no Rust toolchain or compile required). A
+# from-source counterpart could be published separately as `oxide-sloc`.
+#
+# Per release: bump pkgver, reset pkgrel=1, then regenerate the checksum with
+#   updpkgsums
+# (which downloads the source and rewrites sha256sums). Do NOT hand-edit the sum.
+
+pkgname=oxide-sloc-bin
+pkgver=1.6.31
+pkgrel=1
+pkgdesc="Local code metrics workbench: IEEE 1045-1992 SLOC, test detection, coverage, complexity, git hotspots, and code ownership"
+arch=('x86_64')
+url="https://github.com/oxide-sloc/oxide-sloc"
+license=('AGPL-3.0-or-later')
+provides=('oxide-sloc')
+conflicts=('oxide-sloc')
+options=('!strip')
+source=("oxide-sloc-${pkgver}-linux-x86_64.tar.gz::${url}/releases/download/v${pkgver}/oxide-sloc-linux-x86_64.tar.gz"
+        "LICENSE-${pkgver}::${url}/raw/v${pkgver}/LICENSE")
+# Placeholder — run `updpkgsums` to fill in the real checksums before publishing.
+sha256sums=('SKIP'
+            'SKIP')
+
+package() {
+    # The release tarball contains a single binary named `oxide-sloc` at its root.
+    install -Dm755 "${srcdir}/oxide-sloc" "${pkgdir}/usr/bin/oxide-sloc"
+    install -Dm644 "${srcdir}/LICENSE-${pkgver}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

@@ -8,8 +8,14 @@
 #   SLOC_API_KEY  — bearer token for the server (optional)
 #
 # Artifact repository push (optional):
-#   ARTIFACT_REPO_TYPE, ARTIFACT_REPO_URL, ARTIFACT_REPO_PATH, ARTIFACT_REPO_USER,
-#   ARTIFACT_REPO_PASS — see ci/artifact-push.sh and docs/ci-integrations.md.
+#   ARTIFACT_REPO_TYPE, ARTIFACT_REPO_URL, ARTIFACT_REPO_PATH, ARTIFACT_REPO_EXTRA,
+#   ARTIFACT_REPO_USER, ARTIFACT_REPO_PASS — see ci/artifact-push.sh and
+#   docs/ci-integrations.md. Backends: artifactory | nexus | nexus2 | s3 | minio |
+#   azure-blob | gcs | gitlab-packages | github-packages | generic-http.
+#
+# Pull-request comment (optional):
+#   GITHUB_TOKEN — a PAT with `repo` scope; when set, a PR build posts a SLOC
+#   summary comment via `oxide-sloc pr-comment --provider github`.
 
 version: 2.1
 

@@ -5,15 +5,19 @@
 # a GitLab CI job, a Bitbucket Pipelines step, or by hand for local testing).
 #
 # ── Required ────────────────────────────────────────────────────────────────
-#   ARTIFACT_REPO_TYPE   artifactory | nexus | nexus2 | s3 | minio | azure-blob | generic-http
+#   ARTIFACT_REPO_TYPE   artifactory | nexus | nexus2 | s3 | minio | azure-blob
+#                        | gcs | gitlab-packages | github-packages | generic-http
 #   ARTIFACT_REPO_URL    base URL of the repository service:
-#                          Artifactory  https://repo.example.com/artifactory/sloc-reports
-#                          Nexus 3      https://nexus.example.com
-#                          Nexus 2      https://nexus.example.com/nexus
-#                          S3           s3://my-bucket
-#                          MinIO        s3://my-bucket  (set endpoint via ARTIFACT_REPO_EXTRA)
-#                          Azure Blob   https://account.blob.core.windows.net
-#                          Generic HTTP https://artifacts.example.com/sloc
+#                          Artifactory     https://repo.example.com/artifactory/sloc-reports
+#                          Nexus 3         https://nexus.example.com
+#                          Nexus 2         https://nexus.example.com/nexus
+#                          S3              s3://my-bucket
+#                          MinIO           s3://my-bucket  (set endpoint via ARTIFACT_REPO_EXTRA)
+#                          Azure Blob      https://account.blob.core.windows.net
+#                          GCS             gs://my-bucket
+#                          GitLab Packages https://gitlab.example.com/api/v4
+#                          GitHub Packages https://maven.pkg.github.com/OWNER/REPO
+#                          Generic HTTP    https://artifacts.example.com/sloc
 #   ARTIFACT_REPO_PATH   path prefix / key prefix for uploaded artifacts
 #                          e.g. oxide-sloc/my-job/42
 #   ARTIFACT_DIR         local directory containing the files to push
@@ -24,11 +28,15 @@
 #   ARTIFACT_REPO_USER   username or access-key ID (omit for token-only auth)
 #   ARTIFACT_REPO_PASS   password, API token, account key, or secret key
 #   ARTIFACT_REPO_EXTRA  provider-specific extra setting:
-#                          nexus / nexus2  Nexus repository name          (default: sloc-raw-hosted)
-#                          azure-blob      storage container name         (default: sloc-reports)
-#                          minio           MinIO endpoint URL             (e.g. https://minio.internal:9000)
-#                          s3              extra flags for aws s3 cp      (e.g. --sse aws:kms)
-#                          others          unused
+#                          nexus / nexus2    Nexus repository name        (default: sloc-raw-hosted)
+#                          azure-blob        storage container name       (default: sloc-reports)
+#                          minio             MinIO endpoint URL           (e.g. https://minio.internal:9000)
+#                          s3                extra flags for aws s3 cp    (e.g. --sse aws:kms)
+#                          gcs               extra flags for gcloud cp    (e.g. --cache-control=no-cache)
+#                          gitlab-packages   <project-id>/<package>/<version>
+#                                            (e.g. 42/oxide-sloc/1.6.30; default package/version: oxide-sloc/latest)
+#                          github-packages   extra path segments under the Maven repo (default: none)
+#                          others            unused
 #   ARTIFACT_GENERATE_MANIFEST  true | false (default: false)
 #                          Generates checksums.sha256 in ARTIFACT_DIR listing the
 #                          SHA-256 hash of every pushed file, then uploads it too.
@@ -69,7 +77,7 @@ if [ -z "${REPO_TYPE}" ]; then
     exit 2
 fi
 
-VALID_TYPES="artifactory nexus nexus2 s3 minio azure-blob generic-http"
+VALID_TYPES="artifactory nexus nexus2 s3 minio azure-blob gcs gitlab-packages github-packages generic-http"
 valid=0
 for t in ${VALID_TYPES}; do [ "${REPO_TYPE}" = "${t}" ] && valid=1 && break; done
 if [ "${valid}" -eq 0 ]; then
@@ -429,6 +437,168 @@ push_azure_blob() {
     done
 }
 
+# ── Provider: Google Cloud Storage ───────────────────────────────────────────
+#
+# Uses the gcloud CLI: gcloud storage cp <file> <gs://bucket/path/file>
+# Authentication is taken from the ambient gcloud credential chain — a service
+# account activated with `gcloud auth activate-service-account`, the
+# GOOGLE_APPLICATION_CREDENTIALS key file, or a workload-identity/metadata
+# credential on a GCP runner. No key material is read from ARTIFACT_REPO_*.
+#
+# ARTIFACT_REPO_URL  : gs://bucket-name
+# ARTIFACT_REPO_EXTRA: extra flags for gcloud storage cp (e.g. --cache-control=no-cache)
+#
+# Requires: gcloud CLI  (https://cloud.google.com/sdk/docs/install)
+#           Older SDKs without `gcloud storage` fall back to `gsutil cp`.
+
+push_gcs() {
+    local extra_flags="${REPO_EXTRA:-}"
+    echo "=== Google Cloud Storage → ${REPO_URL}/${REPO_PATH}/ ==="
+
+    local cp_cmd=""
+    if command -v gcloud >/dev/null 2>&1; then
+        cp_cmd="gcloud storage cp"
+    elif command -v gsutil >/dev/null 2>&1; then
+        cp_cmd="gsutil cp"
+    else
+        echo "ERROR: neither 'gcloud' nor 'gsutil' found on PATH. Install the Google Cloud SDK." >&2
+        PUSH_FAILURES=$((PUSH_FAILURES + 1))
+        return
+    fi
+
+    for f in ${ARTIFACT_FILES}; do
+        local file="${ARTIFACT_DIR}/${f}"
+        if [ ! -f "${file}" ]; then
+            echo "  SKIP  ${f} (file not found)"
+            continue
+        fi
+        local target="${REPO_URL}/${REPO_PATH}/${f}"
+        echo "  cp    ${f}  →  ${target}"
+
+        if [ "${DRY_RUN}" = "true" ]; then echo "  [DRY-RUN] skipping upload"; continue; fi
+
+        # shellcheck disable=SC2086
+        if ${cp_cmd} "${file}" "${target}" ${extra_flags}; then
+            echo "  OK"
+        else
+            echo "  FAIL  ${f}" >&2
+            PUSH_FAILURES=$((PUSH_FAILURES + 1))
+        fi
+    done
+}
+
+# ── Provider: GitLab Package Registry (generic packages) ─────────────────────
+#
+# Uses the generic Package Registry API (one PUT per file):
+#   PUT <api-v4>/projects/<id>/packages/generic/<package>/<version>/<file>
+# Auth: a personal/project access token (ARTIFACT_REPO_PASS) is sent as the
+# PRIVATE-TOKEN header; inside a GitLab CI job the CI_JOB_TOKEN works too and is
+# picked up automatically from the environment when ARTIFACT_REPO_PASS is unset.
+#
+# ARTIFACT_REPO_URL  : GitLab API v4 base, e.g. https://gitlab.example.com/api/v4
+# ARTIFACT_REPO_EXTRA: <project-id>[/<package>[/<version>]]
+#                      e.g. 42/oxide-sloc/1.6.30  (default package/version: oxide-sloc/latest)
+#
+# Docs: https://docs.gitlab.com/ee/user/packages/generic_packages/
+
+push_gitlab_packages() {
+    local project="" package="oxide-sloc" version="latest"
+    local IFS='/'
+    # shellcheck disable=SC2086
+    set -- ${REPO_EXTRA:-}
+    unset IFS
+    project="${1:-}"
+    [ -n "${2:-}" ] && package="${2}"
+    [ -n "${3:-}" ] && version="${3}"
+
+    echo "=== GitLab Packages (project: ${project:-<unset>}, ${package}/${version}) → ${REPO_URL} ==="
+
+    if [ -z "${project}" ]; then
+        echo "ERROR: ARTIFACT_REPO_EXTRA must start with the numeric project id" >&2
+        echo "       (e.g. 42/oxide-sloc/1.6.30)." >&2
+        PUSH_FAILURES=$((PUSH_FAILURES + 1))
+        return
+    fi
+
+    local curl_auth=()
+    if [ -n "${REPO_PASS}" ]; then
+        curl_auth=(-H "PRIVATE-TOKEN: ${REPO_PASS}")
+    elif [ -n "${CI_JOB_TOKEN:-}" ]; then
+        curl_auth=(-H "JOB-TOKEN: ${CI_JOB_TOKEN}")
+    fi
+
+    for f in ${ARTIFACT_FILES}; do
+        local file="${ARTIFACT_DIR}/${f}"
+        if [ ! -f "${file}" ]; then
+            echo "  SKIP  ${f} (file not found)"
+            continue
+        fi
+        local target="${REPO_URL}/projects/${project}/packages/generic/${package}/${version}/${f}"
+        echo "  PUT   ${f}  →  ${target}"
+
+        if [ "${DRY_RUN}" = "true" ]; then echo "  [DRY-RUN] skipping upload"; continue; fi
+
+        if curl -sf "${curl_auth[@]}" -X PUT "${target}" -T "${file}" \
+                --retry 3 --retry-delay 2 --retry-max-time 60; then
+            echo "  OK"
+        else
+            echo "  FAIL  ${f}" >&2
+            PUSH_FAILURES=$((PUSH_FAILURES + 1))
+        fi
+    done
+}
+
+# ── Provider: GitHub Packages (Maven repository) ─────────────────────────────
+#
+# GitHub Packages has no raw/generic file store, so reports are published to the
+# repo's Maven registry — the one GitHub Packages surface that accepts arbitrary
+# file uploads over a plain HTTP PUT:
+#   PUT https://maven.pkg.github.com/OWNER/REPO/<path>/<file>
+# Auth: HTTP Basic with the GitHub username (ARTIFACT_REPO_USER) and a PAT or the
+# Actions GITHUB_TOKEN (ARTIFACT_REPO_PASS) carrying `write:packages` scope.
+#
+# ARTIFACT_REPO_URL  : https://maven.pkg.github.com/OWNER/REPO
+# ARTIFACT_REPO_EXTRA: optional extra path segments under the repo (default: none)
+#
+# Docs: https://docs.github.com/packages/working-with-a-github-packages-registry/working-with-the-apache-maven-registry
+
+push_github_packages() {
+    local subpath="${REPO_EXTRA:-}"
+    subpath="${subpath#/}"
+    subpath="${subpath%/}"
+    echo "=== GitHub Packages (Maven) → ${REPO_URL}/${subpath:+${subpath}/}${REPO_PATH}/ ==="
+
+    if [ -z "${REPO_PASS}" ]; then
+        echo "ERROR: ARTIFACT_REPO_PASS (a PAT / GITHUB_TOKEN with write:packages) is required." >&2
+        PUSH_FAILURES=$((PUSH_FAILURES + 1))
+        return
+    fi
+
+    # GitHub requires a username alongside the token for Basic auth; default to a
+    # conventional placeholder when the caller only supplies a token.
+    local user="${REPO_USER:-x-access-token}"
+
+    for f in ${ARTIFACT_FILES}; do
+        local file="${ARTIFACT_DIR}/${f}"
+        if [ ! -f "${file}" ]; then
+            echo "  SKIP  ${f} (file not found)"
+            continue
+        fi
+        local target="${REPO_URL}/${subpath:+${subpath}/}${REPO_PATH}/${f}"
+        echo "  PUT   ${f}  →  ${target}"
+
+        if [ "${DRY_RUN}" = "true" ]; then echo "  [DRY-RUN] skipping upload"; continue; fi
+
+        if curl -sf -u "${user}:${REPO_PASS}" -X PUT "${target}" -T "${file}" \
+                --retry 3 --retry-delay 2 --retry-max-time 60; then
+            echo "  OK"
+        else
+            echo "  FAIL  ${f}" >&2
+            PUSH_FAILURES=$((PUSH_FAILURES + 1))
+        fi
+    done
+}
+
 # ── Provider: Generic HTTP PUT ───────────────────────────────────────────────
 #
 # Sends each artifact via HTTP PUT to <ARTIFACT_REPO_URL>/<ARTIFACT_REPO_PATH>/<filename>.
@@ -482,13 +652,16 @@ echo "  files : ${ARTIFACT_FILES}"
 echo ""
 
 case "${REPO_TYPE}" in
-    artifactory)  push_artifactory ;;
-    nexus)        push_nexus ;;
-    nexus2)       push_nexus2 ;;
-    s3)           push_s3 ;;
-    minio)        push_minio ;;
-    azure-blob)   push_azure_blob ;;
-    generic-http) push_generic_http ;;
+    artifactory)      push_artifactory ;;
+    nexus)            push_nexus ;;
+    nexus2)           push_nexus2 ;;
+    s3)               push_s3 ;;
+    minio)            push_minio ;;
+    azure-blob)       push_azure_blob ;;
+    gcs)              push_gcs ;;
+    gitlab-packages)  push_gitlab_packages ;;
+    github-packages)  push_github_packages ;;
+    generic-http)     push_generic_http ;;
 esac
 
 echo ""

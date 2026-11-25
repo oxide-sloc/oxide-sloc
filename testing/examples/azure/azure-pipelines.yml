@@ -5,10 +5,17 @@
 # in Pipelines → Library → Variable groups or in the pipeline settings.
 #
 # Artifact repository push (optional):
-#   Set ARTIFACT_REPO_TYPE, ARTIFACT_REPO_URL, ARTIFACT_REPO_PATH as variables.
-#   For authenticated repos set ARTIFACT_REPO_USER / ARTIFACT_REPO_PASS as secrets.
-#   Supported backends: artifactory | nexus | nexus2 | s3 | minio | azure-blob | generic-http
+#   Set ARTIFACT_REPO_TYPE, ARTIFACT_REPO_URL, ARTIFACT_REPO_PATH, ARTIFACT_REPO_EXTRA
+#   as variables. For authenticated repos set ARTIFACT_REPO_USER / ARTIFACT_REPO_PASS
+#   as secrets.
+#   Supported backends: artifactory | nexus | nexus2 | s3 | minio | azure-blob |
+#                       gcs | gitlab-packages | github-packages | generic-http
 #   See ci/artifact-push.sh and docs/ci-integrations.md for full details.
+#
+# PR comments (optional): on a pull-request build this posts a SLOC summary to the
+#   Azure DevOps PR via `oxide-sloc pr-comment --provider azure`, authenticated with
+#   the build's own System.AccessToken. Grant the build service "Contribute to pull
+#   requests" on the repo, and enable "Allow scripts to access the OAuth token".
 
 trigger:
   branches:
@@ -44,7 +51,9 @@ steps:
       mkdir -p $(SLOC_OUT)
       oxide-sloc analyze . \
         --json-out $(SLOC_OUT)/result.json \
-        --html-out $(SLOC_OUT)/report.html
+        --html-out $(SLOC_OUT)/report.html \
+        --csv-out $(SLOC_OUT)/report.csv \
+        --xlsx-out $(SLOC_OUT)/report.xlsx
     displayName: Analyze repository
 
   - script: |
@@ -63,10 +72,25 @@ steps:
       ARTIFACT_REPO_TYPE: $(ARTIFACT_REPO_TYPE)
       ARTIFACT_REPO_URL: $(ARTIFACT_REPO_URL)
       ARTIFACT_REPO_PATH: $(ARTIFACT_REPO_PATH)
+      ARTIFACT_REPO_EXTRA: $(ARTIFACT_REPO_EXTRA)
       ARTIFACT_REPO_USER: $(ARTIFACT_REPO_USER)
       ARTIFACT_REPO_PASS: $(ARTIFACT_REPO_PASS)
       ARTIFACT_DIR: $(SLOC_OUT)
-      ARTIFACT_FILES: result.json report.html
+      ARTIFACT_FILES: result.json report.html report.csv report.xlsx
+      ARTIFACT_GENERATE_MANIFEST: 'true'
+
+  - script: |
+      oxide-sloc pr-comment $(SLOC_OUT)/result.json \
+        --provider azure \
+        --api-url "$(System.TeamFoundationCollectionUri)" \
+        --repo "$(System.TeamProject)/$(Build.Repository.Name)" \
+        --pr-number "$(System.PullRequest.PullRequestId)" \
+        --token "$(System.AccessToken)"
+    displayName: Comment on the pull request
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+    continueOnError: true
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 
   - task: PublishBuildArtifacts@1
     displayName: Publish SLOC results

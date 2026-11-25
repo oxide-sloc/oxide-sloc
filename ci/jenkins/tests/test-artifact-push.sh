@@ -7,8 +7,9 @@
 #
 # Mirrors test-notify-bitbucket.sh. Exit code 0 = all assertions passed.
 #
-# Only the curl-based providers are exercised (artifactory, nexus, nexus2,
-# generic-http): s3/minio/azure need the aws/az CLIs and are out of scope here.
+# The curl-based providers are exercised directly (artifactory, nexus, nexus2,
+# gitlab-packages, github-packages, generic-http); gcs is exercised via a stubbed
+# gcloud. s3/minio/azure-blob need the aws/az CLIs and are out of scope here.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,6 +39,17 @@ cat > "${STUB_DIR}/curl" <<'STUB'
 exit "${CURL_EXIT:-0}"
 STUB
 chmod +x "${STUB_DIR}/curl"
+
+# A matching `gcloud` stub for the CLI-based GCS provider: records every argument
+# to $CURL_LOG (shared log) and exits with $CURL_EXIT so the same assertions and
+# failure-injection apply. `gcloud storage cp …` logs "storage" + "cp" + args.
+cat > "${STUB_DIR}/gcloud" <<'STUB'
+#!/usr/bin/env bash
+: "${CURL_LOG:?}"
+{ echo "--- gcloud call ---"; for a in "$@"; do echo "$a"; done; } >> "${CURL_LOG}"
+exit "${CURL_EXIT:-0}"
+STUB
+chmod +x "${STUB_DIR}/gcloud"
 export PATH="${STUB_DIR}:${PATH}"
 
 # ── sample artifacts ─────────────────────────────────────────────────────────
@@ -194,7 +206,81 @@ grep -qF 'result.json' "${ADIR}/checksums.sha256" 2>/dev/null \
 grep -qxF 'raw.asset1.filename=checksums.sha256' "${WORK}/curl.log" \
     && pass "manifest: uploaded alongside artifacts" || fail "manifest: not uploaded"
 
-# ── 10. shellcheck clean (skipped if shellcheck absent) ──────────────────────
+# ── 10. GitLab Packages — generic Package Registry PUT + PRIVATE-TOKEN ───────
+CURL_EXIT=0 run_push \
+    ARTIFACT_REPO_TYPE=gitlab-packages \
+    ARTIFACT_REPO_URL=https://gitlab.example.com/api/v4 \
+    ARTIFACT_REPO_EXTRA=42/oxide-sloc/1.6.30 \
+    ARTIFACT_REPO_PASS=glpat-xyz \
+    ARTIFACT_DIR="${ADIR}" \
+    ARTIFACT_FILES="result.json" >/dev/null 2>&1
+LOG="$(cat "${WORK}/curl.log")"
+echo "${LOG}" | grep -qF 'https://gitlab.example.com/api/v4/projects/42/packages/generic/oxide-sloc/1.6.30/result.json' \
+    && pass "gitlab-packages: PUT to generic Package Registry API" \
+    || fail "gitlab-packages: wrong/absent generic package endpoint"
+echo "${LOG}" | grep -qxF 'PUT' && pass "gitlab-packages: uses HTTP PUT" || fail "gitlab-packages: not a PUT"
+grep -qxF 'PRIVATE-TOKEN: glpat-xyz' "${WORK}/curl.log" \
+    && pass "gitlab-packages: token -> PRIVATE-TOKEN header" || fail "gitlab-packages: PRIVATE-TOKEN header missing"
+# A missing project id (ARTIFACT_REPO_EXTRA) is a push failure (exit 1), not a crash.
+CURL_EXIT=0 run_push \
+    ARTIFACT_REPO_TYPE=gitlab-packages \
+    ARTIFACT_REPO_URL=https://gitlab.example.com/api/v4 \
+    ARTIFACT_REPO_PASS=glpat-xyz \
+    ARTIFACT_DIR="${ADIR}" \
+    ARTIFACT_FILES="result.json" >/dev/null 2>&1; RC=$?
+[ "${RC}" -eq 1 ] && pass "gitlab-packages: missing project id -> exit 1" \
+    || fail "gitlab-packages: expected exit 1 without project id, got ${RC}"
+
+# ── 11. GitHub Packages — Maven repo PUT + Basic auth (default user) ──────────
+CURL_EXIT=0 run_push \
+    ARTIFACT_REPO_TYPE=github-packages \
+    ARTIFACT_REPO_URL=https://maven.pkg.github.com/oxide-sloc/oxide-sloc \
+    ARTIFACT_REPO_PATH=job/42 \
+    ARTIFACT_REPO_PASS=ghp_token \
+    ARTIFACT_DIR="${ADIR}" \
+    ARTIFACT_FILES="result.json" >/dev/null 2>&1
+LOG="$(cat "${WORK}/curl.log")"
+echo "${LOG}" | grep -qF 'https://maven.pkg.github.com/oxide-sloc/oxide-sloc/job/42/result.json' \
+    && pass "github-packages: PUT to Maven repo <url>/<path>/<file>" \
+    || fail "github-packages: wrong/absent maven endpoint"
+echo "${LOG}" | grep -qxF 'PUT' && pass "github-packages: uses HTTP PUT" || fail "github-packages: not a PUT"
+grep -qxF 'x-access-token:ghp_token' "${WORK}/curl.log" \
+    && pass "github-packages: token-only -> Basic auth with default user" \
+    || fail "github-packages: expected -u x-access-token:ghp_token"
+# No token at all is a push failure (exit 1).
+CURL_EXIT=0 run_push \
+    ARTIFACT_REPO_TYPE=github-packages \
+    ARTIFACT_REPO_URL=https://maven.pkg.github.com/o/r \
+    ARTIFACT_DIR="${ADIR}" \
+    ARTIFACT_FILES="result.json" >/dev/null 2>&1; RC=$?
+[ "${RC}" -eq 1 ] && pass "github-packages: missing token -> exit 1" \
+    || fail "github-packages: expected exit 1 without token, got ${RC}"
+
+# ── 12. GCS — gcloud storage cp to gs://<bucket>/<path>/<file> ────────────────
+CURL_EXIT=0 run_push \
+    ARTIFACT_REPO_TYPE=gcs \
+    ARTIFACT_REPO_URL=gs://my-bucket \
+    ARTIFACT_REPO_PATH=oxide-sloc/42 \
+    ARTIFACT_DIR="${ADIR}" \
+    ARTIFACT_FILES="result.json" >/dev/null 2>&1; RC=$?
+LOG="$(cat "${WORK}/curl.log")"
+[ "${RC}" -eq 0 ] && pass "gcs: exit 0 on success" || fail "gcs: expected exit 0, got ${RC}"
+echo "${LOG}" | grep -qF 'gs://my-bucket/oxide-sloc/42/result.json' \
+    && pass "gcs: cp target is gs://<bucket>/<path>/<file>" || fail "gcs: wrong/absent gs:// target"
+grep -qxF 'storage' "${WORK}/curl.log" && grep -qxF 'cp' "${WORK}/curl.log" \
+    && pass "gcs: invokes 'gcloud storage cp'" || fail "gcs: not a gcloud storage cp"
+# Dry-run makes zero gcloud calls.
+CURL_EXIT=0 run_push \
+    ARTIFACT_REPO_TYPE=gcs \
+    ARTIFACT_REPO_URL=gs://my-bucket \
+    ARTIFACT_REPO_PATH=p \
+    ARTIFACT_DRY_RUN=true \
+    ARTIFACT_DIR="${ADIR}" \
+    ARTIFACT_FILES="result.json" >/dev/null 2>&1
+if [ -s "${WORK}/curl.log" ]; then fail "gcs dry-run: gcloud was called (should be zero)"; else
+    pass "gcs dry-run: zero gcloud calls"; fi
+
+# ── 13. shellcheck clean (skipped if shellcheck absent) ──────────────────────
 if command -v shellcheck >/dev/null 2>&1; then
     if shellcheck -x "${PUSH}" >/dev/null 2>&1; then
         pass "shellcheck clean"

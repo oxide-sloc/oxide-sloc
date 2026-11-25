@@ -10,7 +10,8 @@ name: Integrations
 #
 # Configure under Settings → Secrets and variables → Actions:
 #   Variables (non-secret):
-#     ARTIFACT_REPO_TYPE   artifactory | nexus | nexus2 | s3 | minio | azure-blob | generic-http
+#     ARTIFACT_REPO_TYPE   artifactory | nexus | nexus2 | s3 | minio | azure-blob
+#                          | gcs | gitlab-packages | github-packages | generic-http
 #     ARTIFACT_REPO_URL    base URL of the artifact repository
 #     ARTIFACT_REPO_EXTRA  provider-specific extra (Nexus repo name, Azure container, …)
 #     CONFLUENCE_SPACE     Confluence space key (e.g. ENG)

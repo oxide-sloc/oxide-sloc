@@ -82,6 +82,8 @@ jenkins-tests:
 	python3 ci/jenkins/tests/test-windows-agent-dispatch.py
 	python3 ci/jenkins/tests/test-bundle-artifacts.py
 	python3 ci/jenkins/discovery/tests/test_discover_bitbucket.py
+	python3 ci/jenkins/discovery/tests/test_discover_github.py
+	python3 ci/jenkins/discovery/tests/test_discover_gitlab.py
 	python3 ci/jenkins/discovery/tests/test_job_template_guards.py
 	python3 ci/jenkins/discovery/tests/test_dispatch_event.py
 	bash   ci/jenkins/tests/test-notify-bitbucket.sh

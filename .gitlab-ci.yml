@@ -247,10 +247,10 @@ variables:
     value: ""
     description: "From: address for the email report."
 
-  # — Artifact repository push (all 7 backends via ci/artifact-push.sh) —
+  # — Artifact repository push (all backends via ci/artifact-push.sh) —
   ARTIFACT_REPO_TYPE:
     value: "none"
-    options: ["none", "artifactory", "nexus", "nexus2", "s3", "minio", "azure-blob", "generic-http"]
+    options: ["none", "artifactory", "nexus", "nexus2", "s3", "minio", "azure-blob", "gcs", "gitlab-packages", "github-packages", "generic-http"]
     description: "External artifact repository backend."
   ARTIFACT_REPO_URL:
     value: ""
@@ -713,7 +713,8 @@ notify:jira:
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Supersedes the old nexus:push job: drives ci/artifact-push.sh across
-# artifactory / nexus / nexus2 / s3 / minio / azure-blob / generic-http.
+# artifactory / nexus / nexus2 / s3 / minio / azure-blob / gcs /
+# gitlab-packages / github-packages / generic-http.
 # (NEXUS_REPO_URL etc. still work — see the compatibility shim below.)
 artifact-push:
   stage: publish

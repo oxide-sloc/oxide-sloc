@@ -285,6 +285,8 @@ use super::{AppState, CspNonce};
         <div class="url-row"><span class="url-label">GitHub</span><span id="urlGH" class="url-box">{{ server_url }}/webhooks/github</span><button class="copy-btn" type="button" data-copy-target="urlGH">Copy</button></div>
         <div class="url-row"><span class="url-label">GitLab</span><span id="urlGL" class="url-box">{{ server_url }}/webhooks/gitlab</span><button class="copy-btn" type="button" data-copy-target="urlGL">Copy</button></div>
         <div class="url-row"><span class="url-label">Bitbucket</span><span id="urlBB" class="url-box">{{ server_url }}/webhooks/bitbucket</span><button class="copy-btn" type="button" data-copy-target="urlBB">Copy</button></div>
+        <div class="url-row"><span class="url-label">Gitea</span><span id="urlGT" class="url-box">{{ server_url }}/webhooks/gitea</span><button class="copy-btn" type="button" data-copy-target="urlGT">Copy</button></div>
+        <div class="url-row"><span class="url-label">Azure DevOps</span><span id="urlAZ" class="url-box">{{ server_url }}/webhooks/azure</span><button class="copy-btn" type="button" data-copy-target="urlAZ">Copy</button></div>
       </div>
     </div>
 

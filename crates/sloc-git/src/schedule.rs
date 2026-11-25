@@ -27,6 +27,10 @@ pub enum ScanScheduleProvider {
     GitLab,
     #[serde(rename = "bitbucket")]
     Bitbucket,
+    #[serde(rename = "azure")]
+    AzureDevOps,
+    #[serde(rename = "gitea")]
+    Gitea,
     #[serde(rename = "any")]
     Any,
 }
@@ -38,6 +42,8 @@ impl ScanScheduleProvider {
             Self::GitHub => "GitHub",
             Self::GitLab => "GitLab",
             Self::Bitbucket => "Bitbucket",
+            Self::AzureDevOps => "Azure DevOps",
+            Self::Gitea => "Gitea",
             Self::Any => "Any / Poll",
         }
     }

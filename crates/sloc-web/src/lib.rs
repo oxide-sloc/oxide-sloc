@@ -2569,6 +2569,14 @@ fn build_router(state: AppState) -> Router {
             "/webhooks/bitbucket",
             post(git_webhook::handle_bitbucket_webhook).layer(DefaultBodyLimit::max(512 * 1024)),
         )
+        .route(
+            "/webhooks/gitea",
+            post(git_webhook::handle_gitea_webhook).layer(DefaultBodyLimit::max(512 * 1024)),
+        )
+        .route(
+            "/webhooks/azure",
+            post(git_webhook::handle_azure_webhook).layer(DefaultBodyLimit::max(512 * 1024)),
+        )
         // Provider-agnostic build-completion trigger: any upstream CI build (even
         // a legacy pipeline) can post a small signed JSON body to launch a scan.
         .route(

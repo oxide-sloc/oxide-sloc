@@ -27,7 +27,8 @@
 //
 // Optional:
 //   SLOC_API_KEY          env var or `apiKey` arg — bearer token for oxide-sloc server auth
-//   artifactRepoType      repo backend: artifactory | nexus | nexus2 | s3 | minio | azure-blob | generic-http
+//   artifactRepoType      repo backend: artifactory | nexus | nexus2 | s3 | minio | azure-blob
+//                                        | gcs | gitlab-packages | github-packages | generic-http
 //   artifactRepoUrl       base URL of the artifact repository
 //   artifactRepoPath      path prefix (default: oxide-sloc/<job>/<build>)
 //   artifactRepoExtra     provider-specific extra config (see ci/artifact-push.sh)
@@ -90,7 +91,8 @@ def call(Map args = [:]) {
 
     // ── Push to artifact repository ───────────────────────────────────────────
     if (pushArtifacts) {
-        def validTypes = ['artifactory', 'nexus', 'nexus2', 's3', 'minio', 'azure-blob', 'generic-http']
+        def validTypes = ['artifactory', 'nexus', 'nexus2', 's3', 'minio', 'azure-blob',
+                          'gcs', 'gitlab-packages', 'github-packages', 'generic-http']
         if (!validTypes.contains(repoType)) {
             error("slocAnalyze: unknown artifactRepoType '${repoType}'. Valid: ${validTypes.join(', ')}")
         }

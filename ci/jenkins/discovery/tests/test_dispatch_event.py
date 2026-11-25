@@ -130,6 +130,73 @@ def test_cloud_provider() -> None:
     check("cloud commit sha captured", results[0].fields["commit_sha"] == "0123456789abcdef0123456789abcdef01234567")
 
 
+def test_github_provider() -> None:
+    print("GitHub push normalization + inventory resolution:")
+    payload = _fixture("github-push-main.json")
+    results = dsp.normalize(payload)
+    check("github provider detected + accepted", results[0].accepted)
+    check("github repo_id is the numeric repository.id", results[0].fields["repo_id"] == "101")
+    check("github branch stripped from ref", results[0].fields["branch"] == "main")
+    check(
+        "github commit sha captured from after",
+        results[0].fields["commit_sha"] == "a" * 40,
+    )
+    # A GitHub push resolves against an inventory keyed by the same numeric id.
+    gh_entries = inv.normalize_inventory(
+        [
+            inv.make_entry(
+                provider="github",
+                host="github.com",
+                project="my-org",
+                repo_id="101",
+                repo_slug="widget",
+                clone_url="https://github.com/my-org/widget.git",
+                branch="main",
+                credential_id="gh-org-readonly",
+            )
+        ]
+    )
+    trusted = dsp.resolve(results[0], gh_entries)
+    check("github push resolves to inventory job", trusted is not None)
+    check("github SHA-pinned", trusted["central_params"]["SCAN_REF"] == "a" * 40)
+    # A delete (zero after-hash) is never dispatched.
+    deleted = dict(payload, after="0" * 40, deleted=True)
+    check("github branch delete ignored", not dsp.normalize(deleted)[0].accepted)
+
+
+def test_gitlab_provider() -> None:
+    print("GitLab push normalization + inventory resolution:")
+    payload = _fixture("gitlab-push-main.json")
+    results = dsp.normalize(payload)
+    check("gitlab provider detected + accepted", results[0].accepted)
+    check("gitlab repo_id is the numeric project.id", results[0].fields["repo_id"] == "201")
+    check("gitlab branch stripped from ref", results[0].fields["branch"] == "main")
+    check(
+        "gitlab commit sha captured from checkout_sha",
+        results[0].fields["commit_sha"] == "b" * 40,
+    )
+    gl_entries = inv.normalize_inventory(
+        [
+            inv.make_entry(
+                provider="gitlab",
+                host="gitlab.com",
+                project="mygroup",
+                repo_id="201",
+                repo_slug="widget",
+                clone_url="https://gitlab.com/mygroup/widget.git",
+                branch="main",
+                credential_id="gl-group-readonly",
+            )
+        ]
+    )
+    trusted = dsp.resolve(results[0], gl_entries)
+    check("gitlab push resolves to inventory job", trusted is not None)
+    check("gitlab SHA-pinned", trusted["central_params"]["SCAN_REF"] == "b" * 40)
+    # A tag_push is ignored.
+    tag = dict(payload, object_kind="tag_push", ref="refs/tags/v1.0")
+    check("gitlab tag_push ignored", not dsp.normalize(tag)[0].accepted)
+
+
 def test_signature_verification() -> None:
     print("webhook verification:")
     body = b'{"x":1}'
@@ -159,6 +226,8 @@ def main() -> int:
     test_ignored_classes()
     test_security_boundary()
     test_cloud_provider()
+    test_github_provider()
+    test_gitlab_provider()
     test_signature_verification()
     test_cooldown()
     print(f"\nPASS - {PASSED} checks")

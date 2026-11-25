@@ -1,0 +1,15 @@
+{
+  "ref": "refs/heads/main",
+  "before": "0000000000000000000000000000000000000000",
+  "after": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "deleted": false,
+  "repository": {
+    "id": 101,
+    "name": "widget",
+    "full_name": "my-org/widget",
+    "html_url": "https://github.com/my-org/widget",
+    "clone_url": "https://github.com/my-org/widget.git",
+    "owner": { "login": "my-org" }
+  },
+  "pusher": { "name": "nima" }
+}
