@@ -1,11 +1,9 @@
 # osv-scanner / OpenSSF Scorecard vulnerability suppressions.
 #
-# The advisory below enters the tree solely via `printpdf 0.9.1` (the latest
-# published release), which pins `lopdf = "0.39.0"`. There is no newer printpdf and
-# no compatible lopdf upgrade, so it is not fixable upstream today. It is already
-# ignored in cargo-audit (ci.yml) and cargo-deny (config/deny.toml) with the same
-# rationale; this file mirrors that for OSV-based scanners.
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0187"
-reason = "lopdf is used write-only via printpdf for PDF generation; the deeply-nested-PDF parser DoS is unreachable. printpdf 0.9.1 pins lopdf 0.39, so the >=0.42 fix is not available upstream."
+# No active suppressions. RUSTSEC-2026-0187 (lopdf deeply-nested-PDF parser DoS)
+# was previously ignored here because printpdf pinned an old lopdf; printpdf 0.13
+# now pulls lopdf >= 0.47, which carries the >=0.42 fix, so the advisory no longer
+# appears in the dependency tree and the suppression has been removed.
+#
+# Add a new [[IgnoredVulns]] block here only for a genuinely unreachable advisory,
+# mirroring the rationale kept in config/deny.toml for cargo-deny.

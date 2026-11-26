@@ -1,10 +1,10 @@
 //! Compatibility shim presenting the printpdf 0.7 high-level "layer" drawing API on
-//! top of printpdf's op-based model (0.9 through 0.12).
+//! top of printpdf's op-based model (0.9 through 0.13).
 //!
 //! The pure-Rust PDF renderer in [`crate`] was written against printpdf 0.7's imperative
 //! `PdfLayerReference` API (`use_text`, `set_fill_color`, `add_polygon`, `get_layer`, …).
 //! printpdf 0.9 replaced that model with a declarative `Vec<Op>` per page, and 0.10 through
-//! 0.12 kept that op surface source-compatible. This module re-implements exactly the subset
+//! 0.13 kept that op surface source-compatible. This module re-implements exactly the subset
 //! of the old surface the renderer uses, accumulating the equivalent `Op`s, so the ~50
 //! rendering helpers compile and produce identical output without being rewritten one-by-one.
 //!
