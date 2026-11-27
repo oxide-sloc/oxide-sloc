@@ -8,6 +8,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [1.6.32] — 2026-11-27
+
 ### Added
 
 - **Jenkins Bitbucket project discovery (opt-in).** New `ci/jenkins/discovery/`
@@ -18,6 +22,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   central `oxide-sloc` job. Stdlib-only, air-gap capable (offline inventory),
   and fully fixture-tested via `make jenkins-tests`. The central scan job's
   default behavior is unchanged. See [`docs/jenkins-discovery.md`](jenkins-discovery.md). (#196)
+- **Gitea + Azure DevOps across the schedule UI and API docs.** Both SCM
+  providers are now selectable throughout the scan-schedule web UI and are
+  documented in the REST API reference, bringing them to parity with the other
+  supported providers.
+
+### Changed
+
+- **Instant-table CLI default.** `analyze` now renders the per-language table
+  immediately by default; the README gained a top-of-funnel adoption section.
+- **Dependency & runtime refresh.** Bundled Rust toolchain 1.100, bundled Python
+  3.14.10 (security), `printpdf` 0.13, `lettre` 0.11.24, `toml` 1.2, and `url`
+  2.5.9 (RUSTSEC-2026-0592); the vendor archive was regenerated. No analyzer, CLI,
+  or web behaviour change — a plain `git clone` still builds fully offline.
+
+### Documentation
+
+- Documented the new SCM/CI/artifact providers and CircleCI parity, plus the
+  Jenkins discovery operator guide and subsystem README.
 
 ---
 
