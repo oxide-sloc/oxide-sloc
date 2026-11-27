@@ -60,10 +60,9 @@ jobs:
           key: integrations
 
       - name: Install system dependencies (rfd / native file dialog)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libwayland-dev libgtk-3-dev libxdo-dev
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libwayland-dev libgtk-3-dev libxdo-dev
 
       - name: Build release binary
         run: bash ci/release.sh

@@ -21,12 +21,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install system dependencies (rfd / native file dialog)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libwayland-dev \
-            libgtk-3-dev \
-            libxdo-dev
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libwayland-dev libgtk-3-dev libxdo-dev
 
       - name: Build release binary
         run: cargo build --release -p oxide-sloc

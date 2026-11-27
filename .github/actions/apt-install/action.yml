@@ -1,0 +1,31 @@
+name: Hardened apt install
+description: >
+  Refresh apt indexes and install packages on GitHub-hosted ubuntu runners,
+  resilient to the flaky bundled Microsoft apt source.
+
+# Why this exists: the ubuntu-latest image (rolling to 26.04 "resolute") ships a
+# Microsoft apt source (packages.microsoft.com) that intermittently returns
+# 403 Forbidden / "no longer signed". That makes `apt-get update` exit non-zero,
+# which aborts any step running under `set -e` BEFORE the real package install.
+# None of our jobs install Microsoft-hosted packages, so we drop that source and
+# tolerate a partial refresh. Centralised here so every workflow shares one fix.
+
+inputs:
+  packages:
+    description: Space-separated list of packages to install (optional).
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -eu
+        # Drop the flaky Microsoft source (deb822 *.sources or classic *.list).
+        sudo find /etc/apt/sources.list.d -iname '*microsoft*' -delete 2>/dev/null || true
+        # A remaining unrelated-repo error must not abort the caller.
+        sudo apt-get update -qq || echo "apt-get update reported errors on an unrelated repo - continuing"
+        if [ -n "${{ inputs.packages }}" ]; then
+          sudo apt-get install -y --no-install-recommends ${{ inputs.packages }}
+        fi

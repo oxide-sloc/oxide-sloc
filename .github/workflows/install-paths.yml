@@ -69,7 +69,9 @@ jobs:
 
       - name: Install musl tools (Linux only)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends musl-tools
+        uses: ./.github/actions/apt-install
+        with:
+          packages: musl-tools
 
       - name: Add cross-compilation target
         run: rustup target add ${{ matrix.target }}
@@ -232,10 +234,13 @@ jobs:
           ./oxide-sloc --version
           echo "PASS: dist/ install succeeded, no toolchain extraction"
 
+      - name: Install ClamAV
+        uses: ./.github/actions/apt-install
+        with:
+          packages: clamav
+
       - name: ClamAV scan — oxide-sloc
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clamav
           # Stop the auto-updater so it doesn't race or hit rate limits in CI
           sudo systemctl stop clamav-freshclam 2>/dev/null || true
           # Attempt a quiet database update; non-fatal if blocked (stale db still catches known sigs)

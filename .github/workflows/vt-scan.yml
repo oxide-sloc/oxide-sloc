@@ -76,10 +76,9 @@ jobs:
 
       - name: Install system dependencies (HEAD mode)
         if: inputs.tag == ''
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libwayland-dev libgtk-3-dev libxdo-dev
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libwayland-dev libgtk-3-dev libxdo-dev
 
       - name: Build release binary (HEAD mode)
         if: inputs.tag == ''

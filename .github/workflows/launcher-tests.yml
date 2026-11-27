@@ -28,11 +28,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install shellcheck
+        uses: ./.github/actions/apt-install
+        with:
+          packages: shellcheck
       - name: Run shellcheck
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends shellcheck
-          shellcheck -S warning scripts/serve-server.sh scripts/internal/gen-tls-cert.sh
+        run: shellcheck -S warning scripts/serve-server.sh scripts/internal/gen-tls-cert.sh
 
   # ── serve-server.sh behavior (bats) ──────────────────────────────────────────
   bats:
@@ -41,11 +42,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install bats
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends bats
-          # openssl is preinstalled on ubuntu-latest (used by gen-tls-cert.sh)
-          openssl version
+        uses: ./.github/actions/apt-install
+        with:
+          packages: bats
+      - name: Verify openssl present (used by gen-tls-cert.sh)
+        run: openssl version
       - name: Run launcher tests
         run: bats scripts/tests/serve-server.bats
 
