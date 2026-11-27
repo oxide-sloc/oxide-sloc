@@ -102,7 +102,7 @@ jobs:
       - name: Upload Trivy SARIF to code scanning
         # Fork PRs don't get security-events: write; only upload on push to the repo.
         if: github.event_name == 'push'
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea  # v4.39.4
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
@@ -423,7 +423,7 @@ jobs:
       - name: Upload SARIF to code scanning
         # Non-fatal: fork PRs lack the write token for code-scanning upload.
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea  # v4.39.4
         with:
           sarif_file: ci-out/sloc.sarif
           category: oxide-sloc
