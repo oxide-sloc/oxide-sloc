@@ -1,0 +1,106 @@
+name: Rust toolchain bump
+
+# Dependabot has no ecosystem for the Rust toolchain channel pinned in
+# rust-toolchain.toml. This job fills that gap: weekly it compares the pinned minor
+# channel against the latest stable release and, when a new minor ships, opens a PR
+# bumping the `channel` line. Merging that PR fires bundle-toolchain.yml (push to
+# main touching rust-toolchain.toml), which rebuilds the committed offline
+# toolchain/ archives.
+#
+# Point-release security fixes need no PR: the channel is pinned at major.minor, so
+# rustup already resolves the newest point release at install time. Only a new minor
+# requires a toml change.
+#
+# The bump goes through a PR + Quality gates (not a direct push) on purpose - a new
+# Rust can introduce clippy lints that must be reviewed. Auto-merge lands it only
+# once CI is green, mirroring bundle-toolchain.yml's PR flow. The PR is opened with a
+# GitHub App token (not GITHUB_TOKEN) so that merging it re-triggers the push-based
+# bundle-toolchain workflow (GITHUB_TOKEN pushes are suppressed by anti-recursion).
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # 07:00 UTC Mondays
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-toolchain-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Open toolchain bump PR if behind
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare pinned channel against latest stable
+        id: check
+        run: |
+          set -euo pipefail
+          CUR=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          LATEST_FULL=$(gh api repos/rust-lang/rust/releases/latest --jq '.tag_name')
+          LATEST=$(printf '%s' "$LATEST_FULL" | cut -d. -f1-2)
+          {
+            echo "current=$CUR"
+            echo "latest=$LATEST"
+            echo "latest_full=$LATEST_FULL"
+          } >> "$GITHUB_OUTPUT"
+          # Behind only if the pinned minor is strictly older than the latest minor.
+          if [ "$CUR" != "$LATEST" ] \
+             && [ "$(printf '%s\n%s\n' "$CUR" "$LATEST" | sort -V | tail -1)" = "$LATEST" ]; then
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+            echo "Pinned channel $CUR is behind latest stable $LATEST_FULL (minor $LATEST)."
+          else
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+            echo "Pinned channel $CUR is current against latest stable $LATEST_FULL."
+          fi
+
+      - name: Bump channel in rust-toolchain.toml
+        if: steps.check.outputs.behind == 'true'
+        run: |
+          set -euo pipefail
+          sed -i -E "s/^([[:space:]]*channel[[:space:]]*=[[:space:]]*\")[^\"]+(\".*)/\1${{ steps.check.outputs.latest }}\2/" rust-toolchain.toml
+          grep channel rust-toolchain.toml
+
+      - name: Generate app token
+        id: app-token
+        if: steps.check.outputs.behind == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.TOOLCHAIN_APP_ID }}
+          private-key: ${{ secrets.TOOLCHAIN_APP_PRIVATE_KEY }}
+
+      - name: Open bump PR
+        id: cpr
+        if: steps.check.outputs.behind == 'true'
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: chore/bump-rust-toolchain-${{ steps.check.outputs.latest }}
+          base: main
+          add-paths: rust-toolchain.toml
+          commit-message: "chore: bump Rust toolchain channel to ${{ steps.check.outputs.latest }}"
+          title: "chore: bump Rust toolchain channel to ${{ steps.check.outputs.latest }}"
+          body: |
+            Latest stable Rust is `${{ steps.check.outputs.latest_full }}`; the pinned
+            channel was `${{ steps.check.outputs.current }}`. This bumps `channel` in
+            `rust-toolchain.toml` to `${{ steps.check.outputs.latest }}`.
+
+            Merging fires `bundle-toolchain.yml`, which rebuilds the offline
+            `toolchain/` archives. Auto-merge lands it once Quality gates passes.
+          labels: "automated,toolchain,dependencies"
+          delete-branch: true
+
+      - name: Enable auto-merge
+        if: steps.cpr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ steps.cpr.outputs.pull-request-number }}
+        run: gh pr merge --auto --squash "$PR"

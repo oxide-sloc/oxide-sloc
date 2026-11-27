@@ -1,0 +1,151 @@
+name: Security advisories (scheduled)
+
+# Dependabot opens PRs for *version* updates weekly, and ci.yml runs cargo-audit +
+# cargo-deny on every push/PR. Neither catches a brand-new advisory published
+# against a crate that is ALREADY pinned in Cargo.lock on a day with no commits.
+# This job closes that gap: it scans the committed lockfile daily and, when a NEW
+# advisory affects a current dependency, opens/updates ONE tracking issue (assigned
+# to the maintainer) and fails the run so the scheduled-failure email lands in the
+# maintainer's inbox. When the advisory set is unchanged it is a quiet no-op (no
+# daily spam); when everything is clear it closes the issue.
+#
+# The gate is cargo-audit's `.vulnerabilities` list (actual vulns only). The
+# "unmaintained"/yanked warnings that config/deny.toml scopes out stay as context
+# in the report and never fail the run.
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report only; do not open/update/close any issue"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-advisories
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Daily cargo-audit advisory scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # open/update/close the tracking issue
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TITLE: "security: dependency advisory affecting a pinned crate"
+      ASSIGNEE: NimaShafie
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Scan Cargo.lock for advisories
+        id: scan
+        run: |
+          set -uo pipefail
+          # cargo-audit exits non-zero when vulnerabilities are found; capture it
+          # rather than abort so the issue is managed regardless of the result.
+          cargo audit --json > audit.json 2> audit.err || true
+          cat audit.err || true
+
+          FOUND=$(jq -r '.vulnerabilities.found' audit.json 2>/dev/null || echo "false")
+          COUNT=$(jq -r '.vulnerabilities.count' audit.json 2>/dev/null || echo 0)
+          IDS=$(jq -r '.vulnerabilities.list[].advisory.id' audit.json 2>/dev/null \
+            | sort -u | paste -sd, - || true)
+
+          {
+            echo "found=$FOUND"
+            echo "count=$COUNT"
+            echo "ids=$IDS"
+          } >> "$GITHUB_OUTPUT"
+
+          # Human-readable report for the issue body and the run summary.
+          {
+            echo "## Dependency advisory scan - $(date -u +%Y-%m-%d)"
+            echo
+            if [ "$FOUND" = "true" ]; then
+              echo "**$COUNT advisory(ies)** affect a crate currently pinned in \`Cargo.lock\`:"
+              echo
+              jq -r '.vulnerabilities.list[]
+                | "- **\(.advisory.id)** (\(.package.name) \(.package.version)): \(.advisory.title)\n  Patched: \((.versions.patched // []) | join(", ") | if . == "" then "none" else . end)\n  https://rustsec.org/advisories/\(.advisory.id)"' audit.json
+            else
+              echo "No vulnerabilities affect any pinned crate. :white_check_mark:"
+            fi
+            WARN=$(jq -r '(.warnings // {}) | to_entries | map(.value | length) | add // 0' audit.json 2>/dev/null || echo 0)
+            if [ "${WARN:-0}" != "0" ]; then
+              echo
+              echo "<sub>(${WARN} non-vulnerability warning(s) - unmaintained/yanked - not gated; see config/deny.toml.)</sub>"
+            fi
+          } > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open, update, or close the tracking issue
+        if: env.DRY_RUN != 'true'
+        env:
+          FOUND: ${{ steps.scan.outputs.found }}
+          IDS: ${{ steps.scan.outputs.ids }}
+        run: |
+          set -euo pipefail
+          # Hidden marker records the advisory-ID set the issue was last raised for,
+          # so an unchanged set does not re-comment/re-fail every day.
+          MARKER="<!-- adv-ids: ${IDS} -->"
+          EXISTING=$(gh issue list --state open --json number,title \
+            --jq ".[] | select(.title==\"${TITLE}\") | .number" | head -1 || true)
+
+          NEW=0
+          if [ "$FOUND" = "true" ]; then
+            BODY="$(cat report.md)"$'\n\n'"${MARKER}"
+            if [ -z "$EXISTING" ]; then
+              gh issue create --title "$TITLE" \
+                --label security --label dependencies \
+                --assignee "$ASSIGNEE" --body "$BODY"
+              echo "Opened new tracking issue."
+              NEW=1
+            else
+              PREV=$(gh issue view "$EXISTING" --json body --jq .body)
+              if printf '%s' "$PREV" | grep -qF "$MARKER"; then
+                echo "Advisory set unchanged - issue #${EXISTING} left as-is (no spam)."
+              else
+                gh issue edit "$EXISTING" --body "$BODY"
+                gh issue comment "$EXISTING" \
+                  --body "The advisory set changed."$'\n\n'"$BODY"
+                echo "Updated tracking issue #${EXISTING} (advisory set changed)."
+                NEW=1
+              fi
+            fi
+          else
+            if [ -n "$EXISTING" ]; then
+              gh issue close "$EXISTING" \
+                --comment "All advisories resolved as of $(date -u +%Y-%m-%d). Closing."
+              echo "Closed stale tracking issue #${EXISTING}."
+            else
+              echo "No advisories; no tracking issue needed."
+            fi
+          fi
+          echo "NEW=$NEW" >> "$GITHUB_ENV"
+
+      - name: Fail loudly on a newly detected advisory
+        # Red scheduled run => GitHub emails the maintainer. Only on a *new* advisory
+        # so an unfixable long-lived one does not spam a daily failure.
+        if: env.DRY_RUN != 'true' && env.NEW == '1'
+        run: |
+          echo "::error::New dependency advisory detected - see the tracking issue."
+          exit 1
