@@ -26,9 +26,16 @@
 #     --build-arg BUILDER_IMAGE=registry.example.com/ubi/ubi8:8.10 .
 # NOTE: an ARG used in FROM must be declared before the first FROM (global scope).
 # Digest pinned to prevent silent base-image substitution (Scorecard Pinned-Dependencies).
-# To update: docker buildx imagetools inspect registry.access.redhat.com/ubi8/ubi:8.10
-#            (copy the top-level "Digest:" manifest-list sha256).
-ARG BUILDER_IMAGE=registry.access.redhat.com/ubi8/ubi:8.10@sha256:efe7eaa64e1efb79c34d0e9ec4ac6d0a95f512dfa8673c2d0d7dfa78a6787efe
+#
+# The digest lives in the `builder-base` FROM line below rather than in the ARG
+# default so Dependabot's Docker updater can see it (it reads FROM lines but does
+# NOT resolve `FROM ${ARG}`), and auto-opens a PR when a patched ubi8:8.10 digest
+# ships — keeping the build toolchain CVE-current without a manual bump. The tag
+# stays 8.10 (glibc 2.28) for RHEL 8/9/10 forward-compat; only the digest moves.
+# To bump by hand: docker buildx imagetools inspect registry.access.redhat.com/ubi8/ubi:8.10
+#                  (copy the top-level "Digest:" manifest-list sha256).
+ARG BUILDER_IMAGE=builder-base
+FROM registry.access.redhat.com/ubi8/ubi:8.10@sha256:efe7eaa64e1efb79c34d0e9ec4ac6d0a95f512dfa8673c2d0d7dfa78a6787efe AS builder-base
 FROM ${BUILDER_IMAGE} AS builder
 
 # Fail a piped RUN if any stage in the pipe fails (e.g. `echo ... | sha256sum -c`

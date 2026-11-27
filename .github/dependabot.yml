@@ -1,8 +1,15 @@
-# Dependabot covers the cargo + github-actions ecosystems below. The committed
-# offline runtime bundles it CANNOT track — portable CPython under python/ and
-# the pinned Rust channel in rust-toolchain.toml / toolchain/ — are watched by
+# Dependabot covers the cargo + github-actions + docker ecosystems below. The
+# committed offline runtime bundles it CANNOT track — portable CPython under python/
+# and the pinned Rust channel in rust-toolchain.toml / toolchain/ — are watched by
 # .github/workflows/bundled-deps-freshness.yml, which opens a tracking issue
 # when either falls behind upstream.
+#
+# docker: watches the base-image digests pinned in Dockerfile / Dockerfile.rhel-build
+# so an OS-level CVE fix (e.g. linux-pam) auto-opens a digest-bump PR instead of
+# silently rotting. The digests MUST live in real `FROM image@sha256:...` lines for
+# this to work — Dependabot does not resolve `FROM ${ARG}` indirection, so the
+# Dockerfiles keep the digest in named pinned-base stages that the override ARGs
+# default to (see the header comment in Dockerfile).
 version: 2
 updates:
   - package-ecosystem: "cargo"
@@ -46,3 +53,20 @@ updates:
       codeql-action:
         patterns:
           - "github/codeql-action*"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      # Batch all base-image digest bumps (Dockerfile + Dockerfile.rhel-build) into
+      # one weekly PR rather than a separate PR per FROM line.
+      docker-base-images:
+        patterns:
+          - "*"

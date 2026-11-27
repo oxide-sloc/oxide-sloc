@@ -5,22 +5,37 @@
 # "GLIBC_2.39 not found" at container startup. The minor series tracks
 # rust-toolchain.toml (channel 1.97).
 # Digest pinned to prevent silent base-image substitution.
-# To update: docker pull rust:1.97-slim-bookworm && docker inspect --format '{{index .RepoDigests 0}}' rust:1.97-slim-bookworm
 #
-# Base images are build ARGs so a hardened build can substitute an approved
-# registry image (e.g. Chainguard, distroless, or a private mirror) WITHOUT
+# The digests live in the `builder-base` / `runtime-base` FROM lines below rather
+# than in the ARG defaults ON PURPOSE: Dependabot's Docker updater reads FROM lines
+# but does NOT resolve `FROM ${ARG}` indirection, so a digest hidden behind an ARG
+# is invisible to it and the pin silently rots until a human notices a CVE. Putting
+# the digests in named pinned-base stages makes them Dependabot-visible, so a PR is
+# opened automatically whenever a newer base digest ships — that is the durable
+# mechanism that keeps OS-level CVE fixes (e.g. linux-pam) flowing in without a
+# manual bump. See .github/dependabot.yml (docker ecosystem).
+# To bump by hand: docker pull <image> && docker inspect --format '{{index .RepoDigests 0}}' <image>
+#
+# Base images stay overridable via build ARGs so a hardened build can substitute an
+# approved registry image (e.g. Chainguard, distroless, or a private mirror) WITHOUT
 # editing this file, e.g.:
 #   docker build \
 #     --build-arg BUILDER_IMAGE=registry.example.com/rust/rust:1.95 \
 #     --build-arg RUNTIME_IMAGE=registry.example.com/ubi/ubi9-minimal:9.4 \
 #     --build-arg INSTALL_CHROMIUM=1 .
-# Defaults remain the digest-pinned Docker Hub images for the public build.
+# When not overridden, each ARG defaults to the matching pinned-base stage below.
 # Chromium is OFF by default (secure-by-default: it is a large, frequently-CVE'd
 # attack surface and the pure-Rust PDF path covers the default case). Opt back in
 # for high-fidelity headless-Chromium PDF with --build-arg INSTALL_CHROMIUM=1.
 # NOTE: ARGs used in FROM must be declared before the first FROM (global scope).
-ARG BUILDER_IMAGE=rust:1.97-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3
-ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e
+ARG BUILDER_IMAGE=builder-base
+ARG RUNTIME_IMAGE=runtime-base
+
+# Dependabot-visible pinned base images. These FROM lines are what Dependabot bumps;
+# the stages are pure aliases (no extra layers) referenced by the ARG defaults above.
+FROM rust:1.97-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3 AS builder-base
+FROM debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e AS runtime-base
+
 FROM ${BUILDER_IMAGE} AS builder
 
 # Fail a piped RUN if any stage in the pipe fails (e.g. `cat vendor.tar.gz.* |
