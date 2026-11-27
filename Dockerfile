@@ -20,7 +20,7 @@
 # for high-fidelity headless-Chromium PDF with --build-arg INSTALL_CHROMIUM=1.
 # NOTE: ARGs used in FROM must be declared before the first FROM (global scope).
 ARG BUILDER_IMAGE=rust:1.97-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3
-ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e
 FROM ${BUILDER_IMAGE} AS builder
 
 # Fail a piped RUN if any stage in the pipe fails (e.g. `cat vendor.tar.gz.* |
