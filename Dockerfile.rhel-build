@@ -35,7 +35,7 @@
 # To bump by hand: docker buildx imagetools inspect registry.access.redhat.com/ubi8/ubi:8.10
 #                  (copy the top-level "Digest:" manifest-list sha256).
 ARG BUILDER_IMAGE=builder-base
-FROM registry.access.redhat.com/ubi8/ubi:8.10@sha256:efe7eaa64e1efb79c34d0e9ec4ac6d0a95f512dfa8673c2d0d7dfa78a6787efe AS builder-base
+FROM registry.access.redhat.com/ubi8/ubi:8.10@sha256:432e88be04b5561187a01fe33429cd2ce7a8408a00f000d8136df368dcab306f AS builder-base
 FROM ${BUILDER_IMAGE} AS builder
 
 # Fail a piped RUN if any stage in the pipe fails (e.g. `echo ... | sha256sum -c`
