@@ -33,7 +33,7 @@ ARG RUNTIME_IMAGE=runtime-base
 
 # Dependabot-visible pinned base images. These FROM lines are what Dependabot bumps;
 # the stages are pure aliases (no extra layers) referenced by the ARG defaults above.
-FROM rust:1.97-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3 AS builder-base
+FROM rust:1.99-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS builder-base
 FROM debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e AS runtime-base
 
 FROM ${BUILDER_IMAGE} AS builder
