@@ -36559,6 +36559,44 @@ Content-Disposition: attachment; filename="sloc-run-&lt;run_id&gt;.zip"
           </table>
         </div>
       </div>
+
+      <div class="ep-card">
+        <div class="ep-header">
+          <span class="method post">POST</span>
+          <span class="ep-path">/webhooks/gitea</span>
+          <span class="auth-badge hmac">HMAC</span>
+          <span class="ep-desc">Gitea push event receiver</span>
+          <svg class="chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="ep-body">
+          <p class="ep-desc-full">Receives Gitea (and Forgejo) push events. Authenticated via the bare-hex <code>X-Gitea-Signature</code> HMAC-SHA256 (no <code>sha256=</code> prefix).</p>
+          <p class="params-heading">Required Headers</p>
+          <table class="params">
+            <tr><th>Header</th><th>Value</th></tr>
+            <tr><td class="pt-name">X-Gitea-Signature</td><td>Bare-hex HMAC-SHA256 of the raw body</td></tr>
+            <tr><td class="pt-name">Content-Type</td><td><code>application/json</code></td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="ep-card">
+        <div class="ep-header">
+          <span class="method post">POST</span>
+          <span class="ep-path">/webhooks/azure</span>
+          <span class="auth-badge hmac">Token</span>
+          <span class="ep-desc">Azure DevOps push event receiver</span>
+          <svg class="chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="ep-body">
+          <p class="ep-desc-full">Receives Azure DevOps <code>git.push</code> Service Hook events. Service Hooks carry no HMAC, so the per-schedule secret is matched against a shared token in the <code>X-Sloc-Token</code> header (set as a custom header on the subscription).</p>
+          <p class="params-heading">Required Headers</p>
+          <table class="params">
+            <tr><th>Header</th><th>Value</th></tr>
+            <tr><td class="pt-name">X-Sloc-Token</td><td>Per-schedule webhook secret (shared token)</td></tr>
+            <tr><td class="pt-name">Content-Type</td><td><code>application/json</code></td></tr>
+          </table>
+        </div>
+      </div>
     </div>
 
     <!-- Config -->

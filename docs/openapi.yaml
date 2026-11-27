@@ -907,6 +907,39 @@ paths:
         "400":
           description: Malformed body.
 
+  /webhooks/gitea:
+    post:
+      operationId: giteaWebhook
+      summary: Gitea push webhook receiver
+      description: >
+        Receives Gitea (and Forgejo) push events and triggers a scan for a matching
+        schedule. Public; secured by the schedule's HMAC secret, verified against the
+        bare-hex X-Gitea-Signature header (no sha256= prefix).
+      security: []
+      tags: [Webhooks]
+      responses:
+        "202":
+          description: Push accepted (or no match / bad signature — indistinguishable).
+        "400":
+          description: Malformed body.
+
+  /webhooks/azure:
+    post:
+      operationId: azureWebhook
+      summary: Azure DevOps push webhook receiver
+      description: >
+        Receives Azure DevOps "git.push" Service Hook events and triggers a scan for a
+        matching schedule. Azure Service Hooks carry no HMAC, so the schedule's secret
+        is matched against a shared token supplied in the X-Sloc-Token request header
+        (configured as a custom HTTP header on the subscription).
+      security: []
+      tags: [Webhooks]
+      responses:
+        "202":
+          description: Push accepted (or no match / bad token — indistinguishable).
+        "400":
+          description: Malformed body.
+
 tags:
   - name: Health
     description: Health checks and server information. Always public.

@@ -250,7 +250,7 @@ use super::{AppState, CspNonce};
         <div class="form-row" id="providerRow">
           <div class="form-group">
             <div class="label-row"><label>Provider</label><button type="button" class="info-btn" aria-label="About provider">i<span class="info-tip">The git hosting platform sending webhook payloads. Each provider signs payloads differently — select the one that matches where your repository is hosted.</span></button></div>
-            <select id="fProvider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option></select>
+            <select id="fProvider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option><option value="gitea">Gitea</option><option value="azure">Azure DevOps</option></select>
           </div>
         </div>
         <div class="form-row" id="triggerRow">
